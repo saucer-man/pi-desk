@@ -1,0 +1,166 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Check frontend
+        working-directory: frontend
+        run: npm run check
+
+      - name: Test and vet Go
+        shell: pwsh
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+          exit $LASTEXITCODE
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+
+      - name: Build Windows desktop executable
+        run: wails3 build
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-desk-windows-amd64
+          path: bin/pi-desk.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Check frontend
+        working-directory: frontend
+        run: npm run check
+
+      - name: Test and vet Go
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+
+      - name: Build macOS application bundle
+        run: wails3 task darwin:package
+
+      - name: Archive macOS application bundle
+        run: tar -C bin -czf bin/pi-desk-macos.tar.gz pi-desk.app
+
+      - name: Upload macOS application bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-desk-macos
+          path: bin/pi-desk-macos.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Check frontend
+        working-directory: frontend
+        run: npm run check
+
+      - name: Test and vet Go
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+
+      - name: Build Linux desktop executable
+        run: wails3 build
+
+      - name: Archive Linux executable
+        run: tar -C bin -czf bin/pi-desk-linux-amd64.tar.gz pi-desk
+
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-desk-linux-amd64
+          path: bin/pi-desk-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 14

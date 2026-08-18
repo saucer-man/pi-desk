@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "Pi Desk Contributors",
+			"FileDescription": "A desktop interface for the Pi coding agent",
+			"LegalCopyright": "(c) 2026 Pi Desk Contributors",
+			"ProductName": "Pi Desk",
+			"Comments": "Pi-powered coding agent desktop client"
+		}
+	}
+}
