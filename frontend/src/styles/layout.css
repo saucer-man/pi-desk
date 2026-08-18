@@ -1149,6 +1149,53 @@
   color: var(--red);
 }
 
+.message-run-notice {
+  display: grid;
+  max-width: 780px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.message-run-notice > svg {
+  margin-top: 1px;
+}
+
+.message-run-notice[data-status="recovered"] {
+  color: var(--green);
+}
+
+.message-run-notice[data-status="failed"] {
+  color: var(--red);
+}
+
+.message-run-notice-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.message-run-notice-copy strong {
+  color: inherit;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.message-run-notice-copy span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .message-images {
   display: flex;
   flex-wrap: wrap;

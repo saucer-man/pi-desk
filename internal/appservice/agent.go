@@ -584,7 +584,10 @@ func (service *AgentService) Compact(request domain.CompactRequest) (domain.Comm
 	if instructions := strings.TrimSpace(request.CustomInstructions); instructions != "" {
 		command["customInstructions"] = instructions
 	}
-	return service.call(request.ThreadID, command)
+	// Pi only acknowledges this command after model-backed compaction finishes.
+	// A host deadline abandons the RPC response without cancelling Pi, causing a
+	// false "Compaction failed" message while compaction continues in the runtime.
+	return service.callWithoutDeadline(request.ThreadID, command)
 }
 
 func (service *AgentService) SetSessionName(request domain.SessionNameRequest) (domain.CommandResult, error) {

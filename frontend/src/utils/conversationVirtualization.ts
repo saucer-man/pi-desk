@@ -7,6 +7,7 @@ interface VirtualizationCandidate {
   images?: unknown[];
   tools: unknown[];
   executionSteps?: Array<{ kind: "thinking" | "tools" | "message"; tools?: unknown[] }>;
+  runNotice?: { status: "retrying" | "retried" | "recovered" | "failed" };
   changes?: { files: unknown[] };
   compaction?: { summary: string; tokensBefore?: number };
 }
@@ -21,6 +22,7 @@ export function estimateMessageSize(message: VirtualizationCandidate): number {
   const textLines = message.text.length ? Math.max(1, Math.ceil(message.text.length / 90)) : 0;
   const groupedSections = message.executionSteps?.reduce((count, step) => count + (step.kind === "tools" ? step.tools?.length ?? 0 : 1), 0) ?? 0;
   const compactSections = Math.max(groupedSections, (message.thinking ? 1 : 0) + message.tools.length);
+  const noticeSize = message.runNotice ? 48 : 0;
   const baseSize = message.role === "system"
     ? 62
     : message.role === "user"
@@ -28,5 +30,5 @@ export function estimateMessageSize(message: VirtualizationCandidate): number {
       : compactSections > 0
         ? 0
         : 28;
-  return Math.min(420, Math.max(22, baseSize + textLines * 22 + compactSections * 22));
+  return Math.min(420, Math.max(22, baseSize + textLines * 22 + compactSections * 22 + noticeSize));
 }

@@ -81,6 +81,37 @@ describe("ConversationPane", () => {
     expect(wrapper.find(".waiting-for-output").exists()).toBe(false);
   });
 
+  it("renders recovery before the later assistant response in timeline order", () => {
+    const store = useAppStore();
+    store.threads = [{
+      id: "thread-1", title: "Recovered task", workspace: "repo", workspacePath: "D:\\repo",
+      trust: "deny", status: "idle", started: false, generation: 0,
+    }];
+    store.activeThreadId = "thread-1";
+    store.messagesByThread["thread-1"] = [
+      { ...transcript(1)[0], id: "user-1", role: "user", text: "Upload it" },
+      { ...transcript(1)[0], id: "failed-1", role: "assistant", text: "", error: "Request timed out." },
+      { ...transcript(1)[0], id: "success-1", role: "assistant", text: "Upload complete" },
+    ];
+    const wrapper = mount(ConversationPane, {
+      global: {
+        stubs: {
+          ComposerBar: true,
+          ConversationMessage: {
+            props: ["message"],
+            template: '<article class="stub-message"><span v-if="message.runNotice" class="stub-notice">{{ message.runNotice.status }}</span><span>{{ message.text }}</span></article>',
+          },
+        },
+      },
+    });
+
+    const rows = wrapper.findAll(".stub-message");
+    expect(rows).toHaveLength(3);
+    expect(rows[1].get(".stub-notice").text()).toBe("recovered");
+    expect(rows[2].text()).toContain("Upload complete");
+    expect(rows[2].find(".stub-notice").exists()).toBe(false);
+  });
+
   it("loads an earlier page at the top and preserves the visible offset", async () => {
     const wrapper = mountTranscript(2);
     const store = useAppStore();

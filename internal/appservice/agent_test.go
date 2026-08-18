@@ -213,6 +213,27 @@ func TestAgentServiceStartsTrustedSessionAndForwardsPrompt(t *testing.T) {
 	}
 }
 
+func TestAgentServiceCompactionDoesNotAbandonModelBackedRPC(t *testing.T) {
+	runtime := &fakeAgentRuntime{}
+	service := newAgentService(runtime)
+
+	result, err := service.Compact(domain.CompactRequest{
+		ThreadID: "thread-1", CustomInstructions: "  retain the architecture decisions  ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Command != "compact" || runtime.command["type"] != "compact" {
+		t.Fatalf("unexpected command: %#v", runtime.command)
+	}
+	if runtime.command["customInstructions"] != "retain the architecture decisions" {
+		t.Fatalf("custom instructions were not normalized: %#v", runtime.command)
+	}
+	if runtime.callHasDeadline {
+		t.Fatal("model-backed compaction must not use a fixed RPC deadline")
+	}
+}
+
 func TestAgentServiceValidatesCommandsAndPropagatesRuntimeError(t *testing.T) {
 	runtime := &fakeAgentRuntime{callError: errors.New("runtime failed")}
 	service := newAgentService(runtime)

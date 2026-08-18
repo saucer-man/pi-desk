@@ -1,6 +1,6 @@
 # Pi Desk
 
-Pi Desk 是基于 Wails v3、Go 和 Vue 3 开发的 Pi coding agent 桌面客户端。桌面端负责窗口、工作区、终端、Git 视图和 Pi 进程管理；agent loop、模型调用、工具执行、认证及会话运行时由上游 Pi 提供。
+Pi Desk 是基于 Wails v3、Go 和 Vue 3 开发的 Pi coding agent 桌面客户端。桌面端负责窗口、工作区、终端、Git 视图和 Pi 进程管理，并在对话消息底部呈现模型请求失败、自动重试和恢复状态；agent loop、模型调用、工具执行、认证及会话运行时由上游 Pi 提供。
 
 项目后端使用 Go，前端使用 Vue 3、TypeScript、Pinia 和 Vite，并通过 `pi --mode rpc` 连接 Pi CLI。
 

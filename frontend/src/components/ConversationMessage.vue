@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BrainCircuit, Check, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, Save, Sparkles, Trash2, X } from "lucide-vue-next";
+import { BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 import type { ExecutionStep, TimelineMessage } from "../stores/app";
 import { useAppStore } from "../stores/app";
@@ -38,6 +38,34 @@ const showMessageMeta = computed(() => (
   || (props.message.role === "user" && Boolean(props.message.timestamp))
   || showActions.value
 ));
+const runNotice = computed(() => {
+  if (props.message.role !== "assistant") return undefined;
+  return props.message.runNotice ?? (props.message.error
+    ? { status: "failed" as const, error: props.message.error }
+    : undefined);
+});
+const runNoticeLabel = computed(() => {
+  const notice = runNotice.value;
+  if (!notice) return "";
+  if (notice.status === "retrying") {
+    const attempt = notice.attempt ?? 0;
+    const maxAttempts = notice.maxAttempts ?? 0;
+    if (attempt > 0 && maxAttempts > 0) {
+      const delayMs = Math.max(0, notice.delayMs ?? 0);
+      const delay = delayMs < 1000
+        ? `${Math.round(delayMs)}ms`
+        : `${(delayMs / 1000).toFixed(delayMs % 1000 === 0 ? 0 : 1)}s`;
+      return tr("conversation.requestRetrying", {
+        delay,
+        attempt,
+        maxAttempts,
+      });
+    }
+    return tr("conversation.requestRetryingUnknown");
+  }
+  if (notice.status === "retried") return tr("conversation.requestRetried");
+  return tr(notice.status === "recovered" ? "conversation.requestRecovered" : "conversation.requestFailed");
+});
 const executionSteps = computed(() => props.message.executionSteps ?? [
   ...(props.message.thinking ? [{ id: `${props.message.id}-thinking`, kind: "thinking" as const, text: props.message.thinking }] : []),
   ...(props.message.tools.length ? [{ id: `${props.message.id}-tools`, kind: "tools" as const, tools: props.message.tools }] : []),
@@ -199,6 +227,22 @@ function stepThinking(step: ExecutionStep): string {
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>
       <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" />
+      <div
+        v-if="runNotice"
+        class="message-run-notice"
+        :data-status="runNotice.status"
+        :role="runNotice.status === 'failed' ? 'alert' : 'status'"
+        :aria-live="runNotice.status === 'failed' ? 'assertive' : 'polite'"
+      >
+        <RefreshCw v-if="runNotice.status === 'retrying'" :size="14" class="is-spinning" aria-hidden="true" />
+        <RefreshCw v-else-if="runNotice.status === 'retried'" :size="14" aria-hidden="true" />
+        <CheckCircle2 v-else-if="runNotice.status === 'recovered'" :size="14" aria-hidden="true" />
+        <TriangleAlert v-else :size="14" aria-hidden="true" />
+        <div class="message-run-notice-copy">
+          <strong>{{ runNoticeLabel }}</strong>
+          <span v-if="runNotice.error" :title="runNotice.error">{{ runNotice.error }}</span>
+        </div>
+      </div>
       <div v-if="confirmingDelete" class="message-delete-confirm" role="alert">
         <span>{{ tr('conversation.deleteConfirm') }}</span>
         <button type="button" @click="confirmingDelete = false">{{ tr('common.cancel') }}</button>

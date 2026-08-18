@@ -1304,6 +1304,214 @@ describe("app store", () => {
     expect(store.activeBashRunning).toBe(false);
   });
 
+  it("anchors automatic retry and recovery state to the assistant run", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 3;
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "message_start", payload: { message: { id: "assistant-failed", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "message_end", payload: { message: {
+        role: "assistant", content: [], errorMessage: "OpenAI API error (520); apiKey=sk-1234567890abcdefghijkl",
+      } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "agent_end", payload: { willRetry: true } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "auto_retry_start", payload: {
+        attempt: 1, maxAttempts: 3, delayMs: 1000,
+        errorMessage: "OpenAI API error (520); Authorization: Bearer provider-secret",
+      } },
+    });
+
+    expect(store.activeMessages[0].runNotice).toEqual({
+      status: "retrying",
+      error: "OpenAI API error (520); Authorization: [redacted]",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 1000,
+    });
+    expect(store.activeMessages[0].error).not.toContain("sk-1234567890abcdefghijkl");
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "message_start", payload: { message: { id: "assistant-recovered", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "message_end", payload: { message: {
+        role: "assistant", content: [{ type: "text", text: "Recovered output" }],
+      } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "auto_retry_end", payload: { success: true, attempt: 1 } },
+    });
+
+    expect(store.activeMessages[0]).toMatchObject({
+      runNotice: {
+        status: "recovered",
+        error: "OpenAI API error (520); Authorization: [redacted]",
+        attempt: 1,
+        maxAttempts: 3,
+      },
+    });
+    expect(store.activeMessages[1]).toMatchObject({ text: "Recovered output" });
+    expect(store.activeMessages[1].runNotice).toBeUndefined();
+    expect(store.activeRetry).toBeUndefined();
+  });
+
+  it("finalizes earlier retry attempts before starting the next one", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 6;
+
+    const failedAttempt = (id: string, error: string) => {
+      store.handlePiEvent({
+        threadId: thread.id,
+        event: { generation: 6, type: "message_start", payload: { message: { id, role: "assistant", content: [] } } },
+      });
+      store.handlePiEvent({
+        threadId: thread.id,
+        event: { generation: 6, type: "message_end", payload: { message: { role: "assistant", content: [], errorMessage: error } } },
+      });
+      store.handlePiEvent({ threadId: thread.id, event: { generation: 6, type: "agent_end", payload: { willRetry: true } } });
+    };
+
+    failedAttempt("assistant-attempt-1", "Request timed out.");
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 6, type: "auto_retry_start", payload: {
+        attempt: 1, maxAttempts: 3, delayMs: 1000, errorMessage: "Request timed out.",
+      } },
+    });
+    failedAttempt("assistant-attempt-2", "OpenAI API error (520)");
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 6, type: "auto_retry_start", payload: {
+        attempt: 2, maxAttempts: 3, delayMs: 2000, errorMessage: "OpenAI API error (520)",
+      } },
+    });
+
+    expect(store.activeMessages[0].runNotice).toMatchObject({ status: "retried", attempt: 1 });
+    expect(store.activeMessages[1].runNotice).toMatchObject({ status: "retrying", attempt: 2 });
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 6, type: "message_start", payload: { message: { id: "assistant-after-retries", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 6, type: "message_end", payload: { message: {
+        role: "assistant", content: [{ type: "text", text: "Recovered output" }],
+      } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 6, type: "auto_retry_end", payload: { success: true, attempt: 2 } },
+    });
+
+    expect(store.activeMessages[1].runNotice).toMatchObject({ status: "recovered", attempt: 2 });
+    expect(store.activeMessages[2]).toMatchObject({ text: "Recovered output" });
+    expect(store.activeMessages[2].runNotice).toBeUndefined();
+  });
+
+  it("finalizes a missing retry-end event at the authoritative settled boundary", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 5;
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "message_start", payload: { message: { id: "assistant-retry-gap", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "message_end", payload: { message: {
+        role: "assistant", content: [], errorMessage: "Request timed out.",
+      } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "auto_retry_start", payload: {
+        attempt: 1, maxAttempts: 3, delayMs: 1000, errorMessage: "Request timed out.",
+      } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "message_start", payload: { message: { id: "assistant-after-gap", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "message_end", payload: { message: {
+        role: "assistant", content: [{ type: "text", text: "Recovered without retry end" }],
+      } } },
+    });
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 5, type: "agent_settled", payload: {} } });
+
+    expect(store.activeMessages[0].runNotice).toMatchObject({
+      status: "recovered", error: "Request timed out.", attempt: 1, maxAttempts: 3,
+    });
+    expect(store.activeMessages[1].runNotice).toBeUndefined();
+    expect(store.activeRetry).toBeUndefined();
+  });
+
+  it("shows exhausted retry errors on the assistant message without a duplicate system message", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 4;
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 4, type: "message_start", payload: { message: { id: "assistant-final-error", role: "assistant", content: [] } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 4, type: "message_end", payload: { message: {
+        role: "assistant", content: [], errorMessage: "Request timed out.",
+      } } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 4, type: "auto_retry_start", payload: {
+        attempt: 3, maxAttempts: 3, delayMs: 4000, errorMessage: "Request timed out.",
+      } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 4, type: "agent_end", payload: { willRetry: false } },
+    });
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 4, type: "auto_retry_end", payload: {
+        success: false, attempt: 3, finalError: "Request timed out.",
+      } },
+    });
+
+    expect(store.activeMessages).toHaveLength(1);
+    expect(store.activeMessages[0].runNotice).toEqual({
+      status: "failed",
+      error: "Request timed out.",
+      attempt: 3,
+      maxAttempts: 3,
+    });
+  });
+
   it("shows and cancels Pi auto-retry state", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "deny");

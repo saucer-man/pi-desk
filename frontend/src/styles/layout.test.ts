@@ -74,6 +74,19 @@ describe("streamed assistant output alignment", () => {
   });
 });
 
+describe("assistant request status", () => {
+  it("keeps retry and failure notices attached to the message without card styling", async () => {
+    const layout = await layoutText();
+    const notice = firstRuleBody(layout, ".message-run-notice");
+    expect(notice).toMatch(/display:\s*grid/);
+    expect(notice).toMatch(/grid-template-columns:\s*16px minmax\(0, 1fr\)/);
+    expect(notice).toMatch(/border-top:\s*1px solid var\(--border\)/);
+    expect(notice).not.toMatch(/border-radius|box-shadow|background/);
+    expect(firstRuleBody(layout, '.message-run-notice[data-status="recovered"]')).toMatch(/color:\s*var\(--green\)/);
+    expect(firstRuleBody(layout, '.message-run-notice[data-status="failed"]')).toMatch(/color:\s*var\(--red\)/);
+  });
+});
+
 describe("assistant output waiting indicator", () => {
   it("keeps the spinner on the conversation content axis without a visible label", async () => {
     const layout = await layoutText();

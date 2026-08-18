@@ -1,4 +1,4 @@
-import type { ExecutionStep, TimelineMessage } from "../stores/app";
+import type { ExecutionStep, TimelineMessage, TimelineRunNotice } from "../stores/app";
 
 function executionSteps(messages: TimelineMessage[], finalIndex: number): ExecutionStep[] {
   const steps: ExecutionStep[] = [];
@@ -9,6 +9,25 @@ function executionSteps(messages: TimelineMessage[], finalIndex: number): Execut
     if (index !== finalIndex && message.text) steps.push({ id: `${message.id}-message`, kind: "message", text: message.text });
   }
   return steps;
+}
+
+function inferredRunNotice(messages: TimelineMessage[], index: number): TimelineRunNotice | undefined {
+  const message = messages[index];
+  if (message.runNotice) return { ...message.runNotice };
+  if (!message.error) return undefined;
+  const candidate = messages[index + 1];
+  const next = candidate?.role === "assistant" ? candidate : undefined;
+  return {
+    status: !next ? "failed" : next.error ? "retried" : "recovered",
+    error: message.error,
+  };
+}
+
+function mergedRunNotice(messages: TimelineMessage[]): TimelineRunNotice | undefined {
+  const explicit = messages.map((message) => message.runNotice).findLast((notice) => notice !== undefined);
+  if (explicit) return { ...explicit };
+  const error = messages.map((message) => message.error).findLast(Boolean);
+  return error ? { status: "failed", error } : undefined;
 }
 
 function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number): TimelineMessage | undefined {
@@ -44,6 +63,7 @@ function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number):
     durationMs: startedAt !== undefined && endedAt !== undefined ? Math.max(0, endedAt - startedAt) : undefined,
     streaming,
     error: messages.map((message) => message.error).findLast(Boolean),
+    runNotice: mergedRunNotice(messages),
   };
 }
 
@@ -58,9 +78,12 @@ export function groupConversationTurns(messages: TimelineMessage[]): TimelineMes
     assistantRun = [];
   };
 
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
     if (message.role === "assistant") {
-      assistantRun.push(message);
+      const runNotice = inferredRunNotice(messages, index);
+      assistantRun.push(runNotice ? { ...message, runNotice } : message);
+      if (runNotice) flushAssistantRun();
       continue;
     }
     flushAssistantRun();

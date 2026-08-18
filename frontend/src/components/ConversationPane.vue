@@ -20,9 +20,9 @@ const shouldVirtualize = computed(() => shouldVirtualizeMessages(messages.value)
 const lastMessage = computed(() => messages.value.at(-1));
 const streamSignal = computed(() => {
   const message = lastMessage.value;
-  if (!message) return [appStore.activeThreadId, "", 0, 0, 0, 0, appStore.activeWaitingForOutput] as const;
+  if (!message) return [appStore.activeThreadId, "", 0, 0, 0, 0, "", appStore.activeWaitingForOutput] as const;
   const toolOutput = message.tools.reduce((total, tool) => total + tool.output.length, 0);
-  return [appStore.activeThreadId, message.id, message.text.length, message.thinking.length, message.tools.length, toolOutput, appStore.activeWaitingForOutput] as const;
+  return [appStore.activeThreadId, message.id, message.text.length, message.thinking.length, message.tools.length, toolOutput, message.runNotice?.status ?? "", appStore.activeWaitingForOutput] as const;
 });
 
 const virtualizer = useVirtualizer(computed(() => ({

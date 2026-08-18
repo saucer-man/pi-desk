@@ -310,6 +310,65 @@ describe("ConversationMessage", () => {
     expect(store.forkFromMessage).toHaveBeenCalledWith("assistant-1");
   });
 
+  it("renders retry, continued retry, recovery, and terminal failure on an assistant fragment", async () => {
+    const pinia = createPinia();
+    const baseMessage = {
+      id: "assistant-retry",
+      role: "assistant" as const,
+      text: "Partial output",
+      thinking: "",
+      timestamp: "10:05",
+      streaming: false,
+      tools: [],
+    };
+    const wrapper = mount(ConversationMessage, {
+      props: {
+        message: {
+          ...baseMessage,
+          runNotice: {
+            status: "retrying" as const,
+            error: "OpenAI API error (520)",
+            attempt: 2,
+            maxAttempts: 4,
+            delayMs: 1500,
+          },
+        },
+      },
+      global: { plugins: [pinia] },
+    });
+
+    const retrying = wrapper.get('.message-run-notice[data-status="retrying"]');
+    expect(retrying.text()).toContain("Retrying in 1.5s (2/4)");
+    expect(retrying.text()).toContain("OpenAI API error (520)");
+    expect(retrying.attributes("role")).toBe("status");
+
+    await wrapper.setProps({
+      message: {
+        ...baseMessage,
+        runNotice: { status: "retried", error: "OpenAI API error (520)", attempt: 1, maxAttempts: 4 },
+      },
+    });
+    const retried = wrapper.get('.message-run-notice[data-status="retried"]');
+    expect(retried.text()).toContain("continued with another retry");
+    expect(retried.find(".is-spinning").exists()).toBe(false);
+
+    await wrapper.setProps({
+      message: {
+        ...baseMessage,
+        runNotice: { status: "recovered", error: "OpenAI API error (520)", attempt: 2, maxAttempts: 4 },
+      },
+    });
+    expect(wrapper.get('.message-run-notice[data-status="recovered"]').text()).toContain("Pi recovered automatically");
+
+    await wrapper.setProps({
+      message: { ...baseMessage, error: "Request timed out." },
+    });
+    const failed = wrapper.get('.message-run-notice[data-status="failed"]');
+    expect(failed.text()).toContain("this run stopped");
+    expect(failed.text()).toContain("Request timed out.");
+    expect(failed.attributes("role")).toBe("alert");
+  });
+
   it("renders expanded skill context as a compact invocation and preserves it when editing", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

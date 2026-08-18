@@ -24,6 +24,11 @@ describe("conversation virtualization", () => {
     expect(estimateMessageSize(message("x".repeat(20_000)))).toBe(420);
   });
 
+  it("reserves space for assistant request status", () => {
+    expect(estimateMessageSize({ ...message("result"), runNotice: { status: "failed" } }))
+      .toBe(estimateMessageSize(message("result")) + 48);
+  });
+
   it("uses the collapsed divider height for compaction markers", () => {
     expect(estimateMessageSize({
       ...message(""),

@@ -9,6 +9,7 @@ import { BATCH_ASK_PLACEHOLDER, parseBatchAskEnvelope, type BatchAskQuestion } f
 import { formatFileMention } from "../utils/fileMentions";
 import type { PreparedImage } from "../utils/imageAttachments";
 import { skillInvocationCommandText, skillInvocationTitleText } from "../utils/skillInvocation";
+import { runtimeErrorText } from "../utils/runtimeError";
 import { buildToolDiff } from "../utils/toolDiff";
 import { setAppLanguage, tr } from "../i18n";
 
@@ -88,6 +89,14 @@ export interface TimelineCompaction {
   estimatedTokensAfter?: number;
 }
 
+export interface TimelineRunNotice {
+  status: "retrying" | "retried" | "recovered" | "failed";
+  error?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+}
+
 export interface TimelineMessage {
   id: string;
   entryId?: string;
@@ -105,6 +114,7 @@ export interface TimelineMessage {
   images?: PreparedImage[];
   tools: ToolExecution[];
   compaction?: TimelineCompaction;
+  runNotice?: TimelineRunNotice;
 }
 
 export interface QueuedMessages {
@@ -559,7 +569,7 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         ...identity,
         role: "assistant", text: contentText(value.content), thinking: contentThinking(value.content),
         timestamp: messageTime(value.timestamp), timestampMs: messageTimestamp(value.timestamp), streaming: false,
-        error: typeof value.errorMessage === "string" ? value.errorMessage : undefined, tools,
+        error: runtimeErrorText(value.errorMessage), tools,
       });
       continue;
     }
@@ -604,6 +614,7 @@ function copyMessages(messages: TimelineMessage[]): TimelineMessage[] {
       tools: step.tools?.map((tool) => ({ ...tool, diff: tool.diff ? { ...tool.diff } : undefined })),
     })),
     compaction: message.compaction ? { ...message.compaction } : undefined,
+    runNotice: message.runNotice ? { ...message.runNotice } : undefined,
   }));
 }
 
@@ -2228,9 +2239,25 @@ export const useAppStore = defineStore("app", {
           void this.refreshState(thread.id);
           break;
         }
-        case "agent_settled":
+        case "agent_settled": {
           thread.status = "idle";
           this.waitingForOutputByThread[thread.id] = false;
+          const unfinishedRetry = this.retryByThread[thread.id];
+          if (unfinishedRetry) {
+            const retryIndex = messages.findLastIndex((message) => message.runNotice?.status === "retrying");
+            const retryMessage = retryIndex >= 0 ? messages[retryIndex] : undefined;
+            if (retryMessage?.runNotice) {
+              const recovered = messages.slice(retryIndex + 1)
+                .some((message) => message.role === "assistant" && !message.error);
+              retryMessage.runNotice = {
+                status: recovered ? "recovered" : "failed",
+                error: retryMessage.runNotice.error ?? unfinishedRetry.errorMessage,
+                attempt: unfinishedRetry.attempt,
+                maxAttempts: unfinishedRetry.maxAttempts,
+              };
+            }
+            this.retryByThread[thread.id] = undefined;
+          }
           this.finishAssistant(thread.id);
           if (thread.id !== this.activeThreadId || appIsInBackground()) thread.unread = true;
           {
@@ -2252,6 +2279,7 @@ export const useAppStore = defineStore("app", {
           thread.modifiedAt = nowISO();
           this.scheduleDesktopStateSave();
           break;
+        }
         case "queue_update": {
           const steering = Array.isArray(payload.steering) ? payload.steering.filter((item): item is string => typeof item === "string") : [];
           const followUp = Array.isArray(payload.followUp) ? payload.followUp.filter((item): item is string => typeof item === "string") : [];
@@ -2301,8 +2329,12 @@ export const useAppStore = defineStore("app", {
             const finalThinking = contentThinking(message.content);
             if (finalText) assistant.text = finalText;
             if (finalThinking) assistant.thinking = finalThinking;
-            if (finalText || finalThinking || typeof message.errorMessage === "string") this.waitingForOutputByThread[thread.id] = false;
-            if (typeof message.errorMessage === "string") assistant.error = message.errorMessage;
+            const finalError = runtimeErrorText(message.errorMessage);
+            if (finalText || finalThinking || finalError) this.waitingForOutputByThread[thread.id] = false;
+            if (finalError) {
+              assistant.error = finalError;
+              assistant.runNotice = { status: "failed", error: finalError };
+            }
             const endedAt = messageTimestamp(message.timestamp) ?? Date.now();
             assistant.timestampMs = endedAt;
             assistant.timestamp = formatMessageTime(new Date(endedAt));
@@ -2380,21 +2412,53 @@ export const useAppStore = defineStore("app", {
             }
           }
           break;
-        case "auto_retry_start":
+        case "auto_retry_start": {
           thread.status = "running";
-          this.retryByThread[thread.id] = {
+          const retryError = runtimeErrorText(payload.errorMessage);
+          const retry = {
             attempt: Number(payload.attempt ?? 0),
             maxAttempts: Number(payload.maxAttempts ?? 0),
             delayMs: Number(payload.delayMs ?? 0),
-            errorMessage: typeof payload.errorMessage === "string" ? payload.errorMessage : undefined,
+            errorMessage: retryError,
           };
-          break;
-        case "auto_retry_end":
-          this.retryByThread[thread.id] = undefined;
-          if (payload.success === false && typeof payload.finalError === "string") {
-            this.appendSystem(thread.id, `Retry failed: ${payload.finalError}`, payload.finalError);
+          this.retryByThread[thread.id] = retry;
+          const assistant = this.currentAssistant(thread.id, false)
+            ?? messages.findLast((message) => message.role === "assistant");
+          const previousRetry = messages.findLast((message) => message.runNotice?.status === "retrying");
+          if (previousRetry && previousRetry !== assistant && previousRetry.runNotice) {
+            previousRetry.runNotice = { ...previousRetry.runNotice, status: "retried", delayMs: undefined };
+          }
+          if (assistant) {
+            assistant.runNotice = {
+              status: "retrying",
+              error: retryError ?? assistant.error,
+              attempt: retry.attempt,
+              maxAttempts: retry.maxAttempts,
+              delayMs: retry.delayMs,
+            };
           }
           break;
+        }
+        case "auto_retry_end": {
+          const retry = this.retryByThread[thread.id];
+          const retrySucceeded = payload.success === true;
+          const finalError = runtimeErrorText(payload.finalError) ?? retry?.errorMessage;
+          const assistant = messages.findLast((message) => message.runNotice?.status === "retrying")
+            ?? this.currentAssistant(thread.id, false)
+            ?? messages.findLast((message) => message.role === "assistant");
+          this.retryByThread[thread.id] = undefined;
+          if (assistant) {
+            assistant.runNotice = {
+              status: retrySucceeded ? "recovered" : "failed",
+              error: finalError ?? assistant.error,
+              attempt: Number(payload.attempt ?? retry?.attempt ?? 0),
+              maxAttempts: retry?.maxAttempts,
+            };
+          } else if (!retrySucceeded && finalError) {
+            this.appendSystem(thread.id, `Retry failed: ${finalError}`, finalError);
+          }
+          break;
+        }
         case "extension_error":
         case "protocol_error": {
           const message = sessionEvent.event.error || String(payload.error ?? "Pi extension error");
