@@ -13,7 +13,6 @@ import { tr } from "../i18n";
 const appStore = useAppStore();
 const timeline = ref<HTMLElement>();
 const stickToBottom = ref(true);
-const loadingEarlier = ref(false);
 const messages = computed(() => groupConversationTurns(appStore.activeMessages));
 const shouldVirtualize = computed(() => shouldVirtualizeMessages(messages.value)
   || (appStore.activeThread?.messageCount ?? 0) > CONVERSATION_VIRTUALIZATION_THRESHOLD);
@@ -48,36 +47,14 @@ function scrollToBottom() {
   if (element) element.scrollTop = element.scrollHeight;
 }
 
-async function loadEarlierMessages() {
-  const threadId = appStore.activeThreadId;
-  const element = timeline.value;
-  if (!threadId || !element || loadingEarlier.value || !appStore.transcriptHasMoreByThread[threadId]) return;
-  loadingEarlier.value = true;
-  stickToBottom.value = false;
-  const previousHeight = element.scrollHeight;
-  const previousTop = element.scrollTop;
-  try {
-    const loaded = await appStore.loadOlderThreadTranscript(threadId);
-    if (!loaded || appStore.activeThreadId !== threadId) return;
-    await nextTick();
-    virtualizer.value.measure();
-    await nextTick();
-    element.scrollTop = previousTop + Math.max(0, element.scrollHeight - previousHeight);
-  } finally {
-    loadingEarlier.value = false;
-  }
-}
-
 function onTimelineScroll() {
   const element = timeline.value;
   if (!element) return;
   stickToBottom.value = isNearBottom(element.scrollTop, element.clientHeight, element.scrollHeight);
-  if (element.scrollTop <= 96) void loadEarlierMessages();
 }
 
 watch(() => appStore.activeThreadId, async () => {
   stickToBottom.value = true;
-  loadingEarlier.value = false;
   await nextTick();
   virtualizer.value.measure();
   scrollToBottom();
@@ -101,29 +78,10 @@ watch(virtualTotalSize, async () => {
 <template>
   <section class="conversation-pane" :aria-label="tr('conversation.label')">
     <div ref="timeline" class="timeline" role="log" aria-live="polite" @scroll="onTimelineScroll">
-      <div
-        v-if="appStore.activeThread && appStore.transcriptHistoryStateByThread[appStore.activeThread.id] === 'loading'"
-        class="timeline-history-status"
-        role="status"
-        :aria-label="tr('conversation.loadingEarlier')"
-      >
-        <LoaderCircle :size="16" class="is-spinning" aria-hidden="true" />
+      <div v-if="appStore.activeSessionOperation === tr('topbar.compacting')" class="conversation-operation-banner" role="status" aria-live="polite">
+        <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
+        <span>{{ tr("topbar.compacting") }}</span>
       </div>
-      <div
-        v-else-if="appStore.activeThread && appStore.transcriptHistoryStateByThread[appStore.activeThread.id] === 'error'"
-        class="timeline-history-status"
-      >
-        <button
-          class="icon-button"
-          type="button"
-          :title="appStore.transcriptHistoryErrorByThread[appStore.activeThread.id] || tr('conversation.retryEarlier')"
-          :aria-label="tr('conversation.retryEarlier')"
-          @click="loadEarlierMessages"
-        >
-          <History :size="16" />
-        </button>
-      </div>
-
       <div v-if="!appStore.activeThread" class="welcome-empty">
         <div class="empty-logo">Pi</div>
         <h1>{{ tr("conversation.prompt") }}</h1>

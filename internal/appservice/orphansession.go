@@ -66,15 +66,34 @@ func (service *OrphanSessionService) GetOrphanSessionSnapshot(request domain.Ses
 	if _, err := service.resolveOrphan(request.Path); err != nil {
 		return domain.SessionSnapshot{}, err
 	}
-	snapshot, err := service.index.SnapshotPage(strings.TrimSpace(request.Path), strings.TrimSpace(request.Before))
+	snapshot, err := service.index.Snapshot(strings.TrimSpace(request.Path))
 	if err != nil {
 		return domain.SessionSnapshot{}, err
 	}
-	result := domain.SessionSnapshot{Messages: snapshot.Messages, Before: snapshot.Before, HasMore: snapshot.HasMore, MessageCount: snapshot.MessageCount}
+	result := domain.SessionSnapshot{Messages: snapshot.Messages, MessageCount: snapshot.MessageCount}
 	if snapshot.Model != nil {
 		result.Model = &domain.SessionModel{Provider: snapshot.Model.Provider, ID: snapshot.Model.ID}
 	}
 	return result, nil
+}
+
+func (service *OrphanSessionService) RestoreOrphanSession(request domain.RestoreOrphanSessionRequest) error {
+	summary, err := service.resolveOrphan(request.Path)
+	if err != nil {
+		return err
+	}
+	record, err := service.catalog.ResolveID(strings.TrimSpace(request.WorkspaceID))
+	if err != nil {
+		return err
+	}
+	if record.Location.Kind != workspace.KindSSH || record.Trust != "approve" {
+		return errors.New("restore requires an approved SSH workspace")
+	}
+	ssh := record.Location.SSH
+	if summary.AnchorTargetID == "" || summary.AnchorRemoteRoot == "" || ssh.TargetID != summary.AnchorTargetID || ssh.CanonicalRoot != summary.AnchorRemoteRoot {
+		return errors.New("SSH target or remote root does not match the orphan session")
+	}
+	return service.index.RebindSSHAnchor(summary.Path, record.ID, ssh.TargetID, ssh.CanonicalRoot)
 }
 
 func (service *OrphanSessionService) DeleteOrphanSession(request domain.DeleteSessionRequest) (domain.DeletedSession, error) {
@@ -148,6 +167,7 @@ func (service *OrphanSessionService) knownWorkspaceIDs() (map[string]struct{}, e
 func orphanSessionSummary(summary sessionindex.Summary) domain.OrphanSessionSummary {
 	return domain.OrphanSessionSummary{
 		ID: summary.ID, Path: summary.Path, AnchorWorkspaceID: summary.AnchorWorkspaceID,
+		TargetID: summary.AnchorTargetID, RemoteRoot: summary.AnchorRemoteRoot,
 		Name: summary.Name, Title: summary.Title, FirstMessage: summary.FirstMessage,
 		CreatedAt: summary.CreatedAt, ModifiedAt: summary.ModifiedAt, MessageCount: summary.MessageCount,
 	}

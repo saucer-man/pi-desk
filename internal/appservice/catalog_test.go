@@ -36,8 +36,6 @@ type fakeSessionLister struct {
 	sessions       []sessionindex.Summary
 	messages       []json.RawMessage
 	model          *sessionindex.Model
-	snapshotBefore string
-	hasMore        bool
 	usage          sessionindex.UsageSummary
 	err            error
 }
@@ -68,13 +66,11 @@ func (index *fakeSessionLister) Header(path string) (sessionindex.Summary, error
 	return index.Resolve(path)
 }
 
-func (index *fakeSessionLister) SnapshotPage(_ string, before string) (sessionindex.Snapshot, error) {
-	index.snapshotBefore = before
+func (index *fakeSessionLister) Snapshot(_ string) (sessionindex.Snapshot, error) {
 	return sessionindex.Snapshot{
 		Messages: index.messages,
 		Model:    index.model,
-		Before:   "older-entry",
-		HasMore:  index.hasMore,
+		MessageCount: len(index.messages),
 	}, index.err
 }
 
@@ -303,12 +299,11 @@ func TestCatalogServiceReadsSessionSnapshotWithoutStartingPi(t *testing.T) {
 	index := &fakeSessionLister{
 		messages: want,
 		model:    &sessionindex.Model{Provider: "openai", ID: "gpt-5"},
-		hasMore:  true,
 	}
 	service := newCatalogService(workspace.NewCatalog(filepath.Join(t.TempDir(), "state.json")), index, nil)
 
-	snapshot, err := service.GetSessionSnapshot(domain.SessionSnapshotRequest{Path: "one.jsonl", Before: "newer-entry"})
-	if err != nil || len(snapshot.Messages) != 1 || snapshot.Model == nil || snapshot.Model.Provider != "openai" || snapshot.Model.ID != "gpt-5" || snapshot.Before != "older-entry" || !snapshot.HasMore || index.snapshotBefore != "newer-entry" {
+	snapshot, err := service.GetSessionSnapshot(domain.SessionSnapshotRequest{Path: "one.jsonl"})
+	if err != nil || len(snapshot.Messages) != 1 || snapshot.Model == nil || snapshot.Model.Provider != "openai" || snapshot.Model.ID != "gpt-5" {
 		t.Fatalf("snapshot = %#v, %v", snapshot, err)
 	}
 }

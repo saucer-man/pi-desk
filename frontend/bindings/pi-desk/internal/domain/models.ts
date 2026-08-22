@@ -69,6 +69,10 @@ export interface DeleteModelConfigRequest {
     "modelId": string;
 }
 
+export interface DeleteProviderConfigRequest {
+    "providerId": string;
+}
+
 export interface DeleteSessionRequest {
     "path": string;
 }
@@ -370,6 +374,8 @@ export interface OrphanSessionSummary {
     "id": string;
     "path": string;
     "anchorWorkspaceId": string;
+    "targetId"?: string;
+    "remoteRoot"?: string;
     "name"?: string;
     "title": string;
     "firstMessage": string;
@@ -595,6 +601,11 @@ export interface RepositorySnapshot {
     "git": GitStatus;
 }
 
+export interface RestoreOrphanSessionRequest {
+    "path": string;
+    "workspaceId": string;
+}
+
 export interface ResumeRemoteWorkspaceRequest {
     "workspaceId": string;
 }
@@ -671,14 +682,11 @@ export interface SessionNameRequest {
 export interface SessionSnapshot {
     "messages": json$0.RawMessage[] | null;
     "model"?: SessionModel | null;
-    "before"?: string;
-    "hasMore": boolean;
     "messageCount": number;
 }
 
 export interface SessionSnapshotRequest {
     "path": string;
-    "before"?: string;
 }
 
 export interface SessionSummary {

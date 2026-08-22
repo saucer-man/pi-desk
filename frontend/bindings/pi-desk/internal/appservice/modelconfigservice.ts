@@ -21,6 +21,10 @@ export function DeleteModel(request: domain$0.DeleteModelConfigRequest): $Cancel
     return $Call.ByID(4006858259, request);
 }
 
+export function DeleteProvider(request: domain$0.DeleteProviderConfigRequest): $CancellablePromise<domain$0.ModelConfigSnapshot> {
+    return $Call.ByID(2482877219, request);
+}
+
 export function DiscoverModels(request: domain$0.DiscoverModelsRequest): $CancellablePromise<domain$0.ModelDiscoveryResult> {
     return $Call.ByID(3039346508, request);
 }

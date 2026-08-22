@@ -23,8 +23,8 @@ export function GetMcpServer(request: domain$0.McpServerRequest): $CancellablePr
     return $Call.ByID(246355267, request);
 }
 
-export function ListMcpServers($0: domain$0.ListMcpServersRequest): $CancellablePromise<domain$0.McpConfigSnapshot> {
-    return $Call.ByID(177210300, $0);
+export function ListMcpServers(request: domain$0.ListMcpServersRequest): $CancellablePromise<domain$0.McpConfigSnapshot> {
+    return $Call.ByID(177210300, request);
 }
 
 export function UpsertMcpServer(request: domain$0.UpsertMcpServerRequest): $CancellablePromise<domain$0.McpServer> {

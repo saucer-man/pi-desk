@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, LoaderCircle, Trash2, X } from "lucide-vue-next";
+import { LoaderCircle, RefreshCw, X } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import type { OrphanSessionSummary } from "../../bindings/pi-desk/internal/domain";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -19,17 +19,20 @@ const dialog = ref<HTMLElement | null>(null);
 const sessions = ref<OrphanSessionSummary[]>([]);
 const selectedPath = ref("");
 const messages = ref<TranscriptMessage[]>([]);
-const before = ref("");
-const hasMore = ref(false);
 const loading = ref(true);
 const loadingTranscript = ref(false);
 const busy = ref(false);
 const errorText = ref("");
 const resultText = ref("");
-const confirmDelete = ref(false);
 let selectionGeneration = 0;
 
 const selected = computed(() => sessions.value.find((session) => session.path === selectedPath.value));
+const matchingWorkspace = computed(() => {
+  const session = selected.value;
+  if (!session?.targetId || !session.remoteRoot) return undefined;
+  return appStore.workspaces.find((workspace) => workspace.kind === "ssh"
+    && workspace.targetId === session.targetId && workspace.remoteRoot === session.remoteRoot);
+});
 
 function close() {
   if (!busy.value) appStore.closeOrphanSessions();
@@ -88,9 +91,6 @@ async function selectSession(path: string) {
   const generation = ++selectionGeneration;
   selectedPath.value = path;
   messages.value = [];
-  before.value = "";
-  hasMore.value = false;
-  confirmDelete.value = false;
   resultText.value = "";
   errorText.value = "";
   loadingTranscript.value = true;
@@ -98,8 +98,6 @@ async function selectSession(path: string) {
     const snapshot = await orphanSessionService.snapshot(path);
     if (generation !== selectionGeneration) return;
     messages.value = projectMessages(snapshot.messages);
-    before.value = snapshot.before || "";
-    hasMore.value = snapshot.hasMore;
   } catch (error) {
     if (generation === selectionGeneration) errorText.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -107,58 +105,21 @@ async function selectSession(path: string) {
   }
 }
 
-async function loadOlder() {
-  const path = selectedPath.value;
-  const cursor = before.value;
-  if (!path || !cursor || loadingTranscript.value) return;
-  loadingTranscript.value = true;
-  errorText.value = "";
-  try {
-    const snapshot = await orphanSessionService.snapshot(path, cursor);
-    if (selectedPath.value !== path || before.value !== cursor) return;
-    messages.value = [...projectMessages(snapshot.messages), ...messages.value];
-    before.value = snapshot.before || "";
-    hasMore.value = snapshot.hasMore;
-  } catch (error) {
-    errorText.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    loadingTranscript.value = false;
-  }
-}
-
-async function exportSelected() {
+async function restoreSelected() {
   const session = selected.value;
-  if (!session || busy.value) return;
+  const workspace = matchingWorkspace.value;
+  if (!session || !workspace || busy.value) return;
   busy.value = true;
   errorText.value = "";
   resultText.value = "";
   try {
-    const output = await orphanSessionService.exportHTML(session.path, session.title || session.name || "orphan-session");
-    if (output) resultText.value = tr("orphan.exported", { path: output });
-  } catch (error) {
-    errorText.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function deleteSelected() {
-  const session = selected.value;
-  if (!session || busy.value) return;
-  if (!confirmDelete.value) {
-    confirmDelete.value = true;
-    return;
-  }
-  busy.value = true;
-  errorText.value = "";
-  try {
-    const deleted = await orphanSessionService.remove(session.path);
-    resultText.value = tr("orphan.deleted", { path: deleted.recoveryPath });
+    await orphanSessionService.restore(session.path, workspace.id);
+    resultText.value = tr("orphan.restored", { workspace: workspace.name });
     sessions.value = sessions.value.filter((item) => item.path !== session.path);
-    selectedPath.value = "";
+    selectedPath.value = sessions.value[0]?.path ?? "";
     messages.value = [];
-    confirmDelete.value = false;
-    if (sessions.value.length) await selectSession(sessions.value[0].path);
+    if (selectedPath.value) await selectSession(selectedPath.value);
+    await appStore.syncLocalSessions();
   } catch (error) {
     errorText.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -189,13 +150,14 @@ onMounted(() => { void loadSessions(); });
         <main class="orphan-transcript">
           <template v-if="selected">
             <header>
-              <div><strong>{{ selected.title || selected.name || tr("orphan.untitled") }}</strong><small>{{ selected.anchorWorkspaceId }}</small></div>
+              <div>
+                <strong>{{ selected.title || selected.name || tr("orphan.untitled") }}</strong>
+                <small>{{ matchingWorkspace ? tr("orphan.matchFound", { workspace: matchingWorkspace.name }) : tr("orphan.matchMissing") }}</small>
+              </div>
               <div class="orphan-actions">
-                <button class="text-button" type="button" :disabled="busy" @click="void exportSelected()"><Download :size="14" />{{ tr("orphan.export") }}</button>
-                <button class="text-button danger" type="button" :disabled="busy" @click="void deleteSelected()"><Trash2 :size="14" />{{ confirmDelete ? tr("orphan.confirmDelete") : tr("orphan.delete") }}</button>
+                <button class="text-button" type="button" :disabled="busy || !matchingWorkspace" @click="void restoreSelected()"><RefreshCw :size="14" />{{ tr("orphan.restore") }}</button>
               </div>
             </header>
-            <button v-if="hasMore" class="text-button orphan-load-more" type="button" :disabled="loadingTranscript" @click="void loadOlder()">{{ tr("orphan.loadOlder") }}</button>
             <div class="orphan-messages" aria-live="polite">
               <p v-if="loadingTranscript && messages.length === 0" class="sidebar-empty"><LoaderCircle :size="15" class="is-spinning" /> {{ tr("orphan.loadingTranscript") }}</p>
               <article v-for="message in messages" :key="message.id" :data-role="message.role">

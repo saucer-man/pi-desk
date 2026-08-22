@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import {
-  Archive,
+  Copy,
+  Download,
   FileSearch,
   Folder,
   FolderOpen,
+  GitBranch,
   MoreHorizontal,
-  PanelLeftClose,
   PanelLeftOpen,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Settings,
+  Sparkles,
   Play,
   Square,
   SquarePen,
@@ -34,6 +37,10 @@ const workspaceRenameOpen = ref(false);
 const workspaceRenameID = ref("");
 const workspaceRenameValue = ref("");
 const workspaceRenameInput = ref<HTMLInputElement>();
+const taskRenameOpen = ref(false);
+const taskRenameID = ref("");
+const taskRenameValue = ref("");
+const taskRenameInput = ref<HTMLInputElement>();
 const taskMenuThread = computed(() => appStore.threads.find((thread) => thread.id === taskMenu.value.threadId));
 const taskMenuWorkspace = computed(() => {
   const thread = taskMenuThread.value;
@@ -77,6 +84,43 @@ function closeTaskMenu() {
   taskMenu.value.open = false;
 }
 
+async function beginTaskRename() {
+  const thread = taskMenuThread.value;
+  closeTaskMenu();
+  if (!thread) return;
+  taskRenameID.value = thread.id;
+  taskRenameValue.value = thread.title;
+  taskRenameOpen.value = true;
+  await nextTick();
+  taskRenameInput.value?.focus();
+  taskRenameInput.value?.select();
+}
+
+function closeTaskRename() {
+  taskRenameOpen.value = false;
+  taskRenameID.value = "";
+}
+
+async function submitTaskRename() {
+  const thread = appStore.threads.find((item) => item.id === taskRenameID.value);
+  const name = taskRenameValue.value.trim();
+  if (!thread || !name) return;
+  if (appStore.activeThreadId !== thread.id) appStore.selectThread(thread.id);
+  await appStore.renameActiveSession(name);
+  closeTaskRename();
+}
+
+async function runTaskAction(action: "branch" | "clone" | "export" | "compact") {
+  const thread = taskMenuThread.value;
+  closeTaskMenu();
+  if (!thread) return;
+  if (appStore.activeThreadId !== thread.id) appStore.selectThread(thread.id);
+  if (action === "branch") await appStore.openBranchPanel();
+  else if (action === "clone") await appStore.cloneActiveSession();
+  else if (action === "export") await appStore.exportActiveSession();
+  else await appStore.compactActiveSession();
+}
+
 function closeWorkspaceMenu() {
   workspaceMenu.value.open = false;
 }
@@ -117,7 +161,7 @@ async function submitWorkspaceRename() {
 
 function openTaskMenu(event: MouseEvent, threadId: string) {
   const width = 210;
-  const height = 130;
+  const height = 300;
   taskMenu.value = {
     open: true,
     threadId,
@@ -196,7 +240,17 @@ onBeforeUnmount(() => {
 
 <template>
   <aside class="sidebar" :aria-label="tr('sidebar.navigation')">
-    <nav class="primary-nav" aria-label="Primary">
+    <button
+      v-if="appStore.sidebarCollapsed"
+      class="icon-button sidebar-expand-button"
+      type="button"
+      :title="tr('sidebar.expand')"
+      :aria-label="tr('sidebar.expand')"
+      @click="appStore.toggleSidebar"
+    >
+      <PanelLeftOpen :size="17" />
+    </button>
+    <nav v-else class="primary-nav" aria-label="Primary">
       <button v-if="!appStore.sidebarCollapsed" class="new-task-button" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
         <SquarePen :size="17" />
         <span>{{ tr("sidebar.newTask") }}</span>
@@ -205,16 +259,6 @@ onBeforeUnmount(() => {
         <button v-if="!appStore.sidebarCollapsed" class="primary-nav-search" type="button" :title="tr('sidebar.openSearch')" :aria-label="tr('sidebar.openSearch')" :aria-pressed="appStore.searchOpen" @click="toggleSearch">
           <Search :size="16" />
           <span>{{ tr("sidebar.search") }}</span>
-        </button>
-        <button
-          class="sidebar-toggle"
-          type="button"
-          :title="appStore.sidebarCollapsed ? tr('sidebar.expand') : tr('sidebar.collapse')"
-          :aria-label="appStore.sidebarCollapsed ? tr('sidebar.expand') : tr('sidebar.collapse')"
-          @click="appStore.toggleSidebar"
-        >
-          <PanelLeftOpen v-if="appStore.sidebarCollapsed" :size="16" />
-          <PanelLeftClose v-else :size="16" />
         </button>
       </div>
       <button v-if="!appStore.sidebarCollapsed" type="button" :title="tr('sidebar.review')" :aria-label="tr('sidebar.review')" :aria-pressed="appStore.inspectorOpen && appStore.inspectorTab === 'changes'" @click="appStore.toggleInspector('changes')">
@@ -233,9 +277,12 @@ onBeforeUnmount(() => {
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section">
       <div class="section-heading">
         <span>{{ tr("sidebar.workspaces") }}</span>
-        <button class="icon-button" type="button" :title="tr('sidebar.addWorkspace')" @click="appStore.openNewTask">
-          <Plus :size="15" />
-        </button>
+        <div class="section-heading-actions">
+          <button class="icon-button" type="button" :title="tr('sidebar.syncSessions')" :disabled="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()">
+            <RefreshCw :size="15" :class="{ 'is-spinning': appStore.sessionSyncLoading }" />
+          </button>
+          <button class="icon-button" type="button" :title="tr('sidebar.addWorkspace')" @click="appStore.openNewTask"><Plus :size="15" /></button>
+        </div>
       </div>
       <p v-if="appStore.catalogLoading" class="sidebar-empty">{{ tr("sidebar.loading") }}</p>
       <p v-else-if="!appStore.catalogReady && appStore.catalogError" class="sidebar-empty error-text" :title="appStore.catalogError">{{ tr("sidebar.unavailable") }}</p>
@@ -291,9 +338,6 @@ onBeforeUnmount(() => {
 
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-footer">
       <RuntimeBadge />
-      <button class="icon-button" type="button" :title="tr('sidebar.orphanSessions')" @click="appStore.openOrphanSessions()">
-        <Archive :size="17" />
-      </button>
       <button class="icon-button" type="button" :title="tr('sidebar.settings')" @click="appStore.openSettings()">
         <Settings :size="17" />
       </button>
@@ -308,10 +352,32 @@ onBeforeUnmount(() => {
       @contextmenu.prevent
     >
       <button v-if="taskMenuWorkspace?.kind !== 'ssh'" type="button" role="menuitem" @click="void openTaskWorkspace()"><FolderOpen :size="14" />{{ tr("sidebar.openWorkspace") }}</button>
+      <button type="button" role="menuitem" @click="void beginTaskRename()"><Pencil :size="14" />{{ tr("topbar.rename") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('branch')"><GitBranch :size="14" />{{ tr("topbar.branches") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('clone')"><Copy :size="14" />{{ tr("topbar.clone") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('export')"><Download :size="14" />{{ tr("topbar.export") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.started" @click="void runTaskAction('compact')"><Sparkles :size="14" />{{ tr("topbar.compact") }}</button>
       <button v-if="taskMenuThread.started" type="button" role="menuitem" @click="void appStore.stopThread(taskMenuThread.id)"><Square :size="14" />{{ tr("sidebar.closePi") }}</button>
       <button v-else type="button" role="menuitem" @click="appStore.startThreadInBackground(taskMenuThread.id)"><Play :size="14" />{{ tr("sidebar.startPi") }}</button>
       <button type="button" role="menuitem" class="danger" @click="appStore.requestDeleteThread(taskMenuThread.id)"><Trash2 :size="14" />{{ tr("sidebar.delete") }}</button>
     </div>
+
+    <form
+      v-if="!appStore.sidebarCollapsed && taskRenameOpen"
+      class="thread-context-menu task-rename-menu"
+      role="dialog"
+      :aria-label="tr('topbar.rename')"
+      :style="{ left: `${taskMenu.x}px`, top: `${taskMenu.y}px` }"
+      @click.stop
+      @submit.prevent="void submitTaskRename()"
+    >
+      <label for="task-rename-input">{{ tr("topbar.taskName") }}</label>
+      <input id="task-rename-input" ref="taskRenameInput" v-model="taskRenameValue" maxlength="200" />
+      <div class="workspace-rename-actions">
+        <button type="submit" :disabled="!taskRenameValue.trim()">{{ tr("common.confirm") }}</button>
+        <button type="button" @click="closeTaskRename">{{ tr("common.cancel") }}</button>
+      </div>
+    </form>
 
     <div
       v-if="!appStore.sidebarCollapsed && workspaceMenu.open && workspaceMenuItem"

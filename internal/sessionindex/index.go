@@ -19,16 +19,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	githubatomic "github.com/natefinch/atomic"
 	"pi-desk/internal/workspace"
 )
 
 const (
-	maxConcurrentLoads          = 10
-	maxSessionBytes             = 64 << 20
-	maxLineBytes                = 8 << 20
-	transcriptPageTargetBytes   = 5 << 20
-	transcriptPageTargetEntries = 1000
-	maxTitleRunes               = 80
+	maxConcurrentLoads = 10
+	maxSessionBytes    = 64 << 20
+	maxLineBytes       = 8 << 20
+	maxTitleRunes      = 80
 )
 
 type Summary struct {
@@ -37,6 +36,8 @@ type Summary struct {
 	CWD               string
 	SSHAnchor         bool
 	AnchorWorkspaceID string
+	AnchorTargetID    string
+	AnchorRemoteRoot  string
 	Name              string
 	Title             string
 	FirstMessage      string
@@ -54,8 +55,6 @@ type Model struct {
 type Snapshot struct {
 	Messages     []json.RawMessage
 	Model        *Model
-	Before       string
-	HasMore      bool
 	MessageCount int
 }
 
@@ -167,6 +166,8 @@ func (index *Index) projectSSHAnchor(summary *Summary) bool {
 	}
 	summary.SSHAnchor = true
 	summary.AnchorWorkspaceID = marker.WorkspaceID
+	summary.AnchorTargetID = marker.TargetID
+	summary.AnchorRemoteRoot = marker.RemoteRoot
 	return true
 }
 
@@ -396,19 +397,16 @@ func (index *Index) CopyValidated(path string, destination io.Writer) error {
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || opened.Size() > maxSessionBytes {
+	if err != nil || !opened.Mode().IsRegular() {
 		return errors.New("session path is not a bounded regular file")
 	}
 	current, err := os.Lstat(canonical)
 	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
 		return errors.New("session path changed during validation")
 	}
-	written, err := io.Copy(destination, io.LimitReader(file, maxSessionBytes+1))
+	_, err = io.Copy(destination, file)
 	if err != nil {
 		return fmt.Errorf("copy session path: %w", err)
-	}
-	if written > maxSessionBytes {
-		return errors.New("session file exceeds the safety limit")
 	}
 	return nil
 }
@@ -423,6 +421,54 @@ func (index *Index) Resolve(path string) (Summary, error) {
 		return Summary{}, errors.New("session file or SSH anchor is malformed or exceeds safety limits")
 	}
 	return summary, nil
+}
+
+// RebindSSHAnchor moves a validated orphan transcript to a newly recreated
+// workspace anchor. The caller must verify the target and remote root match.
+func (index *Index) RebindSSHAnchor(path, workspaceID, targetID, remoteRoot string) error {
+	index.mutationMu.Lock()
+	defer index.mutationMu.Unlock()
+	canonical, err := index.ValidatePath(path)
+	if err != nil {
+		return err
+	}
+	summary, err := index.Resolve(canonical)
+	if err != nil || !summary.SSHAnchor {
+		return errors.New("session is not a valid SSH orphan transcript")
+	}
+	anchor, err := workspace.EnsureSSHAnchorWithMetadata(index.anchorRoot, workspaceID, targetID, remoteRoot)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(canonical)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || len(data) > maxSessionBytes {
+		return errors.New("session transcript exceeds the configured limit")
+	}
+	lineEnd := bytes.IndexByte(data, '\n')
+	if lineEnd < 0 {
+		return errors.New("session header is malformed")
+	}
+	var header map[string]json.RawMessage
+	if err := json.Unmarshal(data[:lineEnd], &header); err != nil {
+		return errors.New("session header is malformed")
+	}
+	cwd, err := json.Marshal(anchor)
+	if err != nil {
+		return err
+	}
+	header["cwd"] = cwd
+	updatedHeader, err := json.Marshal(header)
+	if err != nil {
+		return err
+	}
+	updated := append(updatedHeader, data[lineEnd:]...)
+	if err := githubatomic.WriteFile(canonical, bytes.NewReader(updated)); err != nil {
+		return fmt.Errorf("rewrite SSH session anchor: %w", err)
+	}
+	return nil
 }
 
 // Header validates a session path and reads only its bounded first line. It is
@@ -465,70 +511,6 @@ func (index *Index) Snapshot(path string) (Snapshot, error) {
 	return Snapshot{
 		Messages:     transcriptMessages(pathEntries),
 		Model:        sessionModel(pathEntries),
-		MessageCount: transcriptMessageCount(pathEntries),
-	}, nil
-}
-
-// SnapshotPage reads the most recent bounded page before an optional stable
-// entry ID. The byte and entry targets are soft so one large turn remains
-// intact and a single valid message is never rejected for display.
-func (index *Index) SnapshotPage(path string, before string) (Snapshot, error) {
-	canonical, err := index.ValidatePath(path)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	entries, err := readTranscriptEntries(canonical)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	pathEntries := addCompactionEstimates(activeTranscriptPath(entries))
-	end := len(pathEntries)
-	if before = strings.TrimSpace(before); before != "" {
-		end = -1
-		for position, entry := range pathEntries {
-			if entry.ID == before {
-				end = position
-				break
-			}
-		}
-		if end < 0 {
-			return Snapshot{}, errors.New("session transcript cursor is no longer on the active branch")
-		}
-	}
-
-	messages := make([]json.RawMessage, 0, min(transcriptPageTargetEntries, end))
-	totalBytes := 0
-	firstPosition := end
-	for position := end - 1; position >= 0; position-- {
-		message, role, ok := transcriptMessage(pathEntries[position])
-		if !ok {
-			continue
-		}
-		messages = append(messages, message)
-		totalBytes += len(message)
-		firstPosition = position
-		if (totalBytes >= transcriptPageTargetBytes || len(messages) >= transcriptPageTargetEntries) && role == "user" {
-			break
-		}
-	}
-	slices.Reverse(messages)
-
-	hasMore := false
-	for position := firstPosition - 1; position >= 0; position-- {
-		if transcriptEntryVisible(pathEntries[position]) {
-			hasMore = true
-			break
-		}
-	}
-	cursor := ""
-	if hasMore && firstPosition < len(pathEntries) {
-		cursor = pathEntries[firstPosition].ID
-	}
-	return Snapshot{
-		Messages:     messages,
-		Model:        sessionModel(pathEntries),
-		Before:       cursor,
-		HasMore:      hasMore,
 		MessageCount: transcriptMessageCount(pathEntries),
 	}, nil
 }
@@ -978,7 +960,7 @@ func readHeader(path string) (Summary, bool) {
 
 func readSummary(path string) (Summary, bool) {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxSessionBytes {
+	if err != nil || !info.Mode().IsRegular() {
 		return Summary{}, false
 	}
 	file, err := os.Open(path)
@@ -987,7 +969,7 @@ func readSummary(path string) (Summary, bool) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(io.LimitReader(file, maxSessionBytes+1))
+	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), maxLineBytes)
 	var summary Summary
 	var headerTime time.Time
@@ -1071,8 +1053,8 @@ func readTranscriptEntries(path string) ([]rawEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect session transcript: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxSessionBytes {
-		return nil, errors.New("session transcript exceeds the file safety limit")
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("session transcript is not a regular file")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -1080,7 +1062,7 @@ func readTranscriptEntries(path string) ([]rawEntry, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(io.LimitReader(file, maxSessionBytes+1))
+	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), maxLineBytes)
 	entries := make([]rawEntry, 0, 256)
 	lineNumber := 0

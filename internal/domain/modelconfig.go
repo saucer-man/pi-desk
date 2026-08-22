@@ -70,6 +70,10 @@ type DeleteModelConfigRequest struct {
 	ModelID    string `json:"modelId"`
 }
 
+type DeleteProviderConfigRequest struct {
+	ProviderID string `json:"providerId"`
+}
+
 type TestModelConfigRequest struct {
 	BaseURL string            `json:"baseUrl"`
 	API     string            `json:"api"`

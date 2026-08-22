@@ -27,7 +27,7 @@ type sessionLister interface {
 	Usage(context.Context, string) (sessionindex.UsageSummary, error)
 	Resolve(string) (sessionindex.Summary, error)
 	Header(string) (sessionindex.Summary, error)
-	SnapshotPage(string, string) (sessionindex.Snapshot, error)
+	Snapshot(string) (sessionindex.Snapshot, error)
 }
 
 type folderPicker func(initialPath string) (string, error)
@@ -221,14 +221,12 @@ func (service *CatalogService) GetSessionSnapshot(request domain.SessionSnapshot
 	if _, err := service.resolveRegularSession(request.Path); err != nil {
 		return domain.SessionSnapshot{}, err
 	}
-	snapshot, err := service.index.SnapshotPage(strings.TrimSpace(request.Path), strings.TrimSpace(request.Before))
+	snapshot, err := service.index.Snapshot(strings.TrimSpace(request.Path))
 	if err != nil {
 		return domain.SessionSnapshot{}, err
 	}
 	result := domain.SessionSnapshot{
 		Messages:     snapshot.Messages,
-		Before:       snapshot.Before,
-		HasMore:      snapshot.HasMore,
 		MessageCount: snapshot.MessageCount,
 	}
 	if snapshot.Model != nil {

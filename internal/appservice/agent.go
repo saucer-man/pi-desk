@@ -179,7 +179,7 @@ func (service *AgentService) StartSession(request domain.StartSessionRequest) (d
 			_ = service.remoteLifecycle.StopTask(threadID)
 			return domain.LiveSession{}, err
 		}
-		anchor, err := workspace.EnsureSSHAnchor(service.anchorRoot, workspaceID)
+		anchor, err := workspace.EnsureSSHAnchorWithMetadata(service.anchorRoot, workspaceID, record.Location.SSH.TargetID, record.Location.SSH.CanonicalRoot)
 		if err != nil {
 			_ = service.remoteLifecycle.StopTask(threadID)
 			return domain.LiveSession{}, err

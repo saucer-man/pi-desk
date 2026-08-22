@@ -7,7 +7,9 @@ import (
 )
 
 const (
-	DefaultMaxRecordBytes = 8 << 20
+	// Pi returns complete session-entry trees for branch inspection in one
+	// JSON-RPC record. Keep framing bounded, but allow large real sessions.
+	DefaultMaxRecordBytes = 64 << 20
 	DefaultStderrBytes    = 64 << 10
 )
 

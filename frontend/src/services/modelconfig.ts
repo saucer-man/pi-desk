@@ -29,6 +29,9 @@ export const modelConfigService = {
   delete(request: DeleteModelConfigRequest): Promise<ModelConfigSnapshot> {
     return ModelConfigService.DeleteModel(request);
   },
+  deleteProvider(providerId: string): Promise<ModelConfigSnapshot> {
+    return ModelConfigService.DeleteProvider({ providerId });
+  },
   discover(request: DiscoverModelsRequest): Promise<ModelDiscoveryResult> {
     return ModelConfigService.DiscoverModels(request);
   },

@@ -30,3 +30,7 @@ export function GetOrphanSessionSnapshot(request: domain$0.SessionSnapshotReques
 export function ListOrphanSessions(): $CancellablePromise<domain$0.OrphanSessionSummary[] | null> {
     return $Call.ByID(350314263);
 }
+
+export function RestoreOrphanSession(request: domain$0.RestoreOrphanSessionRequest): $CancellablePromise<void> {
+    return $Call.ByID(3428493908, request);
+}

@@ -11,7 +11,10 @@ const scope = ref<"all" | "workspace">("all");
 const loading = ref(false);
 const error = ref("");
 const usage = ref<SessionUsageSummary | null>(null);
-const workspacePath = computed(() => appStore.activeThread?.workspacePath || "");
+const workspacePath = computed(() => {
+  const thread = appStore.activeThread;
+  return thread?.workspacePath || appStore.workspaces.find((workspace) => workspace.id === thread?.workspaceId)?.path || "";
+});
 const modelUsage = computed(() => usage.value?.models ?? []);
 
 function formatTokens(value: number) {

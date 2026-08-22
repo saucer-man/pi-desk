@@ -32,7 +32,10 @@ const editor = reactive({
   definition: "",
 });
 
-const globalServers = computed(() => snapshot.value?.servers ?? []);
+const workspacePath = computed(() => appStore.activeThread?.workspacePath || appStore.workspaces.find((workspace) => workspace.id === appStore.activeThread?.workspaceId)?.path || "");
+const allServers = computed(() => snapshot.value?.servers ?? []);
+const globalServers = computed(() => allServers.value.filter((server) => server.scope === McpConfigScope.McpConfigScopeGlobal));
+const projectServers = computed(() => allServers.value.filter((server) => server.scope === McpConfigScope.McpConfigScopeProject));
 const isExisting = computed(() => Boolean(editor.originalName));
 const dirty = computed(() => fingerprint() !== savedFingerprint.value);
 
@@ -118,7 +121,7 @@ async function loadServers(preferredKey = selectedKey.value) {
   loading.value = true;
   loadError.value = "";
   try {
-    snapshot.value = await mcpConfigService.list({});
+    snapshot.value = await mcpConfigService.list({ workspacePath: workspacePath.value });
     const selected = (snapshot.value.servers ?? []).find((server) => keyOf(server) === preferredKey);
     if (selected) await selectServer(selected);
     else if (globalServers.value[0]) await selectServer(globalServers.value[0]);
@@ -138,7 +141,8 @@ async function selectServer(server: McpServerSummary) {
   selectedKey.value = keyOf(server);
   try {
     const loaded = await mcpConfigService.get({
-      scope: McpConfigScope.McpConfigScopeGlobal,
+      scope: server.scope,
+      workspacePath: workspacePath.value,
       name: server.name,
     });
     editor.scope = loaded.scope;
@@ -179,7 +183,8 @@ async function saveServer() {
   notice.value = "";
   try {
     const saved = await mcpConfigService.upsert({
-      scope: McpConfigScope.McpConfigScopeGlobal,
+      scope: editor.scope,
+      workspacePath: workspacePath.value,
       originalName: editor.originalName || undefined,
       name: editor.name.trim(),
       definition: editor.definition,
@@ -209,7 +214,8 @@ async function deleteServer() {
   saving.value = true;
   try {
     await mcpConfigService.delete({
-      scope: McpConfigScope.McpConfigScopeGlobal,
+      scope: editor.scope,
+      workspacePath: workspacePath.value,
       name: editor.originalName,
     });
     resetEditor();
@@ -261,12 +267,21 @@ onMounted(() => { void loadServers(); });
             <CheckCircle2 v-if="selectedKey === keyOf(server)" :size="13" />
           </button>
         </section>
+        <section class="prompt-config-scope">
+          <header><strong>{{ tr("settings.projectMcp") }}</strong><span>{{ projectServers.length }}</span></header>
+          <p v-if="!snapshot?.projectEnabled" class="settings-inline-note">{{ snapshot?.projectNotice || tr("settings.projectMcpUnavailable") }}</p>
+          <button v-for="server in projectServers" :key="keyOf(server)" type="button" :class="{ 'is-active': selectedKey === keyOf(server) }" :disabled="saving" @click="void selectServer(server)">
+            <span><strong>{{ server.name }}</strong><small>{{ server.transport }} · {{ server.disabled ? tr("settings.mcpDisabled") : tr("settings.mcpEnabled") }}</small></span>
+            <CheckCircle2 v-if="selectedKey === keyOf(server)" :size="13" />
+          </button>
+        </section>
       </aside>
       <form class="prompt-editor mcp-editor" @submit.prevent="void saveServer()">
         <div class="model-editor-title">
           <div><strong>{{ isExisting ? editor.name : tr("settings.newMcpServer") }}</strong><small>{{ tr("settings.mcpConfigScope") }}</small></div>
           <span v-if="dirty" class="model-dirty">{{ tr("settings.unsaved") }}</span>
         </div>
+        <label class="model-field"><span>{{ tr("settings.mcpScope") }}</span><select v-model="editor.scope" :disabled="isExisting"><option :value="McpConfigScope.McpConfigScopeGlobal">{{ tr("settings.globalMcp") }}</option><option :value="McpConfigScope.McpConfigScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectMcp") }}</option></select></label>
         <div class="model-form-grid">
           <label class="model-field">
             <span>{{ tr("settings.mcpName") }}</span>

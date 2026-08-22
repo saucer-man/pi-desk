@@ -33,6 +33,9 @@ const editor = reactive({
 });
 
 const skills = computed(() => snapshot.value?.skills ?? []);
+const workspacePath = computed(() => appStore.activeThread?.workspacePath || appStore.workspaces.find((workspace) => workspace.id === appStore.activeThread?.workspaceId)?.path || "");
+const globalSkills = computed(() => skills.value.filter((skill) => skill.scope === SkillScope.SkillScopeGlobal));
+const projectSkills = computed(() => skills.value.filter((skill) => skill.scope === SkillScope.SkillScopeProject));
 const runtimeSkills = computed(() => appStore.activeCommands.filter((command) => command.source === "skill"));
 const dirty = computed(() => editor.content !== savedContent.value);
 const isExisting = computed(() => Boolean(editor.relativePath));
@@ -57,7 +60,7 @@ async function loadSkills(preferredKey = selectedKey.value) {
   loading.value = true;
   loadError.value = "";
   try {
-    snapshot.value = await managedSkillService.list({});
+    snapshot.value = await managedSkillService.list({ workspacePath: workspacePath.value });
     const selected = (snapshot.value.skills ?? []).find((skill) => keyOf(skill) === preferredKey);
     if (selected) await selectSkill(selected);
     else if (skills.value[0]) await selectSkill(skills.value[0]);
@@ -78,6 +81,7 @@ async function selectSkill(skill: ManagedSkillSummary) {
   try {
     const loaded = await managedSkillService.get({
       scope: skill.scope,
+      workspacePath: workspacePath.value,
       rootDirectory: skill.rootDirectory,
       relativePath: skill.relativePath,
     });
@@ -113,7 +117,8 @@ async function createSkill() {
   creating.value = true;
   try {
     const created = await managedSkillService.create({
-      scope: SkillScope.SkillScopeGlobal,
+      scope: createForm.scope,
+      workspacePath: workspacePath.value,
       name: createForm.name.trim(),
       description: createForm.description.trim(),
     });
@@ -136,6 +141,7 @@ async function saveSkill() {
     const selected = (snapshot.value?.skills ?? []).find((skill) => keyOf(skill) === selectedKey.value);
     const saved = await managedSkillService.update({
       scope: editor.scope,
+      workspacePath: workspacePath.value,
       rootDirectory: selected?.rootDirectory,
       relativePath: editor.relativePath,
       content: editor.content,
@@ -165,6 +171,7 @@ async function deleteSkill() {
     const selected = (snapshot.value?.skills ?? []).find((skill) => keyOf(skill) === selectedKey.value);
     await managedSkillService.delete({
       scope: editor.scope,
+      workspacePath: workspacePath.value,
       rootDirectory: selected?.rootDirectory,
       relativePath: editor.relativePath,
     });
@@ -210,8 +217,13 @@ onMounted(() => { void loadSkills(); });
       <aside class="prompt-config-list" :aria-label="tr('settings.skills')">
         <button class="model-config-add-row" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" /><span>{{ tr("settings.addSkill") }}</span></button>
         <section class="prompt-config-scope">
-          <header><strong>{{ tr("settings.managedSkills") }}</strong><span>{{ skills.length }}</span></header>
-          <button v-for="skill in skills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span><CheckCircle2 v-if="selectedKey === keyOf(skill)" :size="13" /></button>
+          <header><strong>{{ tr("settings.globalSkills") }}</strong><span>{{ globalSkills.length }}</span></header>
+          <button v-for="skill in globalSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span><CheckCircle2 v-if="selectedKey === keyOf(skill)" :size="13" /></button>
+        </section>
+        <section class="prompt-config-scope">
+          <header><strong>{{ tr("settings.projectSkills") }}</strong><span>{{ projectSkills.length }}</span></header>
+          <p v-if="!snapshot?.projectEnabled" class="settings-inline-note">{{ snapshot?.projectNotice || tr("settings.projectSkillsUnavailable") }}</p>
+          <button v-for="skill in projectSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span><CheckCircle2 v-if="selectedKey === keyOf(skill)" :size="13" /></button>
         </section>
         <section class="prompt-config-scope runtime-resource-scope">
           <header><strong>{{ tr("settings.runtimeLoadedReadonly") }}</strong><span>{{ runtimeSkills.length }}</span></header>
@@ -234,7 +246,7 @@ onMounted(() => { void loadSkills(); });
     <div v-if="createDialog" class="resource-create-backdrop" @mousedown.self="createDialog = false">
       <form class="resource-create-dialog" @submit.prevent="void createSkill()">
         <header><strong>{{ tr("settings.newSkill") }}</strong><button class="icon-button" type="button" :title="tr('common.close')" @click="createDialog = false"><XCircle :size="15" /></button></header>
-
+        <label class="model-field"><span>{{ tr("settings.skillScope") }}</span><select v-model="createForm.scope"><option :value="SkillScope.SkillScopeGlobal">{{ tr("settings.globalSkills") }}</option><option :value="SkillScope.SkillScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectSkills") }}</option></select></label>
         <label class="model-field"><span>{{ tr("settings.skillName") }}</span><input v-model="createForm.name" spellcheck="false" placeholder="code-review" /><small>{{ tr("settings.skillNameHelp") }}</small></label>
         <label class="model-field"><span>{{ tr("settings.skillDescription") }}</span><textarea v-model="createForm.description" /><small>{{ tr("settings.skillDescriptionHelp") }}</small></label>
         <p v-if="createError" class="form-error">{{ createError }}</p>

@@ -13,7 +13,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-vue-next";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { tr } from "../i18n";
 import { modelConfigService, type DiscoveredModel, type ManagedModel, type ManagedModelProvider, type ModelConfigSnapshot, type ModelQuotaResult, type ModelTestResult } from "../services/modelconfig";
 import { useAppStore } from "../stores/app";
@@ -53,6 +53,7 @@ const selectedKey = ref("");
 const deleteArmed = ref(false);
 const copied = ref(false);
 const savedFingerprint = ref("");
+const providerMenu = ref({ open: false, providerId: "", x: 0, y: 0, confirming: false });
 
 type ModelDefaults = {
   contextWindow?: number;
@@ -546,6 +547,56 @@ async function deleteModel() {
   }
 }
 
+function closeProviderMenu() {
+  providerMenu.value.open = false;
+  providerMenu.value.confirming = false;
+}
+
+function openProviderMenu(event: MouseEvent, provider: ManagedModelProvider) {
+  const width = 220;
+  const height = 116;
+  providerMenu.value = {
+    open: true,
+    providerId: provider.id,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+    confirming: false,
+  };
+}
+
+function showProviderDeleteConfirmation() {
+  providerMenu.value.confirming = true;
+}
+
+async function deleteProvider(provider: ManagedModelProvider) {
+  if (saving.value || !providerMenu.value.confirming || providerMenu.value.providerId !== provider.id) return;
+  saving.value = true;
+  formError.value = "";
+  try {
+    snapshot.value = await modelConfigService.deleteProvider(provider.id);
+    const firstProvider = providers.value[0];
+    const firstModel = firstProvider?.models?.[0];
+    if (firstProvider && firstModel) selectModel(firstProvider, firstModel);
+    else startNewModel();
+    notice.value = tr("settings.deleteProvider");
+    closeProviderMenu();
+    await refreshModelChoices();
+  } catch (cause) {
+    formError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function onProviderMenuPointerDown(event: PointerEvent) {
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(".provider-context-menu")) closeProviderMenu();
+}
+
+function onProviderMenuKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") closeProviderMenu();
+}
+
 async function copyPath() {
   if (!snapshot.value?.path) return;
   await navigator.clipboard.writeText(snapshot.value.path);
@@ -553,7 +604,15 @@ async function copyPath() {
   window.setTimeout(() => { copied.value = false; }, 1200);
 }
 
-onMounted(() => { void loadConfig(); });
+onMounted(() => {
+  void loadConfig();
+  document.addEventListener("pointerdown", onProviderMenuPointerDown);
+  document.addEventListener("keydown", onProviderMenuKeydown);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onProviderMenuPointerDown);
+  document.removeEventListener("keydown", onProviderMenuKeydown);
+});
 </script>
 
 <template>
@@ -579,7 +638,7 @@ onMounted(() => { void loadConfig(); });
           <Plus :size="14" /><span>{{ tr("settings.addModel") }}</span>
         </button>
         <section v-for="provider in providers" :key="provider.id" class="model-config-provider">
-          <header><strong>{{ provider.id }}</strong><span>{{ provider.models?.length ?? 0 }}</span></header>
+          <header @contextmenu.prevent="openProviderMenu($event, provider)"><strong>{{ provider.id }}</strong><span>{{ provider.models?.length ?? 0 }}</span></header>
           <button
             v-for="model in provider.models ?? []"
             :key="`${provider.id}/${model.id}`"
@@ -593,6 +652,22 @@ onMounted(() => { void loadConfig(); });
         </section>
         <div v-if="providers.length === 0" class="model-config-list-empty">{{ tr("settings.noManagedModels") }}</div>
       </aside>
+      <div
+        v-if="providerMenu.open"
+        class="provider-context-menu"
+        :style="{ left: `${providerMenu.x}px`, top: `${providerMenu.y}px` }"
+        role="menu"
+        @click.stop
+      >
+        <button v-if="!providerMenu.confirming" type="button" role="menuitem" @click="showProviderDeleteConfirmation"><Trash2 :size="14" />{{ tr("settings.deleteProvider") }}</button>
+        <template v-else>
+          <p>{{ tr("settings.confirmDeleteProvider") }}</p>
+          <div class="provider-context-actions">
+            <button type="button" class="is-danger" role="menuitem" :disabled="saving" @click="void deleteProvider(providerById(providerMenu.providerId)!)"><Trash2 :size="14" />{{ tr("settings.deleteProvider") }}</button>
+            <button type="button" role="menuitem" :disabled="saving" @click="closeProviderMenu">{{ tr("common.cancel") }}</button>
+          </div>
+        </template>
+      </div>
 
       <form v-if="hasSelection" class="model-editor" @submit.prevent="void saveModel()">
         <div class="model-editor-title">

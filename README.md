@@ -21,13 +21,6 @@ Vue -> Wails service -> Go host -> pi --mode rpc
 - `internal/workspace`、`internal/sessionindex`：workspace catalog 与 Pi session 索引。
 - `frontend/src`：Vue UI、services、store 和组件。
 
-## 文档
-
-- [架构](docs/architecture.md)：跨层职责和关键不变量。
-- [SSH Remote](docs/ssh-remote.md)：远程连接、信任、helper 和 lease 生命周期。
-- [路线图](docs/roadmap.md)：当前范围与后续工作。
-- [完成清单](docs/completion-checklist.md)：发布前验证项。
-
 ## 开发验证
 
 ```powershell

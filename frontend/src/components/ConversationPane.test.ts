@@ -112,27 +112,7 @@ describe("ConversationPane", () => {
     expect(rows[2].find(".stub-notice").exists()).toBe(false);
   });
 
-  it("loads an earlier page at the top and preserves the visible offset", async () => {
-    const wrapper = mountTranscript(2);
-    const store = useAppStore();
-    store.transcriptHasMoreByThread["thread-1"] = true;
-    store.transcriptBeforeByThread["thread-1"] = "entry-20";
-    const timeline = wrapper.get<HTMLElement>(".timeline").element;
-    Object.defineProperty(timeline, "clientHeight", { configurable: true, value: 500 });
-    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 1_000 });
-    const loadEarlier = vi.spyOn(store, "loadOlderThreadTranscript").mockImplementation(async () => {
-      Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 1_400 });
-      return true;
-    });
-    timeline.scrollTop = 20;
-
-    await wrapper.get(".timeline").trigger("scroll");
-
-    await vi.waitFor(() => expect(loadEarlier).toHaveBeenCalledWith("thread-1"));
-    await vi.waitFor(() => expect(timeline.scrollTop).toBe(420));
-  });
-
-  it("virtualizes a partial page when the complete transcript is long", async () => {
+  it("virtualizes a long transcript", async () => {
     const wrapper = mountTranscript(2);
     const store = useAppStore();
     store.activeThread!.messageCount = 200;

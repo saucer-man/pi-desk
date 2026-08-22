@@ -7,6 +7,7 @@ import { formatFileMention } from "../utils/fileMentions";
 import { parsePiDeskTodoWidget, PI_DESK_TODO_WIDGET_KEY } from "../utils/todoWidget";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
+import MarkdownBody from "./MarkdownBody.vue";
 import PiDeskTodoPanel from "./PiDeskTodoPanel.vue";
 
 const appStore = useAppStore();
@@ -524,15 +525,20 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
         </div>
       </div>
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
-      <textarea
-        ref="textarea"
-        v-model="draft"
-        rows="1"
-        :placeholder="tr('composer.placeholder')"
-        :aria-label="tr('composer.promptLabel')"
-        @keydown="onKeydown"
-        @paste="onPaste"
-      />
+      <div class="composer-editor">
+        <div v-if="draft.trim()" class="composer-markdown-layer" aria-hidden="true">
+          <MarkdownBody :text="draft" />
+        </div>
+        <textarea
+          ref="textarea"
+          v-model="draft"
+          rows="1"
+          :placeholder="tr('composer.placeholder')"
+          :aria-label="tr('composer.promptLabel')"
+          @keydown="onKeydown"
+          @paste="onPaste"
+        />
+      </div>
       <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu" role="listbox" :aria-label="tr('composer.commands')">
         <button
           v-for="(command, index) in matchingCommands"

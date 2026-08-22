@@ -27,6 +27,8 @@ var (
 type AnchorMarker struct {
 	Format      uint16 `json:"format"`
 	WorkspaceID string `json:"workspaceId"`
+	TargetID    string `json:"targetId,omitempty"`
+	RemoteRoot  string `json:"remoteRoot,omitempty"`
 }
 
 func DefaultAnchorRoot() (string, error) {
@@ -51,9 +53,17 @@ func AnchorDirectory(root, workspaceID string) (string, error) {
 // EnsureSSHAnchor creates or verifies an immutable local marker. Existing
 // markers are never rewritten, and any extra entry makes the anchor invalid.
 func EnsureSSHAnchor(root, workspaceID string) (string, error) {
+	return EnsureSSHAnchorWithMetadata(root, workspaceID, "", "")
+}
+
+func EnsureSSHAnchorWithMetadata(root, workspaceID, targetID, remoteRoot string) (string, error) {
 	directory, err := AnchorDirectory(root, workspaceID)
 	if err != nil {
 		return "", err
+	}
+	targetID, remoteRoot = strings.TrimSpace(targetID), strings.TrimSpace(remoteRoot)
+	if (targetID == "") != (remoteRoot == "") || (targetID != "" && !validIdentity("target", targetID)) || (remoteRoot != "" && validatePOSIXAbsolutePath(remoteRoot) != nil) {
+		return "", ErrAnchorInvalid
 	}
 	if err := ensurePlainDirectory(root, 0o700); err != nil {
 		return "", err
@@ -78,9 +88,12 @@ func EnsureSSHAnchor(root, workspaceID string) (string, error) {
 		if marker.WorkspaceID != workspaceID {
 			return "", ErrAnchorRebind
 		}
+		if marker.TargetID != "" && marker.TargetID != targetID || marker.RemoteRoot != "" && marker.RemoteRoot != remoteRoot {
+			return "", ErrAnchorRebind
+		}
 		return directory, nil
 	}
-	marker := AnchorMarker{Format: anchorFormatVersion, WorkspaceID: workspaceID}
+	marker := AnchorMarker{Format: anchorFormatVersion, WorkspaceID: workspaceID, TargetID: targetID, RemoteRoot: remoteRoot}
 	content, err := json.Marshal(marker)
 	if err != nil {
 		return "", ErrAnchorInvalid
@@ -139,6 +152,9 @@ func ReadSSHAnchor(root, directory string) (AnchorMarker, error) {
 	}
 	if marker.Format != anchorFormatVersion || marker.WorkspaceID != relative || !validIdentity("workspace", marker.WorkspaceID) {
 		return AnchorMarker{}, ErrAnchorRebind
+	}
+	if (marker.TargetID == "") != (marker.RemoteRoot == "") || (marker.TargetID != "" && !validIdentity("target", marker.TargetID)) || (marker.RemoteRoot != "" && validatePOSIXAbsolutePath(marker.RemoteRoot) != nil) {
+		return AnchorMarker{}, ErrAnchorInvalid
 	}
 	return marker, nil
 }

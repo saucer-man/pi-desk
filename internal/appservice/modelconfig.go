@@ -418,6 +418,31 @@ func (service *ModelConfigService) DeleteModel(request domain.DeleteModelConfigR
 	return service.snapshot(root)
 }
 
+func (service *ModelConfigService) DeleteProvider(request domain.DeleteProviderConfigRequest) (domain.ModelConfigSnapshot, error) {
+	request.ProviderID = strings.TrimSpace(request.ProviderID)
+	if err := validateIdentifier("provider id", request.ProviderID); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	root, err := service.readDocument()
+	if err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	providers, err := providersObject(root)
+	if err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	if _, exists := providers[request.ProviderID]; !exists {
+		return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s was not found", request.ProviderID)
+	}
+	delete(providers, request.ProviderID)
+	if err := service.writeDocument(root); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	return service.snapshot(root)
+}
+
 func normalizeModelRequest(request domain.UpsertModelConfigRequest) domain.UpsertModelConfigRequest {
 	request.OriginalProviderID = strings.TrimSpace(request.OriginalProviderID)
 	request.OriginalModelID = strings.TrimSpace(request.OriginalModelID)

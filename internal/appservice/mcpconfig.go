@@ -30,19 +30,20 @@ const (
 type McpConfigService struct {
 	agentDirectory    string
 	agentDirectoryErr error
+	workspaces        promptWorkspaceResolver
 	mu                sync.Mutex
 }
 
-func NewMcpConfigService(_ *workspace.Catalog) *McpConfigService {
+func NewMcpConfigService(catalog *workspace.Catalog) *McpConfigService {
 	directory, err := defaultPiAgentDirectory()
-	return &McpConfigService{agentDirectory: directory, agentDirectoryErr: err}
+	return &McpConfigService{agentDirectory: directory, agentDirectoryErr: err, workspaces: catalog}
 }
 
-func newMcpConfigService(agentDirectory string, _ promptWorkspaceResolver) *McpConfigService {
-	return &McpConfigService{agentDirectory: agentDirectory}
+func newMcpConfigService(agentDirectory string, workspaces promptWorkspaceResolver) *McpConfigService {
+	return &McpConfigService{agentDirectory: agentDirectory, workspaces: workspaces}
 }
 
-func (service *McpConfigService) ListMcpServers(_ domain.ListMcpServersRequest) (domain.McpConfigSnapshot, error) {
+func (service *McpConfigService) ListMcpServers(request domain.ListMcpServersRequest) (domain.McpConfigSnapshot, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
@@ -55,6 +56,17 @@ func (service *McpConfigService) ListMcpServers(_ domain.ListMcpServersRequest) 
 		return domain.McpConfigSnapshot{}, err
 	}
 	snapshot := domain.McpConfigSnapshot{GlobalPath: globalPath, Servers: globalServers}
+	projectPath, notice, enabled := service.projectDirectory(request.WorkspacePath)
+	snapshot.ProjectPath = projectPath
+	snapshot.ProjectNotice = notice
+	snapshot.ProjectEnabled = enabled
+	if enabled {
+		projectServers, err := listMcpServers(projectPath, domain.McpConfigScopeProject)
+		if err != nil {
+			return domain.McpConfigSnapshot{}, err
+		}
+		snapshot.Servers = append(snapshot.Servers, projectServers...)
+	}
 	sortMcpServers(snapshot.Servers)
 	return snapshot, nil
 }
@@ -168,11 +180,41 @@ func (service *McpConfigService) globalPath() (string, error) {
 	return filepath.Join(filepath.Clean(service.agentDirectory), "mcp.json"), nil
 }
 
-func (service *McpConfigService) pathFor(scope domain.McpConfigScope, _ string) (string, error) {
-	if scope != domain.McpConfigScopeGlobal {
+func (service *McpConfigService) pathFor(scope domain.McpConfigScope, workspacePath string) (string, error) {
+	if scope == domain.McpConfigScopeGlobal {
+		return service.globalPath()
+	}
+	if scope != domain.McpConfigScopeProject {
+		return "", errors.New("MCP scope must be global or project")
+	}
+	if service.workspaces == nil {
 		return "", errors.New("Pi Desk manages only global MCP configuration")
 	}
-	return service.globalPath()
+	path, notice, enabled := service.projectDirectory(workspacePath)
+	if !enabled {
+		if notice == "" {
+			notice = "project MCP is unavailable"
+		}
+		return "", errors.New(notice)
+	}
+	return path, nil
+}
+
+func (service *McpConfigService) projectDirectory(workspacePath string) (string, string, bool) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return "", "select a workspace to manage project MCP", false
+	}
+	if service.workspaces == nil {
+		return "", "workspace catalog is unavailable", false
+	}
+	record, err := service.workspaces.ResolvePath(strings.TrimSpace(workspacePath))
+	if err != nil {
+		return "", err.Error(), false
+	}
+	if record.Trust != "approve" {
+		return "", "approve this workspace before managing project MCP", false
+	}
+	return filepath.Join(record.Path, ".pi", "mcp.json"), "", true
 }
 
 func readMcpConfig(path string) (map[string]any, map[string]any, error) {

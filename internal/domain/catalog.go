@@ -102,8 +102,12 @@ type DeleteSessionRequest struct {
 }
 
 type SessionSnapshotRequest struct {
-	Path   string `json:"path"`
-	Before string `json:"before,omitempty"`
+	Path string `json:"path"`
+}
+
+type RestoreOrphanSessionRequest struct {
+	Path        string `json:"path"`
+	WorkspaceID string `json:"workspaceId"`
 }
 
 type SessionModel struct {
@@ -114,8 +118,6 @@ type SessionModel struct {
 type SessionSnapshot struct {
 	Messages     []json.RawMessage `json:"messages"`
 	Model        *SessionModel     `json:"model,omitempty"`
-	Before       string            `json:"before,omitempty"`
-	HasMore      bool              `json:"hasMore"`
 	MessageCount int               `json:"messageCount"`
 }
 
@@ -155,6 +157,8 @@ type OrphanSessionSummary struct {
 	ID                string    `json:"id"`
 	Path              string    `json:"path"`
 	AnchorWorkspaceID string    `json:"anchorWorkspaceId"`
+	TargetID          string    `json:"targetId,omitempty"`
+	RemoteRoot        string    `json:"remoteRoot,omitempty"`
 	Name              string    `json:"name,omitempty"`
 	Title             string    `json:"title"`
 	FirstMessage      string    `json:"firstMessage"`

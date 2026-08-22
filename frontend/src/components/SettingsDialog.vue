@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BarChart3, BookOpen, Boxes, Copy, Database, Download, ExternalLink, FileText, PlugZap, Puzzle, RefreshCw, RotateCw, Search, Settings2, X } from "lucide-vue-next";
+import { BarChart3, BookOpen, Boxes, Copy, Database, Download, ExternalLink, FileText, Info, PlugZap, Puzzle, RefreshCw, RotateCw, Search, Settings2, X } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { PiMaintenanceAction, type PiMaintenanceResult } from "../../bindings/pi-desk/internal/domain";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -166,6 +166,7 @@ function sourceIcon(source: SlashCommand["source"]) {
           <button type="button" :class="{ 'is-active': section === 'mcpManagement' }" @click="section = 'mcpManagement'"><PlugZap :size="15" /><span>{{ tr("settings.mcpManagement") }}</span></button>
           <button type="button" :class="{ 'is-active': section === 'statistics' }" @click="section = 'statistics'"><BarChart3 :size="15" /><span>{{ tr("settings.statistics") }}</span></button>
           <button type="button" :class="{ 'is-active': section === 'resources' }" @click="section = 'resources'"><Boxes :size="15" /><span>{{ tr("settings.runtimeResources") }}</span></button>
+          <button class="settings-nav-about" type="button" @click="appStore.closeSettings(); appStore.openAbout()"><Info :size="15" /><span>{{ tr("appMenu.about") }}</span></button>
         </nav>
 
         <div v-if="section === 'general'" class="settings-content settings-sections">

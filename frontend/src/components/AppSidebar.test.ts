@@ -30,19 +30,22 @@ describe("AppSidebar", () => {
     expect(store.sidebarCollapsed).toBe(false);
     expect(wrapper.find('button[aria-label="Open task search"]').exists()).toBe(true);
   });
-  it("places the sidebar toggle directly to the right of search", async () => {
+  it("keeps the expand action in the collapsed sidebar", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
     const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
-    const buttons = wrapper.get(".primary-nav-row").findAll("button");
 
-    expect(buttons).toHaveLength(2);
-    expect(buttons[0].attributes("aria-label")).toBe("Open task search");
-    expect(buttons[1].attributes("aria-label")).toBe("Collapse sidebar");
-    await buttons[1].trigger("click");
-    expect(store.sidebarCollapsed).toBe(true);
-    expect(buttons[1].attributes("aria-label")).toBe("Expand sidebar");
+    expect(wrapper.find(".sidebar-expand-button").exists()).toBe(false);
+    expect(wrapper.get(".primary-nav-row").findAll("button")).toHaveLength(1);
+    store.sidebarCollapsed = true;
+    await wrapper.vm.$nextTick();
+
+    const expandButton = wrapper.get(".sidebar-expand-button");
+    expect(expandButton.attributes("aria-label")).toBe("Expand sidebar");
+    await expandButton.trigger("click");
+    expect(store.sidebarCollapsed).toBe(false);
+    expect(wrapper.find(".sidebar-expand-button").exists()).toBe(false);
   });
 
   beforeEach(() => {
@@ -71,16 +74,6 @@ describe("AppSidebar", () => {
     await newTask.trigger("click");
     expect(store.newTaskOpen).toBe(true);
     expect(wrapper.get(".runtime-badge").text()).toContain("Current Pi version 0.83.0");
-  });
-
-  it("opens the orphan SSH transcript viewer from the footer", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const store = useAppStore();
-    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
-
-    await wrapper.get('button[title="Orphan SSH sessions"]').trigger("click");
-    expect(store.orphanSessionsOpen).toBe(true);
   });
 
   it("groups tasks by workspace without counters or visible collapse controls", () => {

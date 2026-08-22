@@ -68,6 +68,17 @@ func (service *ManagedSkillService) ListManagedSkills(request domain.ListManaged
 		}
 		snapshot.Skills = append(snapshot.Skills, skills...)
 	}
+	projectDirectory, notice, enabled := service.projectDirectory(request.WorkspacePath)
+	snapshot.ProjectDirectory = projectDirectory
+	snapshot.ProjectNotice = notice
+	snapshot.ProjectEnabled = enabled
+	if enabled {
+		projectSkills, err := listManagedSkills(projectDirectory, domain.SkillScopeProject, false)
+		if err != nil {
+			return domain.ManagedSkillSnapshot{}, err
+		}
+		snapshot.Skills = append(snapshot.Skills, projectSkills...)
+	}
 	sortManagedSkills(snapshot.Skills)
 	return snapshot, nil
 }

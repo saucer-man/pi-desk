@@ -39,8 +39,8 @@ export const catalogService = {
   async listSessions(workspacePath?: string): Promise<SessionSummary[]> {
     return (await CatalogService.ListSessions({ workspacePath })) ?? [];
   },
-  async getSessionSnapshot(path: string, before?: string): Promise<SessionSnapshot> {
-    return await CatalogService.GetSessionSnapshot({ path, before });
+  async getSessionSnapshot(path: string): Promise<SessionSnapshot> {
+    return await CatalogService.GetSessionSnapshot({ path });
   },
   async getSessionUsage(workspacePath?: string): Promise<SessionUsageSummary> {
     return await CatalogService.GetSessionUsage({ workspacePath });

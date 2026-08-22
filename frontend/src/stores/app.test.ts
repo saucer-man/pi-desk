@@ -1563,7 +1563,7 @@ describe("app store", () => {
     mocks.sendPrompt.mockClear();
     store.updateDraft("Run the focused tests");
     await store.sendActivePrompt();
-    let resolveSnapshot!: (value: { messages: unknown[]; hasMore: boolean; messageCount: number }) => void;
+    let resolveSnapshot!: (value: { messages: unknown[]; messageCount: number }) => void;
     mocks.getSessionSnapshot.mockReturnValueOnce(new Promise((resolve) => {
       resolveSnapshot = resolve;
     }));
@@ -1571,7 +1571,7 @@ describe("app store", () => {
     store.handlePiEvent({ threadId: thread.id, event: { generation: 5, type: "agent_settled", payload: {} } });
     await vi.waitFor(() => expect(mocks.getSessionSnapshot).toHaveBeenCalledWith("C:\\sessions\\one.jsonl"));
     expect(mocks.sendPrompt).not.toHaveBeenCalled();
-    resolveSnapshot({ messages: [], hasMore: false, messageCount: 0 });
+    resolveSnapshot({ messages: [], messageCount: 0 });
     await vi.waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledWith({
       threadId: thread.id,
       message: "Run the focused tests",
@@ -1655,7 +1655,6 @@ describe("app store", () => {
         role: "piDeskCompaction", summary: "## Saved context", tokensBefore: 241_443, estimatedTokensAfter: 32_000,
         timestamp: "2026-08-14T07:01:00Z", piDeskEntryId: "compact-1",
       }],
-      hasMore: false,
       messageCount: 1,
     });
     expect(store.activeMessages[0].compaction?.estimatedTokensAfter).toBe(32_000);
@@ -1676,7 +1675,6 @@ describe("app store", () => {
         role: "piDeskCompaction", summary: "## Saved context", tokensBefore: 241_443, estimatedTokensAfter: 32_000,
         timestamp: "2026-08-14T07:01:00Z", piDeskEntryId: "compact-1",
       }],
-      hasMore: false,
       messageCount: 1,
     });
     expect(store.activeSessionStats?.contextUsage).toEqual({
@@ -2723,101 +2721,25 @@ describe("app store", () => {
     expect(store.transcriptStateByThread["session-session-1"]).toBe("loaded");
   });
 
-  it("loads earlier transcript pages in chronological order", async () => {
+  it("loads transcript without pagination", async () => {
     mocks.listSessions.mockResolvedValueOnce([{
       id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
       firstMessage: "Old prompt", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z",
       messageCount: 3,
     }]);
-    mocks.getSessionSnapshot
-      .mockResolvedValueOnce({
-        messages: [{ role: "user", content: "Recent prompt", piDeskEntryId: "entry-3" }],
-        before: "entry-3", hasMore: true, messageCount: 3,
-      })
-      .mockResolvedValueOnce({
-        messages: [
-          { role: "user", content: "Old prompt", piDeskEntryId: "entry-1" },
-          { role: "assistant", content: "Old reply", piDeskEntryId: "entry-2" },
-        ],
-        hasMore: false, messageCount: 3,
-      })
-      .mockResolvedValueOnce({
-        messages: [
-          { role: "user", content: "Recent prompt", piDeskEntryId: "entry-3" },
-          { role: "assistant", content: "New reply", piDeskEntryId: "entry-4" },
-        ],
-        before: "entry-3", hasMore: true, messageCount: 4,
-      });
-    const store = useAppStore();
-    await store.initialize();
-    await store.loadThreadTranscript("session-session-1");
-    expect(store.activeMessages.map((message) => message.text)).toEqual(["Recent prompt"]);
-    expect(store.transcriptHasMoreByThread["session-session-1"]).toBe(true);
-
-    expect(await store.loadOlderThreadTranscript("session-session-1")).toBe(true);
-    expect(mocks.getSessionSnapshot).toHaveBeenNthCalledWith(2, "C:\\sessions\\one.jsonl", "entry-3");
-    expect(store.activeMessages.map((message) => message.text)).toEqual(["Old prompt", "Old reply", "Recent prompt"]);
-    expect(store.transcriptHasMoreByThread["session-session-1"]).toBe(false);
-    expect(store.transcriptHistoryStateByThread["session-session-1"]).toBe("idle");
-
-    await store.reloadSessionTranscript(store.activeThread!);
-    expect(store.activeMessages.map((message) => message.text)).toEqual(["Old prompt", "Old reply", "Recent prompt", "New reply"]);
-    expect(store.activeThread?.messageCount).toBe(4);
-  });
-
-  it("recovers from a transcript cursor that left the active branch", async () => {
-    mocks.listSessions.mockResolvedValueOnce([{
-      id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
-      firstMessage: "Old prompt", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z",
-      messageCount: 2,
-    }]);
-    mocks.getSessionSnapshot
-      .mockResolvedValueOnce({
-        messages: [{ role: "user", content: "Current branch", piDeskEntryId: "entry-2" }],
-        before: "entry-2", hasMore: true, messageCount: 2,
-      })
-      .mockRejectedValueOnce(new Error("session transcript cursor is no longer on the active branch"))
-      .mockResolvedValueOnce({
-        messages: [{ role: "user", content: "Replacement branch", piDeskEntryId: "replacement-1" }],
-        hasMore: false, messageCount: 1,
-      });
-    const store = useAppStore();
-    await store.initialize();
-    await store.loadThreadTranscript("session-session-1");
-
-    expect(await store.loadOlderThreadTranscript("session-session-1")).toBe(true);
-
-    expect(mocks.getSessionSnapshot).toHaveBeenNthCalledWith(3, "C:\\sessions\\one.jsonl");
-    expect(store.activeMessages.map((message) => message.text)).toEqual(["Replacement branch"]);
-    expect(store.transcriptHistoryStateByThread["session-session-1"]).toBe("idle");
-    expect(store.transcriptHasMoreByThread["session-session-1"]).toBe(false);
-  });
-
-  it("does not replace a live turn while recovering a stale history cursor", async () => {
-    mocks.listSessions.mockResolvedValueOnce([{
-      id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
-      firstMessage: "Current branch", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z",
-      messageCount: 2,
-    }]);
-    mocks.getSessionSnapshot
-      .mockResolvedValueOnce({
-        messages: [{ role: "user", content: "Current branch", piDeskEntryId: "entry-2" }],
-        before: "entry-2", hasMore: true, messageCount: 2,
-      })
-      .mockRejectedValueOnce(new Error("session transcript cursor is no longer on the active branch"));
-    const store = useAppStore();
-    await store.initialize();
-    await store.loadThreadTranscript("session-session-1");
-    store.activeThread!.status = "running";
-    store.activeMessages.push({
-      id: "live-assistant", role: "assistant", text: "Streaming", thinking: "", timestamp: "10:00", streaming: true, tools: [],
+    mocks.getSessionSnapshot.mockResolvedValueOnce({
+      messages: [
+        { role: "user", content: "Old prompt", piDeskEntryId: "entry-1" },
+        { role: "assistant", content: "Old reply", piDeskEntryId: "entry-2" },
+        { role: "user", content: "Recent prompt", piDeskEntryId: "entry-3" },
+      ],
+      messageCount: 4,
     });
-
-    expect(await store.loadOlderThreadTranscript("session-session-1")).toBe(false);
-
-    expect(mocks.getSessionSnapshot).toHaveBeenCalledTimes(2);
-    expect(store.activeMessages.at(-1)).toMatchObject({ id: "live-assistant", text: "Streaming" });
-    expect(store.transcriptHistoryStateByThread["session-session-1"]).toBe("error");
+    const store = useAppStore();
+    await store.initialize();
+    await store.loadThreadTranscript("session-session-1");
+    expect(store.activeMessages.map((message) => message.text)).toEqual(["Old prompt", "Old reply", "Recent prompt"]);
+    expect(store.activeThread?.messageCount).toBe(4);
   });
 
   it("loads history before sending from a resumed session", async () => {

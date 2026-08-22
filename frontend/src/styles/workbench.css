@@ -102,6 +102,7 @@
 
 .topbar-brand {
   display: flex;
+  align-self: stretch;
   min-width: 0;
   align-items: center;
   gap: 10px;
@@ -112,11 +113,28 @@
   --wails-draggable: no-drag;
 }
 
+.app-shell.is-sidebar-collapsed .topbar-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.app-shell.is-sidebar-collapsed .topbar-brand strong {
+  display: none;
+}
+
 .topbar-brand strong {
   overflow: hidden;
   font-size: 14px;
   font-weight: 700;
   text-overflow: ellipsis;
+}
+
+.topbar-sidebar-toggle {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  margin-left: 2px;
+  padding: 0;
 }
 
 .topbar-brand-mark {
@@ -361,6 +379,15 @@
   min-width: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
+}
+
+.sidebar-expand-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  margin: 12px auto 0;
+  padding: 0;
+  --wails-draggable: no-drag;
 }
 
 .primary-nav {

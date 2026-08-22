@@ -466,6 +466,10 @@ function contentText(content: unknown): string {
     .join("");
 }
 
+function isInternalRuntimeNotice(text: string): boolean {
+  return /^\s*Ponytail loaded:\s*[^\r\n]+\s*$/i.test(text);
+}
+
 function contentThinking(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
@@ -705,6 +709,8 @@ export const useAppStore = defineStore("app", {
     catalogLoading: true,
     catalogError: "",
     catalogReady: false,
+    sessionSyncLoading: false,
+    sessionSyncError: "",
     desktopStateReady: false,
     bootstrap: null as BootstrapState | null,
     workspaces: [] as WorkspaceSummary[],
@@ -716,10 +722,6 @@ export const useAppStore = defineStore("app", {
     activeThreadId: "",
     messagesByThread: {} as Record<string, TimelineMessage[]>,
     transcriptEntriesByThread: {} as Record<string, Array<Record<string, unknown>>>,
-    transcriptBeforeByThread: {} as Record<string, string | undefined>,
-    transcriptHasMoreByThread: {} as Record<string, boolean>,
-    transcriptHistoryStateByThread: {} as Record<string, "idle" | "loading" | "error">,
-    transcriptHistoryErrorByThread: {} as Record<string, string>,
     transcriptReloadGenerationByThread: {} as Record<string, number>,
     draftsByThread: {} as Record<string, string>,
     attachmentsByThread: {} as Record<string, PreparedImage[]>,
@@ -1320,8 +1322,6 @@ export const useAppStore = defineStore("app", {
         }
       }
       this.messagesByThread[thread.id] = [...historical, ...liveMessages];
-      this.transcriptBeforeByThread[thread.id] = snapshot.before || undefined;
-      this.transcriptHasMoreByThread[thread.id] = Boolean(snapshot.hasMore);
       if (Number.isInteger(snapshot.messageCount) && snapshot.messageCount >= 0) thread.messageCount = snapshot.messageCount;
       if (snapshot.model && !this.pendingModelByThread[thread.id] && !thread.started) {
         this.sessionStateByThread[thread.id] = {
@@ -1335,8 +1335,6 @@ export const useAppStore = defineStore("app", {
       const state = this.transcriptStateByThread[threadId];
       if (!thread?.sessionFile || state === "loading" || state === "loaded") return;
       this.transcriptStateByThread[threadId] = "loading";
-      this.transcriptHistoryStateByThread[threadId] = "idle";
-      this.transcriptHistoryErrorByThread[threadId] = "";
       try {
         const snapshot = await catalogService.getSessionSnapshot(thread.sessionFile);
         this.applySessionSnapshot(thread, snapshot);
@@ -1346,46 +1344,8 @@ export const useAppStore = defineStore("app", {
         thread.error = errorMessage(error);
         this.messagesByThread[thread.id] = [];
         this.transcriptEntriesByThread[thread.id] = [];
-        this.transcriptBeforeByThread[thread.id] = undefined;
-        this.transcriptHasMoreByThread[thread.id] = false;
         this.appendSystem(thread.id, `Unable to open session: ${thread.error}`, thread.error);
         this.transcriptStateByThread[threadId] = "error";
-      }
-    },
-    async loadOlderThreadTranscript(threadId: string): Promise<boolean> {
-      const thread = this.threads.find((item) => item.id === threadId);
-      const before = this.transcriptBeforeByThread[threadId];
-      if (!thread?.sessionFile || !before || !this.transcriptHasMoreByThread[threadId] || this.transcriptHistoryStateByThread[threadId] === "loading") {
-        return false;
-      }
-      const sessionFile = thread.sessionFile;
-      this.transcriptHistoryStateByThread[threadId] = "loading";
-      this.transcriptHistoryErrorByThread[threadId] = "";
-      try {
-        const snapshot = await catalogService.getSessionSnapshot(sessionFile, before);
-        if (thread.sessionFile !== sessionFile || this.transcriptBeforeByThread[threadId] !== before) {
-          this.transcriptHistoryStateByThread[threadId] = "idle";
-          return false;
-        }
-        this.applySessionSnapshot(thread, snapshot, true);
-        this.transcriptHistoryStateByThread[threadId] = "idle";
-        return true;
-      } catch (error) {
-        const message = errorMessage(error);
-        if (/cursor.*active branch/i.test(message) && thread.status === "idle") {
-          try {
-            await this.reloadSessionTranscript(thread, false);
-            this.transcriptHistoryStateByThread[threadId] = "idle";
-            this.transcriptHistoryErrorByThread[threadId] = "";
-            return true;
-          } catch (reloadError) {
-            this.transcriptHistoryErrorByThread[threadId] = errorMessage(reloadError);
-          }
-        } else {
-          this.transcriptHistoryErrorByThread[threadId] = message;
-        }
-        this.transcriptHistoryStateByThread[threadId] = "error";
-        return false;
       }
     },
     updateDraft(value: string) {
@@ -1625,6 +1585,10 @@ export const useAppStore = defineStore("app", {
     },
     closeOrphanSessions() {
       this.orphanSessionsOpen = false;
+    },
+    async syncAndRestoreSessions() {
+      await this.syncLocalSessions();
+      this.openOrphanSessions();
     },
     remoteWorkspaceForThread(thread: ThreadSummary): WorkspaceSummary | undefined {
       if (!thread.workspaceId) return undefined;
@@ -1935,11 +1899,15 @@ export const useAppStore = defineStore("app", {
     },
     async compactActiveSession(instructions = "") {
       const thread = this.activeThread;
-      if (!thread?.started) return;
+      if (!thread?.started || this.sessionOperationByThread[thread.id]) return;
+      const operation = tr("topbar.compacting");
+      this.sessionOperationByThread[thread.id] = operation;
       try {
         await agentService.compact({ threadId: thread.id, customInstructions: instructions || undefined });
       } catch (error) {
         this.appendSystem(thread.id, `Compaction failed: ${errorMessage(error)}`, errorMessage(error));
+      } finally {
+        if (this.sessionOperationByThread[thread.id] === operation) this.sessionOperationByThread[thread.id] = undefined;
       }
     },
     async renameActiveSession(name: string) {
@@ -2011,8 +1979,7 @@ export const useAppStore = defineStore("app", {
       const index = this.threads.findIndex((candidate) => candidate.id === threadId);
       if (index >= 0) this.threads.splice(index, 1);
       for (const collection of [
-        this.messagesByThread, this.transcriptEntriesByThread, this.transcriptBeforeByThread, this.transcriptHasMoreByThread,
-        this.transcriptHistoryStateByThread, this.transcriptHistoryErrorByThread, this.transcriptReloadGenerationByThread,
+        this.messagesByThread, this.transcriptEntriesByThread, this.transcriptReloadGenerationByThread,
         this.draftsByThread, this.attachmentsByThread, this.activeAssistantByThread,
         this.waitingForOutputByThread, this.sessionStateByThread,
         this.sessionStatsByThread, this.sessionStatsRefreshGenerationByThread,
@@ -2115,8 +2082,6 @@ export const useAppStore = defineStore("app", {
       const generation = (this.transcriptReloadGenerationByThread[thread.id] ?? 0) + 1;
       this.transcriptReloadGenerationByThread[thread.id] = generation;
       const existingEntries = preserveLoadedHistory ? this.transcriptEntriesByThread[thread.id] ?? [] : [];
-      const existingBefore = this.transcriptBeforeByThread[thread.id];
-      const existingHasMore = this.transcriptHasMoreByThread[thread.id] ?? false;
       const snapshot = await catalogService.getSessionSnapshot(sessionFile);
       if (thread.sessionFile !== sessionFile || this.transcriptReloadGenerationByThread[thread.id] !== generation) return;
       if (thread.status === "running" || thread.status === "starting") return;
@@ -2138,16 +2103,10 @@ export const useAppStore = defineStore("app", {
         } else if (existingPositions.size > 0 && page.some((entry) => transcriptDisplayID(entry))) {
           snapshot.messages = [...existingEntries, ...page];
         }
-        if (snapshot.messages !== page) {
-          snapshot.before = existingBefore;
-          snapshot.hasMore = existingHasMore;
-        }
       }
 
       this.applySessionSnapshot(thread, snapshot);
       this.transcriptStateByThread[thread.id] = "loaded";
-      this.transcriptHistoryStateByThread[thread.id] = "idle";
-      this.transcriptHistoryErrorByThread[thread.id] = "";
       thread.modifiedAt = nowISO();
       this.sessionBranchesByThread[thread.id] = undefined;
       this.sessionBranchesErrorByThread[thread.id] = "";
@@ -2192,10 +2151,6 @@ export const useAppStore = defineStore("app", {
       this.threads.splice(activeIndex < 0 ? this.threads.length : activeIndex + 1, 0, source);
       this.messagesByThread[sourceID] = copyMessages(this.messagesByThread[thread.id] ?? []);
       this.transcriptEntriesByThread[sourceID] = [...(this.transcriptEntriesByThread[thread.id] ?? [])];
-      this.transcriptBeforeByThread[sourceID] = this.transcriptBeforeByThread[thread.id];
-      this.transcriptHasMoreByThread[sourceID] = this.transcriptHasMoreByThread[thread.id] ?? false;
-      this.transcriptHistoryStateByThread[sourceID] = this.transcriptHistoryStateByThread[thread.id] ?? "idle";
-      this.transcriptHistoryErrorByThread[sourceID] = this.transcriptHistoryErrorByThread[thread.id] ?? "";
       this.transcriptReloadGenerationByThread[sourceID] = this.transcriptReloadGenerationByThread[thread.id] ?? 0;
       this.draftsByThread[sourceID] = "";
       this.transcriptStateByThread[sourceID] = this.transcriptStateByThread[thread.id] ?? "idle";
@@ -2838,12 +2793,16 @@ export const useAppStore = defineStore("app", {
           if (payload.reason === "threshold" || payload.reason === "overflow") {
             thread.status = "running";
             this.waitingForOutputByThread[thread.id] = true;
+            this.sessionOperationByThread[thread.id] = tr("topbar.compacting");
           }
           break;
         case "compaction_end":
           if (payload.reason === "threshold" || payload.reason === "overflow") {
             thread.status = "running";
             this.waitingForOutputByThread[thread.id] = true;
+          }
+          if (this.sessionOperationByThread[thread.id] === tr("topbar.compacting")) {
+            this.sessionOperationByThread[thread.id] = undefined;
           }
           if (payload.errorMessage) {
             const message = String(payload.errorMessage);
@@ -2929,6 +2888,7 @@ export const useAppStore = defineStore("app", {
               this.appendSystem(thread.id, tr("extension.invalidBatchRequest"), tr("extension.invalidBatchRequest"));
             }
           } else if (request.method === "notify" && request.message) {
+            if (isInternalRuntimeNotice(request.message)) break;
             this.appendSystem(thread.id, request.message, request.notifyType === "error" ? request.message : undefined);
           } else if (request.method === "setStatus") {
             const key = boundedExtensionText(request.statusKey, 256);
@@ -3160,9 +3120,6 @@ export const useAppStore = defineStore("app", {
         for (const thread of this.threads) {
           this.messagesByThread[thread.id] ??= [];
           this.transcriptEntriesByThread[thread.id] ??= [];
-          this.transcriptHasMoreByThread[thread.id] ??= false;
-          this.transcriptHistoryStateByThread[thread.id] ??= "idle";
-          this.transcriptHistoryErrorByThread[thread.id] ??= "";
           this.draftsByThread[thread.id] = drafts.get(thread.id) ?? "";
           this.transcriptStateByThread[thread.id] ??= "idle";
         }
@@ -3174,6 +3131,71 @@ export const useAppStore = defineStore("app", {
         this.catalogError = errorMessage(error);
       } finally {
         this.catalogLoading = false;
+      }
+    },
+    async syncLocalSessions() {
+      if (this.sessionSyncLoading) return;
+      this.sessionSyncLoading = true;
+      this.sessionSyncError = "";
+      try {
+        const sessions = await catalogService.listSessions() as CatalogSession[];
+        for (const session of sessions) {
+          if (!session.cwd) continue;
+          let workspace = session.anchorWorkspaceId
+            ? this.workspaces.find((item) => item.id === session.anchorWorkspaceId)
+            : this.workspaces.find((item) => pathKey(item.path) === pathKey(session.cwd));
+          if (session.anchorWorkspaceId && !workspace) continue;
+          if (!workspace) {
+            workspace = {
+              id: `discovered-${session.id}`,
+              name: workspaceName(session.cwd),
+              path: session.cwd,
+              trust: "deny",
+              discovered: true,
+              lastOpenedAt: session.modifiedAt,
+            };
+            this.workspaces.push(workspace);
+          }
+          const sessionFileKey = pathKey(session.path);
+          const existing = this.threads.find((thread) => thread.sessionFile && pathKey(thread.sessionFile) === sessionFileKey);
+          if (existing) {
+            existing.title = session.title;
+            existing.modifiedAt = session.modifiedAt;
+            existing.messageCount = session.messageCount;
+            existing.firstMessage = session.firstMessage;
+            continue;
+          }
+          const thread: ThreadSummary = {
+            id: `session-${session.id}`,
+            title: session.title,
+            workspace: workspace.name,
+            workspaceId: workspace.discovered ? undefined : workspace.id,
+            workspacePath: workspace.path,
+            trust: workspace.trust,
+            status: "idle",
+            started: false,
+            generation: 0,
+            sessionId: session.id,
+            sessionFile: session.path,
+            createdAt: session.createdAt,
+            modifiedAt: session.modifiedAt,
+            messageCount: session.messageCount,
+            firstMessage: session.firstMessage,
+            parentSessionFile: session.parentSessionPath,
+            unread: false,
+          };
+          this.threads.push(thread);
+          this.messagesByThread[thread.id] = [];
+          this.transcriptEntriesByThread[thread.id] = [];
+          this.draftsByThread[thread.id] = "";
+          this.transcriptStateByThread[thread.id] = "idle";
+        }
+        if (!this.activeThreadId) this.activeThreadId = this.threads[0]?.id ?? "";
+        this.scheduleDesktopStateSave();
+      } catch (error) {
+        this.sessionSyncError = errorMessage(error);
+      } finally {
+        this.sessionSyncLoading = false;
       }
     },
     scheduleDesktopStateSave() {
