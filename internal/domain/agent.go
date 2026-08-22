@@ -3,6 +3,7 @@ package domain
 type StartSessionRequest struct {
 	ThreadID       string `json:"threadId"`
 	Workspace      string `json:"workspace"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
 	SessionPath    string `json:"sessionPath,omitempty"`
 	SessionName    string `json:"sessionName,omitempty"`
 	Trust          string `json:"trust"`

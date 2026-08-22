@@ -5,18 +5,22 @@ import type { TerminalState } from "../../bindings/pi-desk/internal/domain";
 export interface TerminalEvent {
   threadId: string;
   type: "output" | "error" | "exit";
+  generation?: number;
   sequence: number;
   dataB64?: string;
   exitCode?: number;
   error?: string;
 }
 
+export type TerminalWorkspaceReference = string | { workspaceId: string };
+
 export const terminalService = {
-  start(threadId: string, workspacePath: string, columns: number, rows: number): Promise<TerminalState> {
-    return TerminalService.Start({ threadId, workspacePath, columns, rows });
+  start(threadId: string, workspace: TerminalWorkspaceReference, columns: number, rows: number): Promise<TerminalState> {
+    const reference = typeof workspace === "string" ? { workspacePath: workspace } : workspace;
+    return TerminalService.Start({ threadId, ...reference, columns, rows });
   },
-  snapshot(threadId: string): Promise<TerminalState> {
-    return TerminalService.Snapshot({ threadId });
+  snapshot(threadId: string, workspaceId?: string): Promise<TerminalState> {
+    return TerminalService.Snapshot({ threadId, workspaceId });
   },
   write(threadId: string, data: string): Promise<void> {
     return TerminalService.Write({ threadId, data });

@@ -88,7 +88,7 @@ describe("ModelManager", () => {
   "xhigh": "xhigh"
 }`);
 
-    await wrapper.get('input[placeholder="openai"]').setValue("renamed-provider");
+    await wrapper.get('[data-testid="provider-id"]').setValue("renamed-provider");
     await wrapper.get('input[placeholder="GPT 5"]').setValue("GPT Test Updated");
     await wrapper.findAll('[data-testid="provider-header-value"]')[0].setValue("edited-agent");
     await wrapper.get('[data-testid="thinking-level-map"]').setValue('{"xhigh":"xhigh","max":"max"}');
@@ -215,7 +215,7 @@ describe("ModelManager", () => {
     await wrapper.get(".model-header-add").trigger("click");
     await wrapper.findAll('[data-testid="provider-header-name"]')[1].setValue("X-Channel");
     await wrapper.findAll('[data-testid="provider-header-value"]')[1].setValue("desktop");
-    await wrapper.get('input[placeholder="openai"]').setValue("custom-provider");
+    await wrapper.get('[data-testid="provider-id"]').setValue("custom-provider");
     await wrapper.get('input[placeholder="gpt-5"]').setValue("custom-model");
     await wrapper.get(".primary-button").trigger("submit");
     await flushPromises();
@@ -228,6 +228,20 @@ describe("ModelManager", () => {
         "X-Channel": "desktop",
       },
     }));
+  });
+
+  it("warns that the openai provider ID merges Pi's built-in and cached catalog", async () => {
+    mocks.get.mockResolvedValue({ path: configured.path, providers: [] });
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const providerID = wrapper.get('[data-testid="provider-id"]');
+    expect(providerID.attributes("placeholder")).toBe("openai-custom");
+    await providerID.setValue("openai");
+    expect(wrapper.get(".model-field > small.is-warning").text()).toContain("merged with Pi's built-in and cached OpenAI catalog");
+
+    await providerID.setValue("openai-direct");
+    expect(wrapper.find(".model-field > small.is-warning").exists()).toBe(false);
   });
 
   it("disables testing until a new model has the required identifiers", async () => {

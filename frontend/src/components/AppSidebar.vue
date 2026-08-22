@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import {
+  Archive,
   FileSearch,
   Folder,
   FolderOpen,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
   Search,
   Settings,
@@ -13,6 +15,7 @@ import {
   Square,
   SquarePen,
   Trash2,
+  Unplug,
   X,
 } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
@@ -27,11 +30,17 @@ const taskMenu = ref({ open: false, threadId: "", x: 0, y: 0 });
 const workspaceMenu = ref({ open: false, workspaceID: "", x: 0, y: 0 });
 const workspaceActionID = ref("");
 const workspaceActionError = ref("");
+const workspaceRenameOpen = ref(false);
+const workspaceRenameID = ref("");
+const workspaceRenameValue = ref("");
+const workspaceRenameInput = ref<HTMLInputElement>();
 const taskMenuThread = computed(() => appStore.threads.find((thread) => thread.id === taskMenu.value.threadId));
 const taskMenuWorkspace = computed(() => {
   const thread = taskMenuThread.value;
   if (!thread) return undefined;
-  return appStore.workspaces.find((workspace) => comparablePath(workspace.path) === comparablePath(thread.workspacePath));
+  return appStore.workspaces.find((workspace) => thread.workspaceId
+    ? workspace.id === thread.workspaceId
+    : comparablePath(workspace.path) === comparablePath(thread.workspacePath));
 });
 const workspaceMenuItem = computed(() => appStore.workspaces.find((workspace) => workspace.id === workspaceMenu.value.workspaceID));
 
@@ -41,7 +50,9 @@ function comparablePath(path: string): string {
 }
 
 const workspaceGroups = computed(() => appStore.workspaces.map((workspace) => {
-  const threads = appStore.filteredThreads.filter((thread) => comparablePath(thread.workspacePath) === comparablePath(workspace.path));
+  const threads = appStore.filteredThreads.filter((thread) => workspace.kind === "ssh"
+    ? thread.workspaceId === workspace.id
+    : comparablePath(thread.workspacePath) === comparablePath(workspace.path));
   return { workspace, threads, threadCount: threads.length };
 }).filter((group) => !appStore.searchQuery.trim() || group.threadCount > 0));
 
@@ -51,20 +62,6 @@ function isWorkspaceCollapsed(workspaceID: string): boolean {
 
 function toggleWorkspace(workspaceID: string) {
   collapsedWorkspaceIDs.value[workspaceID] = !isWorkspaceCollapsed(workspaceID);
-}
-
-async function createThreadInWorkspace(workspaceID: string, path: string, trust: "approve" | "deny") {
-  if (workspaceActionID.value) return;
-  workspaceActionID.value = workspaceID;
-  workspaceActionError.value = "";
-  try {
-    await appStore.createThread(path, trust);
-    if (appStore.activeThreadId) appStore.startThreadInBackground(appStore.activeThreadId);
-  } catch (error) {
-    workspaceActionError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    workspaceActionID.value = "";
-  }
 }
 
 async function toggleSearch() {
@@ -82,6 +79,40 @@ function closeTaskMenu() {
 
 function closeWorkspaceMenu() {
   workspaceMenu.value.open = false;
+}
+
+async function openWorkspaceRename() {
+  const workspace = workspaceMenuItem.value;
+  closeWorkspaceMenu();
+  if (!workspace || workspaceActionID.value) return;
+  workspaceRenameID.value = workspace.id;
+  workspaceRenameValue.value = workspace.name;
+  workspaceRenameOpen.value = true;
+  await nextTick();
+  workspaceRenameInput.value?.focus();
+  workspaceRenameInput.value?.select();
+}
+
+function closeWorkspaceRename() {
+  if (workspaceActionID.value) return;
+  workspaceRenameOpen.value = false;
+  workspaceRenameID.value = "";
+}
+
+async function submitWorkspaceRename() {
+  const name = workspaceRenameValue.value.trim();
+  if (!workspaceRenameID.value || !name || workspaceActionID.value) return;
+  workspaceActionID.value = workspaceRenameID.value;
+  workspaceActionError.value = "";
+  try {
+    await appStore.renameWorkspace(workspaceRenameID.value, name);
+    workspaceRenameOpen.value = false;
+    workspaceRenameID.value = "";
+  } catch (error) {
+    workspaceActionError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    workspaceActionID.value = "";
+  }
 }
 
 function openTaskMenu(event: MouseEvent, threadId: string) {
@@ -118,14 +149,19 @@ function openWorkspaceMenu(event: MouseEvent, workspaceID: string) {
   };
 }
 
-async function runWorkspaceAction(action: "open" | "remove") {
+async function runWorkspaceAction(action: "newTask" | "open" | "disconnect" | "remove") {
   const workspace = workspaceMenuItem.value;
   closeWorkspaceMenu();
   if (!workspace || workspaceActionID.value) return;
   workspaceActionID.value = workspace.id;
   workspaceActionError.value = "";
   try {
-    if (action === "open") await appStore.openWorkspace(workspace.id);
+    if (action === "newTask") {
+      if (workspace.kind === "ssh") await appStore.createRemoteTaskInWorkspace(workspace.id);
+      else await appStore.createThread(workspace.path, workspace.trust);
+      if (appStore.activeThreadId) appStore.startThreadInBackground(appStore.activeThreadId);
+    } else if (action === "open") await appStore.openWorkspace(workspace.id);
+    else if (action === "disconnect") await appStore.disconnectRemoteWorkspace(workspace.id);
     else await appStore.removeWorkspace(workspace.id);
   } catch (error) {
     workspaceActionError.value = error instanceof Error ? error.message : String(error);
@@ -138,6 +174,7 @@ function onDocumentKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     closeTaskMenu();
     closeWorkspaceMenu();
+    closeWorkspaceRename();
   }
 }
 
@@ -208,11 +245,12 @@ onBeforeUnmount(() => {
             type="button"
             class="workspace-row"
             :aria-expanded="!isWorkspaceCollapsed(group.workspace.id)"
-            :title="group.workspace.path"
+            :title="group.workspace.kind === 'ssh' ? group.workspace.remoteRoot : group.workspace.path"
             @click="toggleWorkspace(group.workspace.id)"
           >
             <Folder :size="16" />
-            <span>{{ group.workspace.name }}</span>
+            <span class="workspace-name">{{ group.workspace.name }}</span>
+            <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag">{{ tr("sidebar.remoteDirectory") }}</span>
           </button>
           <button
             class="icon-button workspace-menu-button"
@@ -253,6 +291,9 @@ onBeforeUnmount(() => {
 
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-footer">
       <RuntimeBadge />
+      <button class="icon-button" type="button" :title="tr('sidebar.orphanSessions')" @click="appStore.openOrphanSessions()">
+        <Archive :size="17" />
+      </button>
       <button class="icon-button" type="button" :title="tr('sidebar.settings')" @click="appStore.openSettings()">
         <Settings :size="17" />
       </button>
@@ -266,7 +307,7 @@ onBeforeUnmount(() => {
       @click.stop="closeTaskMenu"
       @contextmenu.prevent
     >
-      <button type="button" role="menuitem" @click="void openTaskWorkspace()"><FolderOpen :size="14" />{{ tr("sidebar.openWorkspace") }}</button>
+      <button v-if="taskMenuWorkspace?.kind !== 'ssh'" type="button" role="menuitem" @click="void openTaskWorkspace()"><FolderOpen :size="14" />{{ tr("sidebar.openWorkspace") }}</button>
       <button v-if="taskMenuThread.started" type="button" role="menuitem" @click="void appStore.stopThread(taskMenuThread.id)"><Square :size="14" />{{ tr("sidebar.closePi") }}</button>
       <button v-else type="button" role="menuitem" @click="appStore.startThreadInBackground(taskMenuThread.id)"><Play :size="14" />{{ tr("sidebar.startPi") }}</button>
       <button type="button" role="menuitem" class="danger" @click="appStore.requestDeleteThread(taskMenuThread.id)"><Trash2 :size="14" />{{ tr("sidebar.delete") }}</button>
@@ -280,13 +321,27 @@ onBeforeUnmount(() => {
       @click.stop="closeWorkspaceMenu"
       @contextmenu.prevent
     >
-      <button
-        type="button"
-        role="menuitem"
-        @click="void createThreadInWorkspace(workspaceMenuItem.id, workspaceMenuItem.path, workspaceMenuItem.trust)"
-      ><SquarePen :size="15" />{{ tr("sidebar.newTask") }}</button>
-      <button type="button" role="menuitem" @click="void runWorkspaceAction('open')"><FolderOpen :size="15" />{{ tr("sidebar.openWorkspace") }}</button>
+      <button type="button" role="menuitem" @click="void runWorkspaceAction('newTask')"><SquarePen :size="15" />{{ tr("sidebar.newTask") }}</button>
+      <button v-if="workspaceMenuItem.kind !== 'ssh'" type="button" role="menuitem" @click="void runWorkspaceAction('open')"><FolderOpen :size="15" />{{ tr("sidebar.openWorkspace") }}</button>
+      <button v-else-if="appStore.remoteWorkspaceHasConnection(workspaceMenuItem.id)" type="button" role="menuitem" @click="void runWorkspaceAction('disconnect')"><Unplug :size="15" />{{ tr("sidebar.disconnectRemote") }}</button>
+      <button type="button" role="menuitem" @click="void openWorkspaceRename()"><Pencil :size="15" />{{ tr("sidebar.renameWorkspace") }}</button>
       <button type="button" role="menuitem" class="danger" @click="void runWorkspaceAction('remove')"><Trash2 :size="15" />{{ tr("sidebar.removeWorkspace") }}</button>
     </div>
+    <form
+      v-if="!appStore.sidebarCollapsed && workspaceRenameOpen"
+      class="thread-context-menu workspace-rename-menu"
+      role="dialog"
+      :style="{ left: `${workspaceMenu.x}px`, top: `${workspaceMenu.y}px` }"
+      :aria-label="tr('sidebar.renameWorkspace')"
+      @click.stop
+      @submit.prevent="void submitWorkspaceRename()"
+    >
+      <label for="workspace-rename-input">{{ tr("sidebar.workspaceName") }}</label>
+      <input id="workspace-rename-input" ref="workspaceRenameInput" v-model="workspaceRenameValue" maxlength="200" />
+      <div class="workspace-rename-actions">
+        <button type="submit" :disabled="!workspaceRenameValue.trim() || Boolean(workspaceActionID)">{{ tr("common.confirm") }}</button>
+        <button type="button" :disabled="Boolean(workspaceActionID)" @click="closeWorkspaceRename">{{ tr("common.cancel") }}</button>
+      </div>
+    </form>
   </aside>
 </template>

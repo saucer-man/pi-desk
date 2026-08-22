@@ -21,6 +21,41 @@ func (resolver fakeWorkspaceResolver) ResolvePath(string) (workspace.Record, err
 	return resolver.record, resolver.err
 }
 
+func (resolver fakeWorkspaceResolver) ResolveID(string) (workspace.Record, error) {
+	return resolver.record, resolver.err
+}
+
+type fakeRemoteRepositoryBackend struct {
+	workspaceID string
+	generation  uint64
+	validation  error
+	snapshot    repository.Snapshot
+	started     chan struct{}
+	release     chan struct{}
+}
+
+func (backend *fakeRemoteRepositoryBackend) WorkspaceID() string    { return backend.workspaceID }
+func (backend *fakeRemoteRepositoryBackend) Generation() uint64     { return backend.generation }
+func (backend *fakeRemoteRepositoryBackend) ValidateBinding() error { return backend.validation }
+func (backend *fakeRemoteRepositoryBackend) Snapshot(context.Context) (repository.Snapshot, error) {
+	if backend.started != nil {
+		close(backend.started)
+	}
+	if backend.release != nil {
+		<-backend.release
+	}
+	return backend.snapshot, nil
+}
+func (*fakeRemoteRepositoryBackend) Diff(context.Context, string) (repository.FileDiff, error) {
+	return repository.FileDiff{}, nil
+}
+func (*fakeRemoteRepositoryBackend) Branches(context.Context) (repository.BranchInventory, error) {
+	return repository.BranchInventory{}, nil
+}
+func (*fakeRemoteRepositoryBackend) Preview(context.Context, string) (repository.FilePreview, error) {
+	return repository.FilePreview{}, nil
+}
+
 type fakeRepositoryScanner struct {
 	root     string
 	snapshot repository.Snapshot
@@ -95,6 +130,83 @@ func TestRepositoryServiceMapsBranchesForTrustedWorkspace(t *testing.T) {
 	}
 	if len(result.Branches) != 1 || !result.Branches[0].Current || result.Branches[0].WorktreePath != "C:\\repo" {
 		t.Fatalf("unexpected branches: %#v", result)
+	}
+}
+
+func TestRepositoryServiceFailsClosedForUnboundRemoteWorkspace(t *testing.T) {
+	record := workspace.Record{
+		ID: "workspace-0123456789abcdef0123456789abcdef", Trust: "approve",
+		Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{TargetID: "target-0123456789abcdef0123456789abcdef"}},
+	}
+	service := newRepositoryService(fakeWorkspaceResolver{record: record}, &fakeRepositoryScanner{})
+	request := domain.RepositoryRequest{WorkspaceID: record.ID}
+	if _, err := service.Snapshot(request); err == nil {
+		t.Fatal("unbound remote Repository was accepted")
+	}
+	if err := service.OpenFile(domain.RepositoryFileRequest{WorkspaceID: record.ID, Path: "README.md"}); err == nil {
+		t.Fatal("remote file was routed to the local opener")
+	}
+	if _, err := service.Snapshot(domain.RepositoryRequest{WorkspaceID: record.ID, WorkspacePath: "anchor"}); err == nil {
+		t.Fatal("ambiguous remote workspace identity was accepted")
+	}
+}
+
+func TestRepositoryServiceDropsStaleGenerationCompletion(t *testing.T) {
+	record := workspace.Record{
+		ID: "workspace-0123456789abcdef0123456789abcdef", Trust: "approve",
+		Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{TargetID: "target-0123456789abcdef0123456789abcdef"}},
+	}
+	service := newRepositoryService(fakeWorkspaceResolver{record: record}, &fakeRepositoryScanner{})
+	oldBackend := &fakeRemoteRepositoryBackend{
+		workspaceID: record.ID, generation: 1,
+		snapshot: repository.Snapshot{Files: []repository.File{{Path: "old", Name: "old"}}},
+		started:  make(chan struct{}), release: make(chan struct{}),
+	}
+	if err := service.bindRemoteWorkspace(record.ID, oldBackend); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Snapshot(domain.RepositoryRequest{WorkspaceID: record.ID})
+		result <- err
+	}()
+	<-oldBackend.started
+	service.unbindRemoteWorkspace(record.ID, 1)
+	newBackend := &fakeRemoteRepositoryBackend{
+		workspaceID: record.ID, generation: 2,
+		snapshot: repository.Snapshot{Files: []repository.File{{Path: "new", Name: "new"}}},
+	}
+	if err := service.bindRemoteWorkspace(record.ID, newBackend); err != nil {
+		t.Fatal(err)
+	}
+	service.unbindRemoteWorkspace(record.ID, 1)
+	close(oldBackend.release)
+	if err := <-result; !errors.Is(err, ErrRemoteRepositoryStale) {
+		t.Fatalf("stale completion error = %v", err)
+	}
+	snapshot, err := service.Snapshot(domain.RepositoryRequest{WorkspaceID: record.ID})
+	if err != nil || len(snapshot.Files) != 1 || snapshot.Files[0].Path != "new" {
+		t.Fatalf("new snapshot=%#v err=%v", snapshot, err)
+	}
+	if err := service.bindRemoteWorkspace(record.ID, oldBackend); !errors.Is(err, ErrRemoteRepositoryStale) {
+		t.Fatalf("old generation rebound: %v", err)
+	}
+}
+
+func TestRepositoryServiceRejectsInvalidRemoteBinding(t *testing.T) {
+	record := workspace.Record{
+		ID: "workspace-0123456789abcdef0123456789abcdef", Trust: "approve",
+		Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{TargetID: "target-0123456789abcdef0123456789abcdef"}},
+	}
+	service := newRepositoryService(fakeWorkspaceResolver{record: record}, &fakeRepositoryScanner{})
+	backend := &fakeRemoteRepositoryBackend{workspaceID: record.ID, generation: 1, validation: errors.New("revoked")}
+	if err := service.bindRemoteWorkspace(record.ID, backend); !errors.Is(err, ErrRemoteRepositoryStale) {
+		t.Fatalf("invalid binding error = %v", err)
+	}
+	backend.validation = nil
+	backend.workspaceID = "workspace-ffffffffffffffffffffffffffffffff"
+	if err := service.bindRemoteWorkspace(record.ID, backend); err == nil {
+		t.Fatal("cross-workspace backend was accepted")
 	}
 }
 

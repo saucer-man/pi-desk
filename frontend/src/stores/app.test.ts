@@ -57,7 +57,10 @@ const mocks = vi.hoisted(() => ({
   openRepositoryFileWith: vi.fn(),
   previewRepositoryFile: vi.fn(),
   revealRepositoryFile: vi.fn(),
+  resumeRemoteWorkspace: vi.fn(),
+  disconnectRemoteTarget: vi.fn(),
   eventHandler: undefined as ((event: unknown) => void) | undefined,
+  terminalEventHandler: undefined as ((event: unknown) => void) | undefined,
 }));
 
 vi.mock("../services/desktop", () => ({
@@ -136,6 +139,15 @@ vi.mock("../services/repository", () => ({
     revealFile: mocks.revealRepositoryFile,
   },
 }));
+vi.mock("../services/remoteWorkspaces", () => ({
+  remoteWorkspaceService: { resume: mocks.resumeRemoteWorkspace, disconnect: mocks.disconnectRemoteTarget },
+}));
+vi.mock("../services/terminal", () => ({
+  onTerminalEvent: (handler: (event: unknown) => void) => {
+    mocks.terminalEventHandler = handler;
+    return vi.fn();
+  },
+}));
 import { useAppStore } from "./app";
 
 describe("app store", () => {
@@ -143,6 +155,7 @@ describe("app store", () => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
     mocks.eventHandler = undefined;
+    mocks.terminalEventHandler = undefined;
     mocks.getBootstrapState.mockResolvedValue({
       productName: "Pi Desk",
       appVersion: "0.1.0",
@@ -172,6 +185,7 @@ describe("app store", () => {
     mocks.getSessionStats.mockResolvedValue({ totalMessages: 0 });
     mocks.getState.mockResolvedValue({ sessionId: "session-1", isStreaming: false });
     mocks.respondExtensionUI.mockResolvedValue(undefined);
+    mocks.stopSession.mockResolvedValue(undefined);
     mocks.setSteeringMode.mockResolvedValue(undefined);
     mocks.setFollowUpMode.mockResolvedValue(undefined);
     mocks.setAutoCompaction.mockResolvedValue(undefined);
@@ -195,6 +209,11 @@ describe("app store", () => {
     mocks.getDesktopState.mockResolvedValue({ threads: [] });
     mocks.saveDesktopState.mockResolvedValue(undefined);
     mocks.getMessages.mockResolvedValue({ messages: [] });
+    mocks.resumeRemoteWorkspace.mockResolvedValue({
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve",
+    });
+    mocks.disconnectRemoteTarget.mockResolvedValue(undefined);
     mocks.snapshotRepository.mockResolvedValue({
       files: [{ path: "main.go", name: "main.go" }],
       git: { isRepository: true, branch: "main", files: [] },
@@ -467,6 +486,410 @@ describe("app store", () => {
     expect(store.piProcessOrder).toEqual(store.threads.slice(1).map((thread) => thread.id));
   });
 
+  it("creates a remote thread with WorkspaceID and no local path", async () => {
+    const store = useAppStore();
+    await store.createRemoteThread({
+      id: "workspace-remote", name: "remote repo", path: "", kind: "ssh",
+      targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve",
+      addedAt: "2026-08-10T08:00:00Z", lastOpenedAt: "2026-08-10T08:00:00Z",
+    });
+
+    expect(store.activeThread).toMatchObject({
+      workspaceId: "workspace-remote", workspacePath: "", workspace: "remote repo", trust: "approve",
+    });
+    expect(store.workspaces[0]).toMatchObject({ id: "workspace-remote", kind: "ssh", remoteRoot: "/srv/repo" });
+  });
+
+  it("selecting a persisted remote thread stays offline until explicit reconnect", async () => {
+    const store = useAppStore();
+    store.catalogReady = true;
+    store.workspaces = [{
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve",
+    }];
+    store.threads = [{
+      id: "thread-remote", title: "Remote task", workspace: "remote", workspaceId: "workspace-remote",
+      workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0,
+      sessionFile: "C:\\sessions\\remote.jsonl",
+    }];
+    store.transcriptStateByThread["thread-remote"] = "loaded";
+
+    store.selectThread("thread-remote");
+    await Promise.resolve();
+    expect(mocks.resumeRemoteWorkspace).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+
+    store.startThreadInBackground("thread-remote");
+    expect(store.remoteReconnectOpen).toBe(true);
+    expect(mocks.startSession).not.toHaveBeenCalled();
+    await store.confirmRemoteReconnect();
+
+    expect(mocks.resumeRemoteWorkspace).toHaveBeenCalledWith("workspace-remote", true);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-remote", workspace: "", workspaceId: "workspace-remote",
+      sessionPath: "C:\\sessions\\remote.jsonl",
+    })));
+  });
+
+  it("resumes the requested remote thread even if active selection changes", async () => {
+    const store = useAppStore();
+    store.workspaces = [{
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve",
+    }];
+    store.threads = [
+      { id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 },
+      { id: "thread-local", title: "Local", workspace: "local", workspacePath: "D:\\work\\local", trust: "approve", status: "idle", started: false, generation: 0 },
+    ];
+    store.messagesByThread["thread-remote"] = [];
+    store.messagesByThread["thread-local"] = [];
+    store.draftsByThread["thread-remote"] = "Resume the original task";
+    store.activeThreadId = "thread-remote";
+    expect(store.requestRemoteReconnect(store.threads[0], "prompt")).toBe(true);
+    store.activeThreadId = "thread-local";
+
+    await store.confirmRemoteReconnect();
+
+    expect(store.activeThreadId).toBe("thread-remote");
+    expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-remote", message: "Resume the original task",
+    }));
+  });
+
+  it("rejects a reconnect completion after the target is concurrently disconnected", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.draftsByThread["thread-remote"] = "Do not resume";
+    expect(store.requestRemoteReconnect(store.threads[0], "prompt")).toBe(true);
+    let finishResume!: () => void;
+    mocks.resumeRemoteWorkspace.mockReturnValueOnce(new Promise<void>((resolve) => { finishResume = resolve; }));
+
+    const reconnect = store.confirmRemoteReconnect();
+    await vi.waitFor(() => expect(mocks.resumeRemoteWorkspace).toHaveBeenCalled());
+    const disconnect = store.disconnectRemoteTarget("target-remote");
+    await disconnect;
+    finishResume();
+    await reconnect;
+
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+    expect(store.remoteReconnectOpen).toBe(false);
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+    expect(store.draftsByThread["thread-remote"]).toBe("Do not resume");
+  });
+
+  it("keeps a remote prompt draft until reconnect succeeds and then resumes it", async () => {
+    const store = useAppStore();
+    store.workspaces = [{
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve",
+    }];
+    store.threads = [{
+      id: "thread-remote", title: "Remote task", workspace: "remote", workspaceId: "workspace-remote",
+      workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0,
+    }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.transcriptStateByThread["thread-remote"] = "loaded";
+    store.draftsByThread["thread-remote"] = "Continue remote work";
+
+    await store.sendActivePrompt();
+    expect(store.remoteReconnectIntent).toBe("prompt");
+    expect(store.activeDraft).toBe("Continue remote work");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+
+    await store.confirmRemoteReconnect();
+    await vi.waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "Continue remote work" })));
+    expect(store.activeDraft).toBe("");
+  });
+
+  it("stops a stale started Pi session before reconnecting", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    expect(store.requestRemoteReconnect(store.threads[0], "start")).toBe(true);
+
+    await store.confirmRemoteReconnect();
+
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-remote");
+    expect(mocks.stopSession.mock.invocationCallOrder[0]).toBeLessThan(mocks.resumeRemoteWorkspace.mock.invocationCallOrder[0]);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalled());
+  });
+
+  it("does not dispatch to a started remote Pi after readiness is revoked", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.draftsByThread["thread-remote"] = "Do not dispatch yet";
+    store.remoteReadyByWorkspace["workspace-remote"] = false;
+
+    await store.sendActivePrompt();
+
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.remoteReconnectOpen).toBe(true);
+    expect(store.activeDraft).toBe("Do not dispatch yet");
+  });
+
+  it("reopens reconnect when resumed prompt startup immediately loses its generation", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.transcriptStateByThread["thread-remote"] = "loaded";
+    store.draftsByThread["thread-remote"] = "Retry after reconnect";
+    expect(store.requestRemoteReconnect(store.threads[0], "prompt")).toBe(true);
+    mocks.startSession.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: generation expired"));
+
+    await store.confirmRemoteReconnect();
+
+    expect(store.remoteReconnectBusy).toBe(false);
+    expect(store.remoteReconnectOpen).toBe(true);
+    expect(store.remoteReconnectThreadId).toBe("thread-remote");
+    expect(store.activeDraft).toBe("Retry after reconnect");
+  });
+
+  it("restores a remote prompt when startup loses its generation", async () => {
+    const store = useAppStore();
+    store.workspaces = [{
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve",
+    }];
+    store.threads = [{
+      id: "thread-remote", title: "Remote task", workspace: "remote", workspaceId: "workspace-remote",
+      workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0,
+    }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.transcriptStateByThread["thread-remote"] = "loaded";
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    store.draftsByThread["thread-remote"] = "Keep this prompt";
+    mocks.startSession.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: generation expired: remote adapter coverage handshake"));
+
+    await store.sendActivePrompt();
+
+    expect(store.activeDraft).toBe("Keep this prompt");
+    expect(store.messagesByThread["thread-remote"]).toHaveLength(0);
+    expect(store.remoteReconnectOpen).toBe(true);
+    expect(store.remoteReconnectIntent).toBe("prompt");
+  });
+
+  it("disconnects every task on a shared remote target and keeps workspace history", async () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "remote A", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/a", trust: "approve" },
+      { id: "workspace-b", name: "remote B", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/b", trust: "approve" },
+    ];
+    store.threads = [
+      { id: "thread-a", title: "Task A", workspace: "remote A", workspaceId: "workspace-a", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 },
+      { id: "thread-b", title: "Task B", workspace: "remote B", workspaceId: "workspace-b", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 },
+    ];
+    store.piProcessOrder = ["thread-a", "thread-b"];
+    store.remoteReadyByWorkspace = { "workspace-a": true, "workspace-b": true };
+    mocks.stopSession.mockImplementation(async () => {
+      expect(store.remoteReadyByWorkspace).toEqual({ "workspace-a": false, "workspace-b": false });
+    });
+
+    await store.disconnectRemoteWorkspace("workspace-a");
+
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-a");
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-b");
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledWith("target-remote");
+    expect(store.workspaces).toHaveLength(2);
+    expect(store.remoteReadyByWorkspace).toEqual({ "workspace-a": false, "workspace-b": false });
+  });
+
+  it("waits for an in-flight Pi start before disconnecting its remote target", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    let finish!: (value: { threadId: string; generation: number; stateJson: string }) => void;
+    mocks.startSession.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const start = store.ensureSession(store.threads[0]);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalled());
+
+    const disconnect = store.disconnectRemoteWorkspace("workspace-remote");
+    await Promise.resolve();
+    expect(mocks.disconnectRemoteTarget).not.toHaveBeenCalled();
+    finish({ threadId: "thread-remote", generation: 1, stateJson: JSON.stringify({ sessionId: "session-1", isStreaming: false }) });
+    await start;
+    await disconnect;
+
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-remote");
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledWith("target-remote");
+    expect(store.threads[0].started).toBe(false);
+  });
+
+  it("marks a remote target stale when Pi stop reports revoked capability", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.messagesByThread["thread-remote"] = [];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    mocks.stopSession.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: remote task was revoked because Pi did not stop cleanly"));
+
+    expect(await store.stopThread("thread-remote")).toBe(false);
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+    expect(store.repositoryStaleByWorkspace["workspace-remote"]).toBe(true);
+  });
+
+  it("revokes a remote target even when its local Pi stop reports failure", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.messagesByThread["thread-remote"] = [];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    mocks.stopSession.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: task revoked"));
+
+    await expect(store.disconnectRemoteWorkspace("workspace-remote")).rejects.toThrow("Unable to close Remote");
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledWith("target-remote");
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+  });
+
+  it("does not remove a remote workspace while its local Pi may still be running", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.messagesByThread["thread-remote"] = [];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    mocks.stopSession.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: task revoked"));
+
+    await expect(store.removeWorkspace("workspace-remote")).rejects.toThrow("Unable to close Remote");
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledWith("target-remote");
+    expect(mocks.removeWorkspace).not.toHaveBeenCalled();
+    expect(store.workspaces).toHaveLength(1);
+  });
+
+  it("drops an in-flight remote Repository refresh when the target disconnects", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.activeThreadId = "thread-remote";
+    let finish!: (value: { files: never[]; git: { isRepository: boolean; files: never[] } }) => void;
+    mocks.snapshotRepository.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const refresh = store.refreshActiveRepository();
+    await vi.waitFor(() => expect(mocks.snapshotRepository).toHaveBeenCalled());
+    await store.disconnectRemoteWorkspace("workspace-remote");
+    finish({ files: [], git: { isRepository: true, files: [] } });
+    await refresh;
+
+    expect(store.activeRepository).toBeUndefined();
+    expect(store.activeRepositoryLoading).toBe(false);
+    expect(store.activeRepositoryStale).toBe(true);
+  });
+
+  it("revokes sibling tasks when removing one workspace from a shared remote target", async () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "remote A", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/a", trust: "approve" },
+      { id: "workspace-b", name: "remote B", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/b", trust: "approve" },
+    ];
+    store.threads = [
+      { id: "thread-a", title: "Task A", workspace: "remote A", workspaceId: "workspace-a", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 },
+      { id: "thread-b", title: "Task B", workspace: "remote B", workspaceId: "workspace-b", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 },
+    ];
+    store.piProcessOrder = ["thread-a", "thread-b"];
+    store.remoteReadyByWorkspace = { "workspace-a": true, "workspace-b": true };
+    mocks.stopSession.mockResolvedValue(undefined);
+
+    await store.removeWorkspace("workspace-a");
+
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-a");
+    expect(mocks.stopSession).toHaveBeenCalledWith("thread-b");
+    expect(mocks.removeWorkspace).toHaveBeenCalledWith("workspace-a");
+    expect(store.workspaces.map((item) => item.id)).toEqual(["workspace-b"]);
+    expect(store.threads.map((item) => item.id)).toEqual(["thread-b"]);
+    expect(store.threads[0].started).toBe(false);
+    expect(store.remoteReadyByWorkspace["workspace-b"]).toBe(false);
+    expect(store.repositoryStaleByWorkspace["workspace-b"]).toBe(true);
+  });
+
+  it("keeps a shared remote target disconnected when workspace removal fails", async () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "remote A", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/a", trust: "approve" },
+      { id: "workspace-b", name: "remote B", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/b", trust: "approve" },
+    ];
+    store.threads = [{ id: "thread-b", title: "Task B", workspace: "remote B", workspaceId: "workspace-b", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.remoteReadyByWorkspace = { "workspace-a": true, "workspace-b": true };
+    mocks.removeWorkspace.mockRejectedValueOnce(new Error("state write failed after revoke"));
+
+    await expect(store.removeWorkspace("workspace-a")).rejects.toThrow("state write failed after revoke");
+
+    expect(store.workspaces).toHaveLength(2);
+    expect(store.remoteReadyByWorkspace).toEqual({ "workspace-a": false, "workspace-b": false });
+    expect(store.repositoryStaleByWorkspace["workspace-b"]).toBe(true);
+  });
+
+  it("only clears remote readiness for errors that require reconnect", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{
+      id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote",
+      workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1,
+    }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    mocks.bash.mockRejectedValueOnce(new Error("REMOTE_OUTPUT_LIMIT: output is too large"));
+    store.draftsByThread["thread-remote"] = "! first";
+
+    await store.sendActiveBash();
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(true);
+    expect(store.activeRepositoryStale).toBe(true);
+
+    mocks.bash.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: transport closed"));
+    store.draftsByThread["thread-remote"] = "! second";
+    await store.sendActiveBash();
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+    expect(store.draftsByThread["thread-remote"]).toBe("! second");
+    expect(store.remoteReconnectOpen).toBe(true);
+    expect(store.remoteReconnectIntent).toBe("bash");
+  });
+
+  it("does not reconnect for business errors that merely mention a remote code", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 1 }];
+    store.activeThreadId = "thread-remote";
+    store.messagesByThread["thread-remote"] = [];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    store.draftsByThread["thread-remote"] = "! echo REMOTE_DISCONNECTED";
+    mocks.bash.mockRejectedValueOnce(new Error("Command failed while printing REMOTE_DISCONNECTED"));
+
+    await store.sendActiveBash();
+
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(true);
+    expect(store.remoteReconnectOpen).toBe(false);
+  });
+
+  it("keeps the first reconnect request while its dialog is open", () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "A", path: "", kind: "ssh", targetId: "target-a", remoteRoot: "/a", trust: "approve" },
+      { id: "workspace-b", name: "B", path: "", kind: "ssh", targetId: "target-b", remoteRoot: "/b", trust: "approve" },
+    ];
+    const first = { id: "thread-a", title: "A", workspace: "A", workspaceId: "workspace-a", workspacePath: "", trust: "approve" as const, status: "idle" as const, started: false, generation: 0 };
+    const second = { id: "thread-b", title: "B", workspace: "B", workspaceId: "workspace-b", workspacePath: "", trust: "approve" as const, status: "idle" as const, started: false, generation: 0 };
+    store.threads = [first, second];
+
+    expect(store.requestRemoteReconnect(first, "prompt")).toBe(true);
+    expect(store.requestRemoteReconnect(second, "bash")).toBe(true);
+
+    expect(store.remoteReconnectThreadId).toBe("thread-a");
+    expect(store.remoteReconnectIntent).toBe("prompt");
+  });
+
   it("creates a trusted thread and starts Pi lazily on first prompt", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");
@@ -685,6 +1108,32 @@ describe("app store", () => {
     expect(store.activeSessionState?.model).toEqual(selected);
   });
 
+  it("preserves a newer pending model when Pi exits during startup model application", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    const oldModel = { provider: "custom", id: "old", name: "Old" };
+    const newModel = { provider: "custom", id: "new", name: "New" };
+    await store.chooseModel(oldModel);
+    mocks.startSession.mockResolvedValueOnce({
+      threadId: thread.id, generation: 5,
+      stateJson: JSON.stringify({ sessionId: "session-model", model: { provider: "openai", id: "default" } }),
+    });
+    let finishSetModel!: () => void;
+    mocks.setModel.mockReturnValueOnce(new Promise<void>((resolve) => { finishSetModel = resolve; }));
+
+    const starting = store.ensureSession(thread);
+    await vi.waitFor(() => expect(mocks.setModel).toHaveBeenCalledWith({ threadId: thread.id, provider: "custom", modelId: "old" }));
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 5, type: "runtime_exit", error: "Pi exited while setting model" } });
+    await store.chooseModel(newModel);
+    finishSetModel();
+
+    await expect(starting).rejects.toThrow("Pi exited while setting model");
+    expect(store.pendingModelByThread[thread.id]).toEqual(newModel);
+    expect(store.sessionStateByThread[thread.id]?.model).toEqual(newModel);
+    expect(thread.started).toBe(false);
+  });
+
   it("refreshes available thinking levels after switching the active model", async () => {
     const store = useAppStore();
     const grok = { provider: "grok", id: "grok-4.6", name: "Grok 4.6", reasoning: true };
@@ -740,6 +1189,24 @@ describe("app store", () => {
     expect(store.activeThinkingLevels).toEqual(["low", "medium", "high"]);
   });
 
+  it("does not leak models from an older runtime into a started task", async () => {
+    const store = useAppStore();
+    const oldOpenAIModel = { provider: "openai", id: "gpt-5.4", name: "GPT 5.4" };
+    const configured = { provider: "openai-direct", id: "gpt-5.6-sol", name: "GPT 5.6 Sol" };
+    store.$patch({
+      threads: [{
+        id: "thread-runtime-models", title: "Models", workspace: "repo", workspacePath: "D:\\work\\repo", trust: "approve",
+        status: "running", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-runtime-models",
+      modelsByThread: { "thread-runtime-models": [configured] },
+      configuredModels: [configured],
+      knownRuntimeModels: [oldOpenAIModel],
+    });
+
+    expect(store.activeModels).toEqual([configured]);
+  });
+
   it("loads configured models without exposing model-management credentials", async () => {
     mocks.getConfiguredModels.mockResolvedValueOnce([
       { provider: "custom", id: "deepseek-v3", name: "DeepSeek V3", contextWindow: 128000, reasoning: true },
@@ -752,6 +1219,16 @@ describe("app store", () => {
     expect(store.configuredModels).toEqual([
       { provider: "custom", id: "deepseek-v3", name: "DeepSeek V3", contextWindow: 128000, reasoning: true },
     ]);
+  });
+
+  it("fails a required configured-model refresh without clearing the previous catalog", async () => {
+    const store = useAppStore();
+    store.configuredModels = [{ provider: "custom", id: "stable", name: "Stable" }];
+    mocks.getConfiguredModels.mockRejectedValueOnce(new Error("model catalog unavailable"));
+
+    await expect(store.refreshConfiguredModels(true)).rejects.toThrow("model catalog unavailable");
+    expect(store.configuredModels).toEqual([{ provider: "custom", id: "stable", name: "Stable" }]);
+    expect(store.modelCatalogError).toBe("model catalog unavailable");
   });
 
   it("refreshes configured models before creating a new thread", async () => {
@@ -794,6 +1271,24 @@ describe("app store", () => {
     expect(thread.status).toBe("idle");
     expect(store.activeMessages[0]).toMatchObject({ role: "assistant", text: "Hello", streaming: false });
     expect(store.activeMessages[0].tools[0]).toMatchObject({ id: "tool-1", name: "read", output: "done", status: "complete" });
+  });
+
+  it("refreshes the settled background workspace instead of the active Repository", async () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" },
+      { id: "workspace-local", name: "local", path: "D:\\local", trust: "approve" },
+    ];
+    store.threads = [
+      { id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "running", started: true, generation: 4 },
+      { id: "thread-local", title: "Local", workspace: "local", workspaceId: "workspace-local", workspacePath: "D:\\local", trust: "approve", status: "idle", started: false, generation: 0 },
+    ];
+    store.messagesByThread["thread-remote"] = [];
+    store.activeThreadId = "thread-local";
+
+    store.handlePiEvent({ threadId: "thread-remote", event: { generation: 4, type: "agent_settled", payload: {} } });
+    await vi.waitFor(() => expect(mocks.snapshotRepository).toHaveBeenCalledWith({ workspaceId: "workspace-remote" }));
+    expect(mocks.snapshotRepository).not.toHaveBeenCalledWith({ workspaceId: "workspace-local" });
   });
 
   it("marks only settled background output unread and clears it when selected", async () => {
@@ -967,6 +1462,8 @@ describe("app store", () => {
 
   it("normalizes current Pi command source metadata", async () => {
     const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const threadID = store.activeThreadId;
     mocks.getCommands.mockResolvedValueOnce({ commands: [
       {
         name: "skill:context-mode",
@@ -991,9 +1488,9 @@ describe("app store", () => {
       },
     ] });
 
-    await store.refreshCommands("thread-commands");
+    await store.refreshCommands(threadID);
 
-    expect(store.commandsByThread["thread-commands"]).toEqual([
+    expect(store.commandsByThread[threadID]).toEqual([
       expect.objectContaining({ name: "skill:context-mode", location: "user", path: "C:\\packages\\context-mode\\SKILL.md" }),
       expect.objectContaining({ name: "temporary-command", location: "path", path: "C:\\temp\\temporary-command.ts" }),
     ]);
@@ -1651,6 +2148,134 @@ describe("app store", () => {
     expect(mocks.respondExtensionUI).toHaveBeenCalledWith({ threadId: thread.id, requestId: "bad-batch", cancelled: true });
   });
 
+  it("does not start a queued remote Pi after its target becomes stale", async () => {
+    const store = useAppStore();
+    const blocker = { id: "thread-blocker-stale", title: "Blocker", workspace: "local", workspacePath: "D:\\local", trust: "deny" as const, status: "idle" as const, started: false, generation: 0 };
+    const remote = { id: "thread-remote-stale", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve" as const, status: "idle" as const, started: false, generation: 0 };
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [blocker, remote];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    let finishBlocker!: (value: { threadId: string; generation: number; stateJson: string }) => void;
+    mocks.startSession.mockReturnValueOnce(new Promise((resolve) => { finishBlocker = resolve; }));
+
+    const blocking = store.ensureSession(blocker);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledTimes(1));
+    const queued = store.ensureSession(remote);
+    store.markRemoteTargetStale("target-remote");
+    finishBlocker({ threadId: blocker.id, generation: 1, stateJson: JSON.stringify({ sessionId: "session-blocker" }) });
+    await blocking;
+
+    await expect(queued).rejects.toThrow("must be reconnected");
+    expect(mocks.startSession).toHaveBeenCalledTimes(1);
+    expect(remote.started).toBe(false);
+  });
+
+  it("isolates generations while a replacement Pi start waits in the queue", async () => {
+    const store = useAppStore();
+    const blocker = { id: "thread-blocker", title: "Blocker", workspace: "local", workspacePath: "D:\\local", trust: "deny" as const, status: "idle" as const, started: false, generation: 0 };
+    const thread = { id: "thread-restart", title: "Restart", workspace: "repo", workspacePath: "D:\\repo", trust: "deny" as const, status: "idle" as const, started: false, generation: 2 };
+    store.threads = [blocker, thread];
+    let finishBlocker!: (value: { threadId: string; generation: number; stateJson: string }) => void;
+    let finishRestart!: (value: { threadId: string; generation: number; stateJson: string }) => void;
+    mocks.startSession
+      .mockReturnValueOnce(new Promise((resolve) => { finishBlocker = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { finishRestart = resolve; }));
+
+    const blocking = store.ensureSession(blocker);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledTimes(1));
+    const starting = store.ensureSession(thread);
+    await Promise.resolve();
+    expect(mocks.startSession).toHaveBeenCalledTimes(1);
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 2, type: "runtime_exit", error: "old Pi exited" } });
+    expect(thread.status).toBe("starting");
+
+    finishBlocker({ threadId: blocker.id, generation: 1, stateJson: JSON.stringify({ sessionId: "session-1", isStreaming: false }) });
+    await blocking;
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledTimes(2));
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 3, type: "extension_ui_request", payload: { id: "status", method: "setStatus", statusKey: "remote", statusText: "Ready" } },
+    });
+    expect(store.extensionStatusesByThread[thread.id]).toEqual({ remote: "Ready" });
+
+    finishRestart({ threadId: thread.id, generation: 3, stateJson: JSON.stringify({ sessionId: "session-3", isStreaming: false }) });
+    await starting;
+    expect(thread.generation).toBe(3);
+  });
+
+  it("drops Pi RPC refreshes that complete after their generation exits", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    Object.assign(thread, { started: true, generation: 8 });
+    store.sessionStateByThread[thread.id] = { sessionId: "current", model: { provider: "openai", id: "current" } };
+    store.modelsByThread[thread.id] = [{ provider: "openai", id: "current" }];
+    store.thinkingLevelsByThread[thread.id] = ["medium"];
+    store.commandsByThread[thread.id] = [{ name: "current", source: "extension" }];
+    store.sessionStatsByThread[thread.id] = { totalMessages: 1 };
+    let resolveState!: (value: Record<string, unknown>) => void;
+    let resolveModels!: (value: { models: Array<{ provider: string; id: string }> }) => void;
+    let resolveThinking!: (value: { levels: string[] }) => void;
+    let resolveCommands!: (value: { commands: Array<{ name: string; source: "extension" }> }) => void;
+    let resolveStats!: (value: { totalMessages: number }) => void;
+    mocks.getState.mockReturnValueOnce(new Promise((resolve) => { resolveState = resolve; }));
+    mocks.getAvailableModels.mockReturnValueOnce(new Promise((resolve) => { resolveModels = resolve; }));
+    mocks.getAvailableThinkingLevels.mockReturnValueOnce(new Promise((resolve) => { resolveThinking = resolve; }));
+    mocks.getCommands.mockReturnValueOnce(new Promise((resolve) => { resolveCommands = resolve; }));
+    mocks.getSessionStats.mockReturnValueOnce(new Promise((resolve) => { resolveStats = resolve; }));
+
+    const refreshes = [store.refreshState(thread.id), store.refreshModels(thread.id), store.refreshThinkingLevels(thread.id), store.refreshCommands(thread.id), store.refreshStats(thread.id)];
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "runtime_exit", error: "closed" } });
+    resolveState({ sessionId: "stale", model: { provider: "openai", id: "stale" } });
+    resolveModels({ models: [{ provider: "openai", id: "stale" }] });
+    resolveThinking({ levels: ["stale"] });
+    resolveCommands({ commands: [{ name: "stale", source: "extension" }] });
+    resolveStats({ totalMessages: 99 });
+    await Promise.all(refreshes);
+
+    expect(store.sessionStateByThread[thread.id]?.sessionId).toBe("current");
+    expect(store.modelsByThread[thread.id]?.[0].id).toBe("current");
+    expect(store.thinkingLevelsByThread[thread.id]).toEqual(["medium"]);
+    expect(store.commandsByThread[thread.id]?.[0].name).toBe("current");
+    expect(store.sessionStatsByThread[thread.id]).toEqual({ totalMessages: 1 });
+  });
+
+  it("keeps a thread restartable when Pi returns malformed startup state", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    mocks.startSession.mockResolvedValueOnce({ threadId: thread.id, generation: 5, stateJson: "{" });
+
+    await expect(store.ensureSession(thread)).rejects.toThrow();
+
+    expect(thread.started).toBe(false);
+    expect(thread.generation).toBe(0);
+    expect(mocks.stopSession).toHaveBeenCalledWith(thread.id);
+    mocks.startSession.mockResolvedValueOnce({
+      threadId: thread.id, generation: 6, stateJson: JSON.stringify({ sessionId: "session-6", isStreaming: false }),
+    });
+    await store.ensureSession(thread);
+    expect(thread).toMatchObject({ started: true, generation: 6, status: "idle" });
+  });
+
+  it("does not revive a Pi generation that exits before its start response", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    let finish!: (value: { threadId: string; generation: number; stateJson: string }) => void;
+    mocks.startSession.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const starting = store.ensureSession(thread);
+    await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalled());
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 4, type: "runtime_exit", error: "Pi exited during startup" } });
+    finish({ threadId: thread.id, generation: 4, stateJson: JSON.stringify({ sessionId: "session-4", isStreaming: false }) });
+
+    await expect(starting).rejects.toThrow("Pi exited during startup");
+    expect(thread).toMatchObject({ started: false, status: "attention", generation: 4 });
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 4, type: "agent_start", payload: {} } });
+    expect(thread).toMatchObject({ started: false, status: "attention", generation: 4 });
+  });
+
   it("projects and clears fire-and-forget extension UI state per thread", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "deny");
@@ -1739,7 +2364,7 @@ describe("app store", () => {
 
     await store.refreshActiveRepository();
 
-    expect(mocks.snapshotRepository).toHaveBeenCalledWith("D:\\work\\repo");
+    expect(mocks.snapshotRepository).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
     expect(store.activeRepository?.git.branch).toBe("main");
 
     mocks.addWorkspace.mockResolvedValueOnce({ id: "workspace-2", name: "private", path: "D:\\work\\private", trust: "deny" });
@@ -1749,12 +2374,202 @@ describe("app store", () => {
     expect(store.activeRepositoryError).toBe("Workspace access is disabled");
   });
 
+  it("keeps context-change invalidation scoped to one workspace", () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "A", path: "", kind: "ssh", targetId: "target-shared", remoteRoot: "/a", trust: "approve" },
+      { id: "workspace-b", name: "B", path: "", kind: "ssh", targetId: "target-shared", remoteRoot: "/b", trust: "approve" },
+    ];
+    store.threads = [{ id: "thread-a", title: "A", workspace: "A", workspaceId: "workspace-a", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.remoteReadyByWorkspace = { "workspace-a": true, "workspace-b": true };
+
+    store.remoteFailureMessage("thread-a", new Error("REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE"));
+
+    expect(store.remoteReadyByWorkspace).toEqual({ "workspace-a": false, "workspace-b": true });
+    expect(store.repositoryStaleByWorkspace["workspace-a"]).toBe(true);
+    expect(store.repositoryStaleByWorkspace["workspace-b"]).toBeUndefined();
+  });
+
+  it("revokes every sibling workspace projection after a target failure", () => {
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-a", name: "A", path: "", kind: "ssh", targetId: "target-shared", remoteRoot: "/a", trust: "approve" },
+      { id: "workspace-b", name: "B", path: "", kind: "ssh", targetId: "target-shared", remoteRoot: "/b", trust: "approve" },
+    ];
+    store.threads = [{ id: "thread-a", title: "A", workspace: "A", workspaceId: "workspace-a", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.remoteReadyByWorkspace = { "workspace-a": true, "workspace-b": true };
+
+    expect(store.remoteFailureMessage("thread-a", new Error("REMOTE_DISCONNECTED: helper exited"))).toContain("REMOTE_DISCONNECTED");
+
+    expect(store.remoteReadyByWorkspace).toEqual({ "workspace-a": false, "workspace-b": false });
+    expect(store.repositoryStaleByWorkspace).toEqual({ "workspace-a": true, "workspace-b": true });
+  });
+
+  it("clears remote readiness when a Repository request reports disconnection", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.activeThreadId = "thread-remote";
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    mocks.snapshotRepository.mockRejectedValueOnce(new Error("REMOTE_DISCONNECTED: read lease revoked"));
+
+    await store.refreshActiveRepository();
+
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+    expect(store.activeRepositoryStale).toBe(true);
+  });
+
+  it("keeps the last Repository snapshot stale when refresh fails", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    await store.refreshActiveRepository();
+    const snapshot = store.activeRepository;
+
+    mocks.snapshotRepository.mockRejectedValueOnce(new Error("remote repository is disconnected or stale"));
+    await store.refreshActiveRepository();
+
+    expect(store.activeRepository).toBe(snapshot);
+    expect(store.activeRepositoryStale).toBe(true);
+    expect(store.activeRepositoryError).toContain("disconnected or stale");
+
+    mocks.snapshotRepository.mockResolvedValueOnce({ files: [], git: { isRepository: false, files: [] } });
+    await store.refreshActiveRepository();
+    expect(store.activeRepositoryStale).toBe(false);
+  });
+
+  it("keeps remote Repository data stale across a mutating tool dispatch and failure", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    Object.assign(store.workspaces[0], { kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", path: "" });
+    thread.workspacePath = "";
+    thread.generation = 12;
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 12, type: "tool_execution_start", payload: { toolCallId: "write-1", toolName: "write", args: { path: "README.md" } } } });
+    expect(store.activeRepositoryStale).toBe(true);
+
+    store.repositoryStaleByWorkspace[thread.workspaceId!] = false;
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 12, type: "tool_execution_end", payload: { toolCallId: "write-1", toolName: "write", isError: true, result: { content: [{ type: "text", text: "REMOTE_OUTCOME_UNKNOWN" }] } } } });
+    expect(store.activeRepositoryStale).toBe(true);
+  });
+
+  it("marks only remote Repository data stale after terminal exit or error", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const local = store.activeThread!;
+    store.handleTerminalEvent({ threadId: local.id, type: "exit", sequence: 1 });
+    expect(store.activeRepositoryStale).toBe(false);
+
+    store.workspaces.push({ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" });
+    store.threads.push({ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 });
+    store.activeThreadId = "thread-remote";
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    store.handleTerminalEvent({ threadId: "thread-remote", type: "exit", sequence: 1, error: "context canceled" });
+    expect(store.activeRepositoryStale).toBe(true);
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(true);
+
+    store.repositoryStaleByWorkspace["workspace-remote"] = false;
+    store.handleTerminalEvent({ threadId: "thread-remote", type: "error", sequence: 2, error: "REMOTE_OUTCOME_UNKNOWN: terminal delivery is unknown" });
+    expect(store.activeRepositoryStale).toBe(true);
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+  });
+
+  it("ignores a Terminal failure from an older remote session incarnation", () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: true, generation: 2 }];
+    store.remoteReadyByWorkspace["workspace-remote"] = true;
+    store.setTerminalGeneration("thread-remote", 2);
+    store.markRemoteRepositoryStale("thread-remote");
+    expect(store.terminalGenerationByThread["thread-remote"]).toBe(2);
+    store.repositoryStaleByWorkspace["workspace-remote"] = false;
+
+    store.handleTerminalEvent({ threadId: "thread-remote", type: "exit", generation: 1, sequence: 5, error: "REMOTE_DISCONNECTED: old terminal" });
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(true);
+    expect(store.repositoryStaleByWorkspace["workspace-remote"]).toBe(false);
+
+    store.handleTerminalEvent({ threadId: "thread-remote", type: "exit", generation: 2, sequence: 1, error: "REMOTE_DISCONNECTED: current terminal" });
+    expect(store.remoteReadyByWorkspace["workspace-remote"]).toBe(false);
+  });
+
+  it("drops an in-flight Repository refresh after trust is revoked", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    let finish!: (value: { files: never[]; git: { isRepository: boolean; files: never[] } }) => void;
+    mocks.snapshotRepository.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const refresh = store.refreshActiveRepository();
+    await vi.waitFor(() => expect(mocks.snapshotRepository).toHaveBeenCalled());
+    store.activeThread!.trust = "deny";
+    await store.refreshActiveRepository();
+    finish({ files: [], git: { isRepository: true, files: [] } });
+    await refresh;
+
+    expect(store.activeRepository).toBeUndefined();
+    expect(store.activeRepositoryStale).toBe(true);
+    expect(store.activeRepositoryError).toBe("Workspace access is disabled");
+  });
+
+  it("drops a late Repository diff after the same file is reopened", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    let finish!: (value: { path: string; staged: string; working: string; content: string; binary: boolean; truncated: boolean }) => void;
+    mocks.diffRepository.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const first = store.openRepositoryDiff("same.go");
+    await vi.waitFor(() => expect(mocks.diffRepository).toHaveBeenCalled());
+    store.closeRepositoryDiff();
+    mocks.diffRepository.mockResolvedValueOnce({ path: "same.go", staged: "", working: "+new", content: "", binary: false, truncated: false });
+    await store.openRepositoryDiff("same.go");
+    finish({ path: "same.go", staged: "", working: "+old", content: "", binary: false, truncated: false });
+    await first;
+
+    expect(store.activeRepositoryDiffPath).toBe("same.go");
+    expect(store.activeRepositoryDiff?.working).toBe("+new");
+  });
+
+  it("drops a late Repository preview after the same file is reopened", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    let finish!: (value: { path: string; absolutePath: string; content: string; size: number; binary: boolean; truncated: boolean }) => void;
+    mocks.previewRepositoryFile.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const first = store.openRepositoryFilePreview("same.go");
+    await vi.waitFor(() => expect(mocks.previewRepositoryFile).toHaveBeenCalled());
+    store.closeRepositoryFilePreview();
+    mocks.previewRepositoryFile.mockResolvedValueOnce({ path: "same.go", absolutePath: "D:\\work\\repo\\same.go", content: "new", size: 3, binary: false, truncated: false });
+    await store.openRepositoryFilePreview("same.go");
+    finish({ path: "same.go", absolutePath: "D:\\work\\repo\\same.go", content: "old", size: 3, binary: false, truncated: false });
+    await first;
+
+    expect(store.activeRepositoryFilePreviewPath).toBe("same.go");
+    expect(store.activeRepositoryFilePreview?.content).toBe("new");
+  });
+
+  it("drops old branch results after remote invalidation and retry", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
+    store.activeThreadId = "thread-remote";
+    let finish!: (value: { branches: Array<{ name: string; fullName: string; remote: boolean; current: boolean; upstream: string; commit: string; worktreePath: string }> }) => void;
+    mocks.listRepositoryBranches.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    const first = store.refreshActiveRepositoryBranches();
+    await vi.waitFor(() => expect(mocks.listRepositoryBranches).toHaveBeenCalled());
+    store.markRemoteTargetStale("target-remote");
+    mocks.listRepositoryBranches.mockResolvedValueOnce({ branches: [{ name: "new", fullName: "refs/heads/new", remote: false, current: true, upstream: "", commit: "new", worktreePath: "" }] });
+    await store.refreshActiveRepositoryBranches();
+    finish({ branches: [{ name: "old", fullName: "refs/heads/old", remote: false, current: true, upstream: "", commit: "old", worktreePath: "" }] });
+    await first;
+
+    expect(store.activeRepositoryBranches?.branches?.[0].name).toBe("new");
+  });
+
   it("loads and opens a changed file through the trusted repository service", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");
 
     await store.openRepositoryDiff("main.go");
-    expect(mocks.diffRepository).toHaveBeenCalledWith("D:\\work\\repo", "main.go");
+    expect(mocks.diffRepository).toHaveBeenCalledWith({ workspaceId: "workspace-1" }, "main.go");
     expect(store.activeRepositoryDiff?.working).toBe("+change");
 
     await store.openActiveRepositoryFile();
@@ -1770,7 +2585,7 @@ describe("app store", () => {
 
     await store.openRepositoryFilePreview("main.go", 19);
 
-    expect(mocks.previewRepositoryFile).toHaveBeenCalledWith("D:\\work\\repo", "main.go");
+    expect(mocks.previewRepositoryFile).toHaveBeenCalledWith({ workspaceId: "workspace-1" }, "main.go");
     expect(store.activeRepositoryFilePreview).toMatchObject({ absolutePath: "D:\\work\\repo\\main.go", content: "package main" });
     expect(store.activeRepositoryFilePreviewLine).toBe(19);
     expect(store.inspectorTab).toBe("context");
@@ -1790,7 +2605,7 @@ describe("app store", () => {
 
     await store.refreshActiveRepositoryBranches();
 
-    expect(mocks.listRepositoryBranches).toHaveBeenCalledWith("D:\\work\\repo");
+    expect(mocks.listRepositoryBranches).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
     expect(store.activeRepositoryBranches?.branches?.[0]).toMatchObject({ name: "main", current: true, worktreePath: "D:\\work\\repo" });
   });
 
@@ -1813,6 +2628,45 @@ describe("app store", () => {
       id: "session-session-1", title: "Runtime audit", trust: "approve", sessionFile: "C:\\sessions\\one.jsonl", messageCount: 3,
     });
     expect(store.activeThreadId).toBe("session-session-1");
+  });
+
+  it("restores an SSH anchor transcript by immutable WorkspaceID", async () => {
+    mocks.listWorkspaces.mockResolvedValueOnce([{
+      id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
+      remoteRoot: "/srv/repo", trust: "approve", addedAt: "2026-08-01T08:00:00Z", lastOpenedAt: "2026-08-10T08:00:00Z",
+    }]);
+    mocks.listSessions.mockResolvedValueOnce([{
+      id: "session-remote", path: "C:\\sessions\\remote.jsonl", cwd: "C:\\anchors\\workspace-remote",
+      anchorWorkspaceId: "workspace-remote", title: "Remote audit", firstMessage: "Inspect remote",
+      createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z", messageCount: 2,
+    }]);
+    const store = useAppStore();
+
+    await store.initialize();
+
+    expect(store.workspaces).toHaveLength(1);
+    expect(store.threads[0]).toMatchObject({
+      id: "session-session-remote", workspaceId: "workspace-remote", workspacePath: "", sessionFile: "C:\\sessions\\remote.jsonl",
+    });
+    expect(mocks.resumeRemoteWorkspace).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it("does not rebind an unknown persisted WorkspaceID by an empty remote path", async () => {
+    mocks.listWorkspaces.mockResolvedValueOnce([
+      { id: "workspace-a", name: "A", path: "", kind: "ssh", targetId: "target-a", remoteRoot: "/a", trust: "approve" },
+      { id: "workspace-b", name: "B", path: "", kind: "ssh", targetId: "target-b", remoteRoot: "/b", trust: "approve" },
+    ]);
+    mocks.getDesktopState.mockResolvedValueOnce({ threads: [{
+      id: "thread-stale", title: "Stale", workspaceId: "workspace-missing", workspacePath: "",
+      trust: "approve", status: "idle",
+    }] });
+    const store = useAppStore();
+
+    await store.initialize();
+
+    expect(store.threads).toEqual([]);
+    expect(store.activeThreadId).toBe("");
   });
 
   it("does not rename a persisted session while starting its Pi process", async () => {

@@ -6,11 +6,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"pi-desk/internal/workspace"
 )
 
 func TestIndexListsAndFiltersPiSessions(t *testing.T) {
@@ -54,6 +57,97 @@ func TestIndexListsAndFiltersPiSessions(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].ID != "session-b" || filtered[0].Title != "Empty session" {
 		t.Fatalf("unexpected filtered summaries: %#v", filtered)
+	}
+}
+
+func TestIndexProjectsSSHAnchorsAndListsOnlyUnknownOrphans(t *testing.T) {
+	root := t.TempDir()
+	sessionsRoot := filepath.Join(root, "sessions")
+	anchorRoot := filepath.Join(root, "remote-anchors")
+	knownID := "workspace-0123456789abcdef0123456789abcdef"
+	orphanID := "workspace-fedcba9876543210fedcba9876543210"
+	knownAnchor, err := workspace.EnsureSSHAnchor(anchorRoot, knownID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanAnchor, err := workspace.EnsureSSHAnchor(anchorRoot, orphanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		directory string
+		filename  string
+		id        string
+		cwd       string
+	}{
+		{directory: "known", filename: "known.jsonl", id: "known-session", cwd: knownAnchor},
+		{directory: "orphan", filename: "orphan.jsonl", id: "orphan-session", cwd: orphanAnchor},
+		{directory: "local", filename: "local.jsonl", id: "local-session", cwd: root},
+	} {
+		directory := filepath.Join(sessionsRoot, item.directory)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeSession(t, filepath.Join(directory, item.filename), `{"type":"session","version":3,"id":"`+item.id+`","timestamp":"2026-08-10T08:00:00Z","cwd":`+quote(item.cwd)+"}\n")
+	}
+	index := NewWithAnchorRoot(sessionsRoot, anchorRoot)
+	summaries, err := index.List(context.Background(), "")
+	if err != nil || len(summaries) != 3 {
+		t.Fatalf("anchor summaries = %#v, %v", summaries, err)
+	}
+	byID := make(map[string]Summary)
+	for _, summary := range summaries {
+		byID[summary.ID] = summary
+	}
+	if !byID["known-session"].SSHAnchor || byID["known-session"].AnchorWorkspaceID != knownID || !byID["orphan-session"].SSHAnchor || byID["local-session"].SSHAnchor {
+		t.Fatalf("unexpected anchor projection: %#v", byID)
+	}
+	orphans, err := index.ListOrphanSSH(context.Background(), map[string]struct{}{knownID: {}})
+	if err != nil || len(orphans) != 1 || orphans[0].ID != "orphan-session" || orphans[0].AnchorWorkspaceID != orphanID {
+		t.Fatalf("orphan projection = %#v, %v", orphans, err)
+	}
+	resolved, err := index.Resolve(byID["orphan-session"].Path)
+	if err != nil || !resolved.SSHAnchor || resolved.AnchorWorkspaceID != orphanID {
+		t.Fatalf("resolved anchor = %#v, %v", resolved, err)
+	}
+}
+
+func TestIndexKeepsLocalSessionOnDifferentWindowsVolume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows volume semantics only")
+	}
+	index := NewWithAnchorRoot(`C:\pi-desk\remote-anchors`, `C:\pi-desk\remote-anchors`)
+	summary := Summary{CWD: `D:\repo`}
+	if !index.projectSSHAnchor(&summary) || summary.SSHAnchor {
+		t.Fatalf("cross-volume local session was filtered: %#v", summary)
+	}
+}
+
+func TestIndexFailsClosedForMalformedConfiguredAnchor(t *testing.T) {
+	root := t.TempDir()
+	sessionsRoot := filepath.Join(root, "sessions")
+	anchorRoot := filepath.Join(root, "remote-anchors")
+	workspaceID := "workspace-0123456789abcdef0123456789abcdef"
+	anchor, err := workspace.EnsureSSHAnchor(anchorRoot, workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(anchor, "unexpected"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(sessionsRoot, "bad")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(directory, "bad.jsonl")
+	writeSession(t, sessionPath, `{"type":"session","version":3,"id":"bad-session","timestamp":"2026-08-10T08:00:00Z","cwd":`+quote(anchor)+"}\n")
+	index := NewWithAnchorRoot(sessionsRoot, anchorRoot)
+	summaries, err := index.List(context.Background(), "")
+	if err != nil || len(summaries) != 0 {
+		t.Fatalf("malformed anchor was listed: %#v, %v", summaries, err)
+	}
+	if _, err := index.Resolve(sessionPath); err == nil {
+		t.Fatal("malformed anchor session resolved")
 	}
 }
 
@@ -269,6 +363,31 @@ func TestIndexValidatesAndResolvesSessionPathsWithinRoot(t *testing.T) {
 	writeSession(t, textPath, "text\n")
 	if _, err := index.ValidatePath(textPath); err == nil {
 		t.Fatal("expected extension validation error")
+	}
+}
+
+func TestCopyValidatedCopiesOnlyStableSessionFile(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "project")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "copy.jsonl")
+	content := `{"type":"session","version":3,"id":"copy","timestamp":"2026-08-10T08:00:00Z","cwd":"/tmp"}` + "\n"
+	writeSession(t, path, content)
+	var copied strings.Builder
+	if err := New(root).CopyValidated(path, &copied); err != nil || copied.String() != content {
+		t.Fatalf("copy = %q, %v", copied.String(), err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	writeSession(t, outside, content)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err == nil {
+		if err := New(root).CopyValidated(path, &copied); err == nil {
+			t.Fatal("symlink session was copied")
+		}
 	}
 }
 

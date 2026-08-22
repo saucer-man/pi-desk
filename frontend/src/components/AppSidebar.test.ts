@@ -73,6 +73,16 @@ describe("AppSidebar", () => {
     expect(wrapper.get(".runtime-badge").text()).toContain("Current Pi version 0.83.0");
   });
 
+  it("opens the orphan SSH transcript viewer from the footer", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
+
+    await wrapper.get('button[title="Orphan SSH sessions"]').trigger("click");
+    expect(store.orphanSessionsOpen).toBe(true);
+  });
+
   it("groups tasks by workspace without counters or visible collapse controls", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -95,6 +105,29 @@ describe("AppSidebar", () => {
     expect(wrapper.text()).toContain("Inspect runtime");
     expect(wrapper.get(".workspace-header .workspace-row").find("small").exists()).toBe(false);
     expect(wrapper.get(".workspace-header .workspace-row").find(".row-tail").exists()).toBe(false);
+  });
+
+  it("groups remote tasks by WorkspaceID instead of their empty local paths", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      catalogLoading: false,
+      workspaces: [
+        { id: "workspace-a", name: "remote A", path: "", kind: "ssh", targetId: "target-a", remoteRoot: "/srv/a", trust: "approve" },
+        { id: "workspace-b", name: "remote B", path: "", kind: "ssh", targetId: "target-b", remoteRoot: "/srv/b", trust: "approve" },
+      ],
+      threads: [
+        { id: "thread-a", title: "Task A", workspace: "remote A", workspaceId: "workspace-a", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 },
+        { id: "thread-b", title: "Task B", workspace: "remote B", workspaceId: "workspace-b", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 },
+      ],
+    });
+    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
+    const groups = wrapper.findAll(".workspace-group");
+
+    expect(groups[0].text()).toContain("Task A");
+    expect(groups[0].text()).not.toContain("Task B");
+    expect(groups[1].text()).toContain("Task B");
   });
 
   it("orders workspace tasks by their latest activity and reacts to new replies", async () => {

@@ -87,9 +87,9 @@ func TestCheckForUpdates(t *testing.T) {
 		_, _ = response.Write([]byte(`{"tag_name":"v0.2.0","html_url":"https://example.com/releases/v0.2.0","body":"Bug fixes"}`))
 	}))
 	defer server.Close()
-	t.Setenv("PI_DESK_UPDATE_URL", server.URL)
-
-	result := NewDesktopService(fakeProber{}, nil).CheckForUpdates()
+	service := NewDesktopService(fakeProber{}, nil)
+	service.updateURL = server.URL
+	result := service.CheckForUpdates()
 	if result.Status != "available" || result.LatestVersion != "v0.2.0" || result.URL == "" {
 		t.Fatalf("unexpected available update: %#v", result)
 	}
@@ -97,21 +97,16 @@ func TestCheckForUpdates(t *testing.T) {
 	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte(`{"version":"0.1.0"}`))
 	})
-	result = NewDesktopService(fakeProber{}, nil).CheckForUpdates()
+	result = service.CheckForUpdates()
 	if result.Status != "current" {
 		t.Fatalf("expected current version, got %#v", result)
 	}
 }
 
-func TestCheckForUpdatesRejectsUnconfiguredAndRemoteHTTP(t *testing.T) {
-	t.Setenv("PI_DESK_UPDATE_URL", "")
-	result := NewDesktopService(fakeProber{}, nil).CheckForUpdates()
-	if result.Status != "unconfigured" {
-		t.Fatalf("expected unconfigured update source, got %#v", result)
-	}
-
-	t.Setenv("PI_DESK_UPDATE_URL", "http://updates.example.com/latest.json")
-	result = NewDesktopService(fakeProber{}, nil).CheckForUpdates()
+func TestCheckForUpdatesRejectsRemoteHTTP(t *testing.T) {
+	service := NewDesktopService(fakeProber{}, nil)
+	service.updateURL = "http://updates.example.com/latest.json"
+	result := service.CheckForUpdates()
 	if result.Status != "error" {
 		t.Fatalf("expected remote HTTP source rejection, got %#v", result)
 	}
@@ -123,8 +118,8 @@ func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
 		_, _ = response.Write([]byte(manifest))
 	}))
 	defer server.Close()
-	t.Setenv("PI_DESK_UPDATE_URL", server.URL)
 	service := NewDesktopService(fakeProber{}, nil)
+	service.updateURL = server.URL
 
 	if result := service.CheckForUpdates(); result.Status != "current" {
 		t.Fatalf("expected an older prerelease to be current, got %#v", result)

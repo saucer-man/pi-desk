@@ -43,6 +43,7 @@ tasks:
     internal: true
     deps:
       - task: common:go:mod:tidy
+      - task: common:build:remote-helper-artifacts
       - task: common:build:frontend
         vars:
           BUILD_FLAGS:
@@ -71,6 +72,7 @@ tasks:
     summary: Builds for Linux using Docker (for non-Linux hosts or when no C compiler available)
     internal: true
     deps:
+      - task: common:build:remote-helper-artifacts
       - task: common:build:frontend
         vars:
           OBFUSCATED:

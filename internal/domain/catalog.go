@@ -9,14 +9,69 @@ type WorkspaceSummary struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Path         string    `json:"path"`
+	Kind         string    `json:"kind"`
+	TargetID     string    `json:"targetId,omitempty"`
+	RemoteRoot   string    `json:"remoteRoot,omitempty"`
 	Trust        string    `json:"trust"`
 	AddedAt      time.Time `json:"addedAt"`
 	LastOpenedAt time.Time `json:"lastOpenedAt"`
 }
 
+type RemoteAliasSummary struct {
+	Name  string `json:"name"`
+	Risky bool   `json:"risky"`
+}
+
+type RemoteTargetSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	HostAlias string `json:"hostAlias"`
+}
+
+type ConnectRemoteTargetRequest struct {
+	TargetID  string `json:"targetId,omitempty"`
+	Name      string `json:"name,omitempty"`
+	HostAlias string `json:"hostAlias,omitempty"`
+}
+
+type PrepareRemoteRootRequest struct {
+	TargetID      string `json:"targetId"`
+	Name          string `json:"name"`
+	RequestedRoot string `json:"requestedRoot"`
+}
+
+type RemoteRootCandidate struct {
+	Token            string `json:"token"`
+	TargetID         string `json:"targetId"`
+	HostAlias        string `json:"hostAlias"`
+	HostKeyAlgorithm string `json:"hostKeyAlgorithm"`
+	HostKeySHA256    string `json:"hostKeySha256"`
+	CanonicalRoot    string `json:"canonicalRoot"`
+	Device           string `json:"device"`
+	Inode            string `json:"inode"`
+}
+
+type DecideRemoteRootRequest struct {
+	Token string `json:"token"`
+	Trust string `json:"trust"`
+}
+
+type RemoteTargetRequest struct {
+	TargetID string `json:"targetId"`
+}
+
+type ResumeRemoteWorkspaceRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+}
+
 type AddWorkspaceRequest struct {
 	Path  string `json:"path"`
 	Trust string `json:"trust"`
+}
+
+type RenameWorkspaceRequest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type WorkspaceRequest struct {
@@ -96,10 +151,28 @@ type DeletedSession struct {
 	RecoveryPath string `json:"recoveryPath"`
 }
 
+type OrphanSessionSummary struct {
+	ID                string    `json:"id"`
+	Path              string    `json:"path"`
+	AnchorWorkspaceID string    `json:"anchorWorkspaceId"`
+	Name              string    `json:"name,omitempty"`
+	Title             string    `json:"title"`
+	FirstMessage      string    `json:"firstMessage"`
+	CreatedAt         time.Time `json:"createdAt"`
+	ModifiedAt        time.Time `json:"modifiedAt"`
+	MessageCount      int       `json:"messageCount"`
+}
+
+type ExportOrphanSessionRequest struct {
+	Path       string `json:"path"`
+	OutputPath string `json:"outputPath"`
+}
+
 type SessionSummary struct {
 	ID                string    `json:"id"`
 	Path              string    `json:"path"`
 	CWD               string    `json:"cwd"`
+	AnchorWorkspaceID string    `json:"anchorWorkspaceId,omitempty"`
 	Name              string    `json:"name,omitempty"`
 	Title             string    `json:"title"`
 	FirstMessage      string    `json:"firstMessage"`
@@ -112,6 +185,7 @@ type SessionSummary struct {
 type DesktopThreadState struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
 	WorkspacePath string `json:"workspacePath"`
 	Trust         string `json:"trust"`
 	Status        string `json:"status"`

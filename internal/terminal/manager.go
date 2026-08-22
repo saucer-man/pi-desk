@@ -32,21 +32,23 @@ type StartConfig struct {
 }
 
 type Snapshot struct {
-	ThreadID string
-	CWD      string
-	Shell    string
-	Running  bool
-	Sequence uint64
-	Output   []byte
+	ThreadID   string
+	CWD        string
+	Shell      string
+	Running    bool
+	Generation uint64
+	Sequence   uint64
+	Output     []byte
 }
 
 type Event struct {
-	ThreadID string
-	Type     string
-	Sequence uint64
-	Data     []byte
-	ExitCode int
-	Error    string
+	ThreadID   string
+	Type       string
+	Generation uint64
+	Sequence   uint64
+	Data       []byte
+	ExitCode   int
+	Error      string
 }
 
 type process interface {
@@ -132,12 +134,13 @@ type session struct {
 }
 
 type Manager struct {
-	ctx      context.Context
-	starter  starter
-	onEvent  func(Event)
-	mu       sync.Mutex
-	sessions map[string]*session
-	closed   bool
+	ctx            context.Context
+	starter        starter
+	onEvent        func(Event)
+	mu             sync.Mutex
+	sessions       map[string]*session
+	nextGeneration uint64
+	closed         bool
 }
 
 func NewManager(ctx context.Context, onEvent func(Event)) *Manager {
@@ -176,8 +179,10 @@ func (manager *Manager) Start(config StartConfig) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	manager.nextGeneration++
+	generation := manager.nextGeneration
 	running := &session{
-		info:    Snapshot{ThreadID: config.ThreadID, CWD: config.CWD, Shell: shell, Running: true},
+		info:    Snapshot{ThreadID: config.ThreadID, CWD: config.CWD, Shell: shell, Running: true, Generation: generation},
 		process: process,
 	}
 	manager.sessions[config.ThreadID] = running
@@ -263,12 +268,12 @@ func (manager *Manager) read(running *session) {
 		if count > 0 {
 			data := append([]byte(nil), buffer[:count]...)
 			sequence := running.appendOutput(data)
-			manager.emit(Event{ThreadID: running.info.ThreadID, Type: "output", Sequence: sequence, Data: data})
+			manager.emit(Event{ThreadID: running.info.ThreadID, Type: "output", Generation: running.info.Generation, Sequence: sequence, Data: data})
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !running.suppressReadError() {
 				sequence := running.nextSequence()
-				manager.emit(Event{ThreadID: running.info.ThreadID, Type: "error", Sequence: sequence, Error: err.Error()})
+				manager.emit(Event{ThreadID: running.info.ThreadID, Type: "error", Generation: running.info.Generation, Sequence: sequence, Error: err.Error()})
 			}
 			return
 		}
@@ -287,7 +292,7 @@ func (manager *Manager) wait(running *session) {
 		delete(manager.sessions, running.info.ThreadID)
 	}
 	manager.mu.Unlock()
-	event := Event{ThreadID: running.info.ThreadID, Type: "exit", Sequence: running.nextSequence(), ExitCode: running.process.ExitCode()}
+	event := Event{ThreadID: running.info.ThreadID, Type: "exit", Generation: running.info.Generation, Sequence: running.nextSequence(), ExitCode: running.process.ExitCode()}
 	if err != nil && !stopping {
 		event.Error = err.Error()
 	}

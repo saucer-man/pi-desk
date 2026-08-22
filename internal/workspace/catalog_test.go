@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,30 @@ func TestCatalogRejectsInvalidInputsAndCorruption(t *testing.T) {
 	}
 	if _, err := NewCatalog(corruptPath).List(); err == nil {
 		t.Fatal("expected corrupt catalog error")
+	}
+}
+
+func TestCatalogRejectsFutureVersionWithoutDowngradingState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	futureVersion := stateVersion + 1
+	future := []byte(fmt.Sprintf(`{"version":%d,"workspaces":[],"desktop":{"threads":[]},"futureField":{"keep":true}}`, futureVersion))
+	if err := os.WriteFile(statePath, future, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := NewCatalog(statePath)
+	wantError := fmt.Sprintf("unsupported workspace catalog version %d", futureVersion)
+	if err := catalog.SaveDesktop(DesktopRecord{}); err == nil || !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("future state write error = %v", err)
+	}
+	if _, err := catalog.List(); err == nil || !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("future state read error = %v", err)
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(future) {
+		t.Fatalf("future state was rewritten:\n%s", data)
 	}
 }
 
@@ -203,8 +228,8 @@ func TestCatalogMigratesVersionTwoAppearancePreference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 5`) {
-		t.Fatalf("expected version five state, got %s", data)
+	if !strings.Contains(string(data), `"version": 6`) {
+		t.Fatalf("expected version six state, got %s", data)
 	}
 	if !strings.Contains(string(data), `"language": "zh-CN"`) {
 		t.Fatalf("expected default Chinese language after save, got %s", data)

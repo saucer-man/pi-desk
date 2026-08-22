@@ -15,6 +15,10 @@ const shell = ref("");
 const error = ref("");
 const activeThread = computed(() => appStore.activeThread);
 const workspacePath = computed(() => activeThread.value?.workspacePath || "");
+const workspaceLabel = computed(() => {
+  const thread = activeThread.value;
+  return thread ? appStore.remoteWorkspaceForThread(thread)?.remoteRoot || thread.workspacePath : "";
+});
 const shellName = computed(() => shell.value.split(/[\\/]/).pop() || "Terminal");
 
 let terminal: Terminal | undefined;
@@ -26,9 +30,12 @@ let disposeResize: { dispose(): void } | undefined;
 let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 let loadToken = 0;
 let lastSequence = 0;
+let terminalGeneration = 0;
 let hydrated = false;
 let pendingEvents: TerminalEvent[] = [];
 let inputChain = Promise.resolve();
+let recoveringGap = false;
+let pendingRemoteStartThreadID = "";
 
 function terminalTheme() {
   const shellElement = document.querySelector<HTMLElement>(".app-shell");
@@ -72,13 +79,29 @@ function writeOutput(value?: string) {
 }
 
 function applyEvent(event: TerminalEvent) {
+  if (event.generation && event.generation !== terminalGeneration) return;
   if (event.sequence <= lastSequence) return;
+  if (event.sequence > lastSequence + 1) {
+    if (!recoveringGap) {
+      recoveringGap = true;
+      const threadId = activeThread.value?.id;
+      if (threadId) {
+        const workspaceId = activeThread.value && appStore.remoteWorkspaceForThread(activeThread.value)?.id;
+        void hydrate(() => terminalService.snapshot(threadId, workspaceId)).finally(() => { recoveringGap = false; });
+      }
+    }
+    return;
+  }
   lastSequence = event.sequence;
   if (event.type === "output") writeOutput(event.dataB64);
-  if (event.type === "error") error.value = event.error || "Terminal stream failed";
+  if (event.type === "error") {
+    error.value = event.error || "Terminal stream failed";
+    appStore.handleTerminalEvent(event);
+  }
   if (event.type === "exit") {
     running.value = false;
     if (event.error) error.value = event.error;
+    appStore.handleTerminalEvent(event);
   }
 }
 
@@ -102,6 +125,8 @@ async function hydrate(load: () => ReturnType<typeof terminalService.snapshot>) 
     if (token !== loadToken) return;
     terminal?.reset();
     lastSequence = state.sequence;
+    terminalGeneration = state.generation || 0;
+    appStore.setTerminalGeneration(state.threadId, state.generation);
     running.value = state.running;
     shell.value = state.shell || "";
     writeOutput(state.outputB64);
@@ -112,7 +137,10 @@ async function hydrate(load: () => ReturnType<typeof terminalService.snapshot>) 
     fitAddon?.fit();
     if (running.value) terminal?.focus();
   } catch (cause) {
-    if (token === loadToken) error.value = cause instanceof Error ? cause.message : String(cause);
+    if (token === loadToken) {
+      const threadID = activeThread.value?.id;
+      error.value = threadID ? appStore.remoteFailureMessage(threadID, cause) : cause instanceof Error ? cause.message : String(cause);
+    }
   } finally {
     if (token === loadToken) {
       loading.value = false;
@@ -128,17 +156,33 @@ async function loadActiveTerminal() {
   shell.value = "";
   error.value = "";
   lastSequence = 0;
+  terminalGeneration = 0;
   if (!thread) {
     loadToken++;
     return;
   }
-  await hydrate(() => terminalService.snapshot(thread.id));
+  const workspaceId = appStore.remoteWorkspaceForThread(thread)?.id;
+  if (workspaceId && (!thread.started || !appStore.remoteReadyByWorkspace[workspaceId])) {
+    loadToken++;
+    loading.value = false;
+    hydrated = true;
+    pendingEvents = [];
+    return;
+  }
+  await hydrate(() => terminalService.snapshot(thread.id, workspaceId));
 }
 
 async function startTerminal() {
   const thread = activeThread.value;
-  if (!thread || !workspacePath.value || loading.value) return;
-  await hydrate(() => terminalService.start(thread.id, workspacePath.value, terminal?.cols || 80, terminal?.rows || 24));
+  if (!thread || (!thread.workspaceId && !workspacePath.value) || loading.value || pendingRemoteStartThreadID === thread.id) return;
+  const remoteWorkspace = appStore.remoteWorkspaceForThread(thread);
+  if (remoteWorkspace && (!thread.started || !appStore.remoteReadyByWorkspace[remoteWorkspace.id])) {
+    pendingRemoteStartThreadID = thread.id;
+    if (!appStore.requestRemoteReconnect(thread, "terminal")) appStore.startThreadInBackground(thread.id);
+    return;
+  }
+  const workspace = remoteWorkspace ? { workspaceId: remoteWorkspace.id } : workspacePath.value;
+  await hydrate(() => terminalService.start(thread.id, workspace, terminal?.cols || 80, terminal?.rows || 24));
 }
 
 async function stopTerminal() {
@@ -149,7 +193,7 @@ async function stopTerminal() {
   try {
     await terminalService.stop(threadID);
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause);
+    error.value = appStore.remoteFailureMessage(threadID, cause);
   } finally {
     loading.value = false;
   }
@@ -161,7 +205,7 @@ function scheduleResize(columns: number, rows: number) {
     const threadID = activeThread.value?.id;
     if (!threadID || !running.value) return;
     void terminalService.resize(threadID, columns, rows).catch((cause) => {
-      error.value = cause instanceof Error ? cause.message : String(cause);
+      error.value = appStore.remoteFailureMessage(threadID, cause);
     });
   }, 80);
 }
@@ -194,8 +238,11 @@ onMounted(() => {
   disposeInput = terminal.onData((data) => {
     const threadID = activeThread.value?.id;
     if (!threadID || !running.value) return;
-    inputChain = inputChain.then(() => terminalService.write(threadID, data)).catch((cause) => {
-      error.value = cause instanceof Error ? cause.message : String(cause);
+    inputChain = inputChain.then(async () => {
+      appStore.markRemoteRepositoryStale(threadID);
+      await terminalService.write(threadID, data);
+    }).catch((cause) => {
+      error.value = appStore.remoteFailureMessage(threadID, cause);
     });
   });
   disposeResize = terminal.onResize(({ cols, rows }) => scheduleResize(cols, rows));
@@ -206,10 +253,33 @@ onMounted(() => {
   void loadActiveTerminal();
 });
 
-watch(() => activeThread.value?.id, () => void loadActiveTerminal());
+watch(() => activeThread.value?.id, (threadID) => {
+  if (pendingRemoteStartThreadID && pendingRemoteStartThreadID !== threadID) pendingRemoteStartThreadID = "";
+  void loadActiveTerminal();
+});
+watch(() => [activeThread.value?.id, activeThread.value?.started, activeThread.value?.status] as const, ([threadID, started, status]) => {
+  if (!threadID || pendingRemoteStartThreadID !== threadID) return;
+  if (started) {
+    void (async () => {
+      await loadActiveTerminal();
+      if (activeThread.value?.id !== threadID || pendingRemoteStartThreadID !== threadID) return;
+      pendingRemoteStartThreadID = "";
+      await startTerminal();
+    })();
+  } else if (status === "attention") {
+    pendingRemoteStartThreadID = "";
+  }
+});
+watch(() => appStore.remoteReconnectOpen, (open) => {
+  if (open || !pendingRemoteStartThreadID) return;
+  const thread = appStore.threads.find((item) => item.id === pendingRemoteStartThreadID);
+  const workspace = thread ? appStore.remoteWorkspaceForThread(thread) : undefined;
+  if (!workspace || !appStore.remoteReadyByWorkspace[workspace.id]) pendingRemoteStartThreadID = "";
+});
 watch(() => appStore.appearance, () => void applyTerminalTheme());
 
 onBeforeUnmount(() => {
+  pendingRemoteStartThreadID = "";
   loadToken++;
   if (resizeTimer) clearTimeout(resizeTimer);
   resizeObserver?.disconnect();
@@ -225,7 +295,7 @@ onBeforeUnmount(() => {
     <div class="terminal-toolbar">
       <span class="terminal-status" :class="{ 'is-running': running }" :title="running ? 'Terminal running' : 'Terminal stopped'" />
       <strong :title="shell">{{ activeThread ? shellName : "Terminal" }}</strong>
-      <span v-if="activeThread" class="terminal-cwd" :title="workspacePath">{{ workspacePath }}</span>
+      <span v-if="activeThread" class="terminal-cwd" :title="workspaceLabel">{{ workspaceLabel }}</span>
       <div class="terminal-actions">
         <LoaderCircle v-if="loading" :size="14" class="is-spinning" />
         <button v-else-if="!running && activeThread" class="icon-button" type="button" title="Start terminal" @click="void startTerminal()"><Play :size="14" /></button>

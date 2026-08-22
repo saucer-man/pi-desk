@@ -96,7 +96,7 @@ func TestManagerRunsOneTerminalPerThreadAndReplaysOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Running || state.Shell != "test-shell" || starter.starts != 1 {
+	if !state.Running || state.Shell != "test-shell" || state.Generation == 0 || starter.starts != 1 {
 		t.Fatalf("unexpected terminal state: %#v", state)
 	}
 	if _, err := manager.Start(StartConfig{ThreadID: "thread-1", CWD: starter.config.CWD, Columns: 100, Rows: 30}); err != nil {
@@ -110,7 +110,7 @@ func TestManagerRunsOneTerminalPerThreadAndReplaysOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := waitForTerminalEvent(t, events, "output")
-	if string(output.Data) != "hello\r\n" || output.Sequence != 1 {
+	if string(output.Data) != "hello\r\n" || output.Generation != state.Generation || output.Sequence != 1 {
 		t.Fatalf("unexpected output event: %#v", output)
 	}
 	state = manager.Snapshot("thread-1")
@@ -134,6 +134,53 @@ func TestManagerRunsOneTerminalPerThreadAndReplaysOutput(t *testing.T) {
 	if state := manager.Snapshot("thread-1"); state.Running {
 		t.Fatal("stopped terminal remained registered")
 	}
+}
+
+func TestManagerRejectsLateExitFromPreviousGeneration(t *testing.T) {
+	first := newFakeProcess()
+	second := newFakeProcess()
+	starter := &sequenceStarter{processes: []*fakeProcess{first, second}}
+	events := make(chan Event, 4)
+	manager := newManager(context.Background(), starter, func(event Event) { events <- event })
+	t.Cleanup(manager.Shutdown)
+
+	initial, err := manager.Start(StartConfig{ThreadID: "thread-1", CWD: t.TempDir(), Columns: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Stop("thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	oldExit := waitForTerminalEvent(t, events, "exit")
+	if oldExit.Generation != initial.Generation {
+		t.Fatalf("old exit generation=%d initial=%d", oldExit.Generation, initial.Generation)
+	}
+
+	current, err := manager.Start(StartConfig{ThreadID: "thread-1", CWD: starter.config.CWD, Columns: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Generation <= initial.Generation {
+		t.Fatalf("generation did not advance: initial=%d current=%d", initial.Generation, current.Generation)
+	}
+	if oldExit.Generation == current.Generation {
+		t.Fatal("previous terminal exit was indistinguishable from current terminal")
+	}
+	_ = manager.Stop("thread-1")
+	_ = waitForTerminalEvent(t, events, "exit")
+}
+
+type sequenceStarter struct {
+	processes []*fakeProcess
+	index     int
+	config    StartConfig
+}
+
+func (starter *sequenceStarter) Start(_ context.Context, config StartConfig) (process, string, error) {
+	starter.config = config
+	process := starter.processes[starter.index]
+	starter.index++
+	return process, "test-shell", nil
 }
 
 func TestManagerBoundsReplayAndValidatesRequests(t *testing.T) {

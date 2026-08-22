@@ -28,6 +28,7 @@ tasks:
     internal: true
     deps:
       - task: common:go:mod:tidy
+      - task: common:build:remote-helper-artifacts
       - task: common:build:frontend
         vars:
           BUILD_FLAGS:
@@ -58,6 +59,7 @@ tasks:
     summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)
     internal: true
     deps:
+      - task: common:build:remote-helper-artifacts
       - task: common:build:frontend
         vars:
           OBFUSCATED:

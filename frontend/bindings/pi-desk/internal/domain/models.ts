@@ -46,11 +46,22 @@ export interface CompactRequest {
     "customInstructions"?: string;
 }
 
+export interface ConnectRemoteTargetRequest {
+    "targetId"?: string;
+    "name"?: string;
+    "hostAlias"?: string;
+}
+
 export interface CreateManagedSkillRequest {
     "scope": SkillScope;
     "workspacePath"?: string;
     "name": string;
     "description": string;
+}
+
+export interface DecideRemoteRootRequest {
+    "token": string;
+    "trust": string;
 }
 
 export interface DeleteModelConfigRequest {
@@ -93,6 +104,7 @@ export interface DesktopState {
 export interface DesktopThreadState {
     "id": string;
     "title": string;
+    "workspaceId"?: string;
     "workspacePath": string;
     "trust": string;
     "status": string;
@@ -117,6 +129,11 @@ export interface DiscoveredModel {
     "maxTokens"?: number;
     "reasoning"?: boolean;
     "imageInput"?: boolean;
+}
+
+export interface ExportOrphanSessionRequest {
+    "path": string;
+    "outputPath": string;
 }
 
 export interface ExportSessionRequest {
@@ -349,6 +366,18 @@ export interface OpenWorkspaceWithRequest {
     "applicationId": string;
 }
 
+export interface OrphanSessionSummary {
+    "id": string;
+    "path": string;
+    "anchorWorkspaceId": string;
+    "name"?: string;
+    "title": string;
+    "firstMessage": string;
+    "createdAt": string;
+    "modifiedAt": string;
+    "messageCount": number;
+}
+
 export interface PiDeskTodoExtensionStatus {
     "path": string;
     "installed": boolean;
@@ -425,6 +454,12 @@ export interface PickWorkspaceRequest {
     "initialPath"?: string;
 }
 
+export interface PrepareRemoteRootRequest {
+    "targetId": string;
+    "name": string;
+    "requestedRoot": string;
+}
+
 export interface PromptRequest {
     "threadId": string;
     "message": string;
@@ -482,6 +517,37 @@ export interface QueueModeRequest {
     "mode": string;
 }
 
+export interface RemoteAliasSummary {
+    "name": string;
+    "risky": boolean;
+}
+
+export interface RemoteRootCandidate {
+    "token": string;
+    "targetId": string;
+    "hostAlias": string;
+    "hostKeyAlgorithm": string;
+    "hostKeySha256": string;
+    "canonicalRoot": string;
+    "device": string;
+    "inode": string;
+}
+
+export interface RemoteTargetRequest {
+    "targetId": string;
+}
+
+export interface RemoteTargetSummary {
+    "id": string;
+    "name": string;
+    "hostAlias": string;
+}
+
+export interface RenameWorkspaceRequest {
+    "id": string;
+    "name": string;
+}
+
 export interface RepositoryFile {
     "path": string;
     "name": string;
@@ -506,16 +572,19 @@ export interface RepositoryFilePreview {
 }
 
 export interface RepositoryFileRequest {
-    "workspacePath": string;
+    "workspaceId"?: string;
+    "workspacePath"?: string;
     "path": string;
 }
 
 export interface RepositoryRequest {
-    "workspacePath": string;
+    "workspaceId"?: string;
+    "workspacePath"?: string;
 }
 
 export interface RepositorySaveFileRequest {
-    "workspacePath": string;
+    "workspaceId"?: string;
+    "workspacePath"?: string;
     "path": string;
     "outputPath": string;
 }
@@ -524,6 +593,10 @@ export interface RepositorySnapshot {
     "files": RepositoryFile[] | null;
     "truncated"?: boolean;
     "git": GitStatus;
+}
+
+export interface ResumeRemoteWorkspaceRequest {
+    "workspaceId": string;
 }
 
 export enum RuntimeState {
@@ -612,6 +685,7 @@ export interface SessionSummary {
     "id": string;
     "path": string;
     "cwd": string;
+    "anchorWorkspaceId"?: string;
     "name"?: string;
     "title": string;
     "firstMessage": string;
@@ -654,6 +728,7 @@ export enum SkillScope {
 export interface StartSessionRequest {
     "threadId": string;
     "workspace": string;
+    "workspaceId"?: string;
     "sessionPath"?: string;
     "sessionName"?: string;
     "trust": string;
@@ -667,13 +742,15 @@ export interface StartSessionRequest {
 
 export interface StartTerminalRequest {
     "threadId": string;
-    "workspacePath": string;
+    "workspaceId"?: string;
+    "workspacePath"?: string;
     "columns": number;
     "rows": number;
 }
 
 export interface TerminalRequest {
     "threadId": string;
+    "workspaceId"?: string;
 }
 
 export interface TerminalResizeRequest {
@@ -687,6 +764,7 @@ export interface TerminalState {
     "cwd"?: string;
     "shell"?: string;
     "running": boolean;
+    "generation"?: number;
     "sequence": number;
     "outputB64"?: string;
 }
@@ -795,6 +873,9 @@ export interface WorkspaceSummary {
     "id": string;
     "name": string;
     "path": string;
+    "kind": string;
+    "targetId"?: string;
+    "remoteRoot"?: string;
     "trust": string;
     "addedAt": string;
     "lastOpenedAt": string;

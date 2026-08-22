@@ -148,6 +148,25 @@ jobs:
           go test ./...
           go vet ./...
 
+      - name: Race remote protocol and helper
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./internal/remoteprotocol ./internal/remotehelper
+
+      - name: Fuzz remote trust boundaries
+        run: |
+          go test ./internal/remoteprotocol -run '^$' -fuzz '^FuzzReaderNeverPanics$' -fuzztime=10s
+          go test ./internal/remotehelper -run '^$' -fuzz '^FuzzValidateRelativePath$' -fuzztime=10s
+          go test ./internal/remotessh -run '^$' -fuzz '^FuzzParseHostKeyEvidence$' -fuzztime=10s
+
+      - name: Build remote helper target matrix
+        run: >-
+          go run ./cmd/pi-desk-remote-artifacts
+          -output "${RUNNER_TEMP}/remote-helper-artifacts"
+          -build-identity pi-desk-v0.1.0-p1
+          -pi-min 0.84.2
+          -pi-max 0.85.0
+
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
 

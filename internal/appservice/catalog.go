@@ -46,11 +46,12 @@ type CatalogService struct {
 	trash                 sessionTrasher
 	openWorkspace         workspaceOpener
 	workspaceApplications workspaceApplicationManager
+	remoteCatalog         *RemoteCatalogCoordinator
 }
 
-func NewCatalogService(catalog *workspace.Catalog, index *sessionindex.Index) *CatalogService {
+func NewCatalogService(catalog *workspace.Catalog, index *sessionindex.Index, remoteCatalog *RemoteCatalogCoordinator) *CatalogService {
 	return &CatalogService{
-		catalog: catalog, index: index, picker: pickWorkspaceFolder, trash: trashSessionFile,
+		catalog: catalog, index: index, picker: pickWorkspaceFolder, trash: trashSessionFile, remoteCatalog: remoteCatalog,
 		workspaceApplications: workspaceapp.NewManager(),
 		openWorkspace: func(path string) error {
 			app := application.Get()
@@ -93,8 +94,20 @@ func (service *CatalogService) AddWorkspace(request domain.AddWorkspaceRequest) 
 	return workspaceSummary(record), nil
 }
 
+func (service *CatalogService) RenameWorkspace(request domain.RenameWorkspaceRequest) (domain.WorkspaceSummary, error) {
+	record, err := service.catalog.Rename(request.ID, request.Name)
+	if err != nil {
+		return domain.WorkspaceSummary{}, err
+	}
+	return workspaceSummary(record), nil
+}
+
 func (service *CatalogService) RemoveWorkspace(request domain.WorkspaceRequest) error {
-	return service.catalog.Remove(strings.TrimSpace(request.ID))
+	id := strings.TrimSpace(request.ID)
+	if service.remoteCatalog != nil {
+		return service.remoteCatalog.RemoveWorkspace(context.Background(), id)
+	}
+	return service.catalog.Remove(id)
 }
 
 func (service *CatalogService) OpenWorkspace(request domain.WorkspaceRequest) error {
@@ -147,6 +160,9 @@ func (service *CatalogService) approvedWorkspace(id string) (workspace.Record, e
 		if record.Trust != "approve" {
 			return workspace.Record{}, errors.New("workspace must be trusted before opening it")
 		}
+		if record.Location.Kind != workspace.KindLocal {
+			return workspace.Record{}, errors.New("remote workspaces cannot use local filesystem applications")
+		}
 		canonicalPath, err := workspace.CanonicalDirectory(record.Path)
 		if err != nil {
 			return workspace.Record{}, err
@@ -167,12 +183,28 @@ func (service *CatalogService) ListSessions(request domain.ListSessionsRequest) 
 	if err != nil {
 		return nil, err
 	}
+	records, err := service.catalog.List()
+	if err != nil {
+		return nil, err
+	}
+	knownWorkspaceIDs := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if record.Location.Kind == workspace.KindSSH {
+			knownWorkspaceIDs[record.ID] = struct{}{}
+		}
+	}
 	result := make([]domain.SessionSummary, 0, len(summaries))
 	for _, summary := range summaries {
+		if summary.SSHAnchor {
+			if _, known := knownWorkspaceIDs[summary.AnchorWorkspaceID]; !known {
+				continue
+			}
+		}
 		result = append(result, domain.SessionSummary{
 			ID:                summary.ID,
 			Path:              summary.Path,
 			CWD:               summary.CWD,
+			AnchorWorkspaceID: summary.AnchorWorkspaceID,
 			Name:              summary.Name,
 			Title:             summary.Title,
 			FirstMessage:      summary.FirstMessage,
@@ -186,6 +218,9 @@ func (service *CatalogService) ListSessions(request domain.ListSessionsRequest) 
 }
 
 func (service *CatalogService) GetSessionSnapshot(request domain.SessionSnapshotRequest) (domain.SessionSnapshot, error) {
+	if _, err := service.resolveRegularSession(request.Path); err != nil {
+		return domain.SessionSnapshot{}, err
+	}
 	snapshot, err := service.index.SnapshotPage(strings.TrimSpace(request.Path), strings.TrimSpace(request.Before))
 	if err != nil {
 		return domain.SessionSnapshot{}, err
@@ -225,7 +260,7 @@ func (service *CatalogService) GetSessionUsage(request domain.ListSessionsReques
 }
 
 func (service *CatalogService) DeleteSession(request domain.DeleteSessionRequest) (domain.DeletedSession, error) {
-	summary, err := service.index.Resolve(strings.TrimSpace(request.Path))
+	summary, err := service.resolveRegularSession(request.Path)
 	if err != nil {
 		return domain.DeletedSession{}, err
 	}
@@ -243,6 +278,21 @@ func (service *CatalogService) DeleteSession(request domain.DeleteSessionRequest
 		return domain.DeletedSession{}, err
 	}
 	return domain.DeletedSession{RecoveryPath: recoveryPath}, nil
+}
+
+func (service *CatalogService) resolveRegularSession(path string) (sessionindex.Summary, error) {
+	summary, err := service.index.Resolve(strings.TrimSpace(path))
+	if err != nil {
+		return sessionindex.Summary{}, err
+	}
+	if !summary.SSHAnchor {
+		return summary, nil
+	}
+	record, err := service.catalog.ResolveID(summary.AnchorWorkspaceID)
+	if err != nil || record.Location.Kind != workspace.KindSSH {
+		return sessionindex.Summary{}, errors.New("SSH orphan transcripts require the dedicated orphan session service")
+	}
+	return summary, nil
 }
 
 func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
@@ -264,7 +314,7 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 	}
 	for _, thread := range record.Threads {
 		result.Threads = append(result.Threads, domain.DesktopThreadState{
-			ID: thread.ID, Title: thread.Title, WorkspacePath: thread.WorkspacePath, Trust: thread.Trust,
+			ID: thread.ID, Title: thread.Title, WorkspaceID: thread.WorkspaceID, WorkspacePath: thread.WorkspacePath, Trust: thread.Trust,
 			Status: thread.Status, SessionPath: thread.SessionPath, Draft: thread.Draft,
 			CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt, Unread: thread.Unread,
 		})
@@ -286,23 +336,62 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error
 		}
 	}
 	for _, thread := range state.Threads {
+		workspaceID := strings.TrimSpace(thread.WorkspaceID)
+		workspacePath := strings.TrimSpace(thread.WorkspacePath)
+		var workspaceRecord workspace.Record
+		var knownWorkspace bool
+		if workspaceID != "" {
+			var err error
+			workspaceRecord, err = service.catalog.ResolveID(workspaceID)
+			if err != nil {
+				return err
+			}
+			knownWorkspace = true
+		} else if workspacePath != "" {
+			resolved, err := service.catalog.ResolvePath(workspacePath)
+			if err == nil {
+				workspaceRecord, knownWorkspace = resolved, true
+			}
+		}
+		if knownWorkspace {
+			workspaceID = workspaceRecord.ID
+			if workspaceRecord.Location.Kind == workspace.KindSSH {
+				if workspacePath != "" {
+					return errors.New("remote desktop threads cannot contain a local workspace path")
+				}
+			} else {
+				canonical, err := workspace.CanonicalDirectory(workspacePath)
+				if err != nil || sessionPathKey(canonical) != sessionPathKey(workspaceRecord.Path) {
+					return errors.New("desktop thread workspace identity does not match its local path")
+				}
+				workspacePath = canonical
+			}
+		}
+
 		sessionPath := strings.TrimSpace(thread.SessionPath)
 		if sessionPath != "" {
 			summary, err := service.index.Header(sessionPath)
 			if err != nil {
 				return err
 			}
-			workspacePath, err := workspace.CanonicalDirectory(thread.WorkspacePath)
-			if err != nil {
-				return err
-			}
-			if sessionPathKey(summary.CWD) != sessionPathKey(workspacePath) {
-				return errors.New("session working directory does not match the thread workspace")
+			if knownWorkspace && workspaceRecord.Location.Kind == workspace.KindSSH {
+				if !summary.SSHAnchor || summary.AnchorWorkspaceID != workspaceRecord.ID {
+					return errors.New("remote session anchor does not match the thread workspace")
+				}
+			} else {
+				if summary.SSHAnchor {
+					return errors.New("SSH anchor sessions require a registered remote workspace identity")
+				}
+				canonical, err := workspace.CanonicalDirectory(workspacePath)
+				if err != nil || sessionPathKey(summary.CWD) != sessionPathKey(canonical) {
+					return errors.New("session working directory does not match the thread workspace")
+				}
+				workspacePath = canonical
 			}
 			sessionPath = summary.Path
 		}
 		mapped := workspace.ThreadRecord{
-			ID: strings.TrimSpace(thread.ID), Title: strings.TrimSpace(thread.Title), WorkspacePath: strings.TrimSpace(thread.WorkspacePath),
+			ID: strings.TrimSpace(thread.ID), Title: strings.TrimSpace(thread.Title), WorkspaceID: workspaceID, WorkspacePath: workspacePath,
 			Trust: strings.TrimSpace(thread.Trust), Status: strings.TrimSpace(thread.Status), SessionPath: sessionPath,
 			Draft: thread.Draft, CreatedAt: strings.TrimSpace(thread.CreatedAt), UpdatedAt: strings.TrimSpace(thread.UpdatedAt), Unread: thread.Unread,
 		}
@@ -312,14 +401,15 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error
 }
 
 func workspaceSummary(record workspace.Record) domain.WorkspaceSummary {
-	return domain.WorkspaceSummary{
-		ID:           record.ID,
-		Name:         record.Name,
-		Path:         record.Path,
-		Trust:        record.Trust,
-		AddedAt:      record.AddedAt,
-		LastOpenedAt: record.LastOpenedAt,
+	summary := domain.WorkspaceSummary{
+		ID: record.ID, Name: record.Name, Path: record.Path, Kind: string(record.Location.Kind),
+		Trust: record.Trust, AddedAt: record.AddedAt, LastOpenedAt: record.LastOpenedAt,
 	}
+	if record.Location.Kind == workspace.KindSSH {
+		summary.TargetID = record.Location.SSH.TargetID
+		summary.RemoteRoot = record.Location.SSH.CanonicalRoot
+	}
+	return summary
 }
 
 func pickWorkspaceFolder(initialPath string) (string, error) {

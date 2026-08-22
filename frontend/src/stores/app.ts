@@ -1,9 +1,11 @@
 import { defineStore } from "pinia";
-import { RuntimeState, type BootstrapState, type DesktopState, type SessionSnapshot, type WorkspaceApplication } from "../../bindings/pi-desk/internal/domain";
+import { RuntimeState, type BootstrapState, type DesktopState, type SessionSnapshot, type WorkspaceApplication, type WorkspaceSummary as HostWorkspaceSummary } from "../../bindings/pi-desk/internal/domain";
 import { agentService, onPiEvent, type PiSessionEvent, type SessionBranches } from "../services/agent";
 import { catalogService } from "../services/catalog";
 import { checkForUpdates, checkRuntime as checkRuntimeStatus, getBootstrapState, notifyDesktop } from "../services/desktop";
-import { repositoryService, type GitBranchInventory, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot } from "../services/repository";
+import { repositoryService, type GitBranchInventory, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference } from "../services/repository";
+import { remoteWorkspaceService } from "../services/remoteWorkspaces";
+import { onTerminalEvent, type TerminalEvent } from "../services/terminal";
 import { modelConfigService } from "../services/modelconfig";
 import { BATCH_ASK_PLACEHOLDER, parseBatchAskEnvelope, type BatchAskQuestion } from "../utils/batchAsk";
 import { formatFileMention } from "../utils/fileMentions";
@@ -19,6 +21,19 @@ export type StreamingBehavior = "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
 export type Appearance = "dark" | "light" | "system";
 export type Language = "zh-CN" | "en";
+type RemoteReconnectIntent = "start" | "prompt" | "bash" | "terminal";
+export type RemoteReconnectProgressStatus = "pending" | "active" | "complete" | "error";
+export interface RemoteReconnectProgressStep {
+  id: string;
+  label: string;
+  status: RemoteReconnectProgressStatus;
+}
+
+const remoteReconnectProgressDefinitions: RemoteReconnectProgressStep[] = [
+  { id: "stop", label: "remoteReconnect.stepStop", status: "active" },
+  { id: "connect", label: "remoteReconnect.stepConnect", status: "pending" },
+  { id: "restore", label: "remoteReconnect.stepRestore", status: "pending" },
+];
 
 export const MAX_PI_PROCESSES = 10;
 export const DEFAULT_SIDEBAR_WIDTH = 272;
@@ -28,11 +43,24 @@ export const DEFAULT_INSPECTOR_WIDTH = 320;
 export const MIN_INSPECTOR_WIDTH = 280;
 export const MAX_INSPECTOR_WIDTH = 400;
 const TODO_WIDGET_KEYS = ["pi-deck-todo", "pi-desk-todo"] as const;
+const REMOTE_RECONNECT_CODES = ["REMOTE_DISCONNECTED", "REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE", "REMOTE_OUTCOME_UNKNOWN"] as const;
+const REMOTE_MUTATING_TOOLS = new Set(["write", "edit", "bash", "user_bash"]);
+
+function hasRemoteCode(message: string, code: (typeof REMOTE_RECONNECT_CODES)[number]): boolean {
+  return message === code || message.startsWith(`${code}:`);
+}
+
+function requiresRemoteReconnect(message: string): boolean {
+  return REMOTE_RECONNECT_CODES.some((code) => hasRemoteCode(message, code));
+}
 
 export interface WorkspaceSummary {
   id: string;
   name: string;
   path: string;
+  kind?: string;
+  targetId?: string;
+  remoteRoot?: string;
   trust: "approve" | "deny";
   addedAt?: string;
   lastOpenedAt?: string;
@@ -43,6 +71,7 @@ export interface ThreadSummary {
   id: string;
   title: string;
   workspace: string;
+  workspaceId?: string;
   workspacePath: string;
   trust: "approve" | "deny";
   status: ThreadStatus;
@@ -254,6 +283,7 @@ interface CatalogSession {
   id: string;
   path: string;
   cwd: string;
+  anchorWorkspaceId?: string;
   name?: string;
   title: string;
   firstMessage: string;
@@ -280,10 +310,20 @@ function mergeModels(...sources: PiModel[][]): PiModel[] {
 }
 
 let unsubscribePiEvents: (() => void) | undefined;
+let unsubscribeTerminalEvents: (() => void) | undefined;
 let localSequence = 0;
 let desktopSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let piStartQueue: Promise<void> = Promise.resolve();
 const piStartPromises = new Map<string, Promise<void>>();
+const piStartingGenerationFloor = new Map<string, number>();
+const piExitedGenerationByThread = new Map<string, number>();
+const remoteTargetProjectionEpochByID = new Map<string, number>();
+async function waitForPiStart(threadID: string) {
+  await piStartPromises.get(threadID)?.catch(() => undefined);
+}
+function isCurrentPiRequest(threads: ThreadSummary[], thread: ThreadSummary | undefined, generation: number | undefined, wasStarted: boolean | undefined): thread is ThreadSummary {
+  return Boolean(thread && threads.includes(thread) && thread.generation === generation && (!wasStarted || thread.started));
+}
 const settledReloadPromises = new Map<string, Promise<void>>();
 const pendingPromptDispatchThreads = new Set<string>();
 const TOOL_OUTPUT_LIMIT = 256 << 10;
@@ -390,6 +430,14 @@ function workspaceName(path: string): string {
 function pathKey(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "").replaceAll("\\", "/");
   return /^[a-z]:\//i.test(normalized) ? normalized.toLocaleLowerCase() : normalized;
+}
+
+function repositoryKey(thread: ThreadSummary): string {
+  return thread.workspaceId || pathKey(thread.workspacePath);
+}
+
+function repositoryReference(thread: ThreadSummary): RepositoryWorkspaceReference {
+  return thread.workspaceId ? { workspaceId: thread.workspaceId } : thread.workspacePath;
 }
 
 function errorMessage(error: unknown): string {
@@ -631,6 +679,15 @@ export const useAppStore = defineStore("app", {
     settingsOpen: false,
     settingsSection: "general" as SettingsSection,
     aboutOpen: false,
+    orphanSessionsOpen: false,
+    remoteReconnectOpen: false,
+    remoteReconnectThreadId: "",
+    remoteReconnectIntent: "start" as RemoteReconnectIntent,
+    remoteReconnectBusy: false,
+    remoteReconnectError: "",
+    remoteReconnectProgress: [] as RemoteReconnectProgressStep[],
+    remoteReadyByWorkspace: {} as Record<string, boolean>,
+    terminalGenerationByThread: {} as Record<string, number | undefined>,
     settingsError: "",
     branchPanelOpen: false,
     exportDialogOpen: false,
@@ -691,17 +748,22 @@ export const useAppStore = defineStore("app", {
     repositoryByWorkspace: {} as Record<string, RepositorySnapshot | undefined>,
     repositoryLoadingByWorkspace: {} as Record<string, boolean>,
     repositoryErrorByWorkspace: {} as Record<string, string>,
+    repositoryStaleByWorkspace: {} as Record<string, boolean>,
+    repositoryRefreshGenerationByWorkspace: {} as Record<string, number>,
     repositoryBranchesByWorkspace: {} as Record<string, GitBranchInventory | undefined>,
     repositoryBranchesLoadingByWorkspace: {} as Record<string, boolean>,
+    repositoryBranchesGenerationByWorkspace: {} as Record<string, number>,
     repositoryBranchesErrorByWorkspace: {} as Record<string, string>,
     repositoryDiffByWorkspace: {} as Record<string, RepositoryFileDiff | undefined>,
     repositoryDiffPathByWorkspace: {} as Record<string, string>,
     repositoryDiffLoadingByWorkspace: {} as Record<string, boolean>,
+    repositoryDiffGenerationByWorkspace: {} as Record<string, number>,
     repositoryDiffErrorByWorkspace: {} as Record<string, string>,
     repositoryFilePreviewByThread: {} as Record<string, RepositoryFilePreview | undefined>,
     repositoryFilePreviewPathByThread: {} as Record<string, string>,
     repositoryFilePreviewLineByThread: {} as Record<string, number | undefined>,
     repositoryFilePreviewLoadingByThread: {} as Record<string, boolean>,
+    repositoryFilePreviewGenerationByThread: {} as Record<string, number>,
     repositoryFilePreviewErrorByThread: {} as Record<string, string>,
     workspaceTrustUpdatingPath: "",
     workspaceTrustError: "",
@@ -730,6 +792,9 @@ export const useAppStore = defineStore("app", {
     activeThread(state): ThreadSummary | undefined {
       return state.threads.find((thread) => thread.id === state.activeThreadId);
     },
+    remoteReconnectThread(state): ThreadSummary | undefined {
+      return state.threads.find((thread) => thread.id === state.remoteReconnectThreadId);
+    },
     activeWorkspaceApplication(state): WorkspaceApplication | undefined {
       return state.workspaceApplications.find((application) => application.id === state.workspaceApplication)
         ?? state.workspaceApplications.find((application) => application.id === "file-manager")
@@ -754,11 +819,11 @@ export const useAppStore = defineStore("app", {
       return state.sessionStatsByThread[state.activeThreadId];
     },
     activeModels(state): PiModel[] {
-      if (!state.threads.some((thread) => thread.id === state.activeThreadId)) return [];
+      const thread = state.threads.find((candidate) => candidate.id === state.activeThreadId);
+      if (!thread) return [];
       const current = state.sessionStateByThread[state.activeThreadId]?.model;
       return mergeModels(
-        state.modelsByThread[state.activeThreadId] ?? [],
-        state.knownRuntimeModels,
+        thread.started ? state.modelsByThread[state.activeThreadId] ?? [] : state.knownRuntimeModels,
         state.configuredModels,
         current ? [current] : [],
       );
@@ -800,43 +865,47 @@ export const useAppStore = defineStore("app", {
     },
     activeRepository(state): RepositorySnapshot | undefined {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryByWorkspace[pathKey(thread.workspacePath)] : undefined;
+      return thread ? state.repositoryByWorkspace[repositoryKey(thread)] : undefined;
     },
     activeRepositoryLoading(state): boolean {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? Boolean(state.repositoryLoadingByWorkspace[pathKey(thread.workspacePath)]) : false;
+      return thread ? Boolean(state.repositoryLoadingByWorkspace[repositoryKey(thread)]) : false;
     },
     activeRepositoryError(state): string {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryErrorByWorkspace[pathKey(thread.workspacePath)] ?? "" : "";
+      return thread ? state.repositoryErrorByWorkspace[repositoryKey(thread)] ?? "" : "";
+    },
+    activeRepositoryStale(state): boolean {
+      const thread = state.threads.find((item) => item.id === state.activeThreadId);
+      return thread ? Boolean(state.repositoryStaleByWorkspace[repositoryKey(thread)]) : false;
     },
     activeRepositoryBranches(state): GitBranchInventory | undefined {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryBranchesByWorkspace[pathKey(thread.workspacePath)] : undefined;
+      return thread ? state.repositoryBranchesByWorkspace[repositoryKey(thread)] : undefined;
     },
     activeRepositoryBranchesLoading(state): boolean {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? Boolean(state.repositoryBranchesLoadingByWorkspace[pathKey(thread.workspacePath)]) : false;
+      return thread ? Boolean(state.repositoryBranchesLoadingByWorkspace[repositoryKey(thread)]) : false;
     },
     activeRepositoryBranchesError(state): string {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryBranchesErrorByWorkspace[pathKey(thread.workspacePath)] ?? "" : "";
+      return thread ? state.repositoryBranchesErrorByWorkspace[repositoryKey(thread)] ?? "" : "";
     },
     activeRepositoryDiff(state): RepositoryFileDiff | undefined {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffByWorkspace[pathKey(thread.workspacePath)] : undefined;
+      return thread ? state.repositoryDiffByWorkspace[repositoryKey(thread)] : undefined;
     },
     activeRepositoryDiffPath(state): string {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffPathByWorkspace[pathKey(thread.workspacePath)] ?? "" : "";
+      return thread ? state.repositoryDiffPathByWorkspace[repositoryKey(thread)] ?? "" : "";
     },
     activeRepositoryDiffLoading(state): boolean {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? Boolean(state.repositoryDiffLoadingByWorkspace[pathKey(thread.workspacePath)]) : false;
+      return thread ? Boolean(state.repositoryDiffLoadingByWorkspace[repositoryKey(thread)]) : false;
     },
     activeRepositoryDiffError(state): string {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffErrorByWorkspace[pathKey(thread.workspacePath)] ?? "" : "";
+      return thread ? state.repositoryDiffErrorByWorkspace[repositoryKey(thread)] ?? "" : "";
     },
     activeRepositoryFilePreview(state): RepositoryFilePreview | undefined {
       return state.repositoryFilePreviewByThread[state.activeThreadId];
@@ -895,6 +964,9 @@ export const useAppStore = defineStore("app", {
     async initialize() {
       if (!unsubscribePiEvents) {
         unsubscribePiEvents = onPiEvent((event) => this.handlePiEvent(event));
+      }
+      if (!unsubscribeTerminalEvents) {
+        unsubscribeTerminalEvents = onTerminalEvent((event) => this.handleTerminalEvent(event));
       }
       const bootstrap = this.loadBootstrapState();
       const catalog = this.loadCatalog();
@@ -987,7 +1059,8 @@ export const useAppStore = defineStore("app", {
         this.activeThreadId = threadId;
         if (this.activeThread) this.activeThread.unread = false;
         if (this.activeThread?.sessionFile) void this.loadThreadTranscript(threadId);
-        if (this.catalogReady && this.activeThread) void this.startThreadInBackground(threadId);
+        const workspace = this.workspaces.find((item) => item.id === this.activeThread?.workspaceId);
+        if (this.catalogReady && this.activeThread && workspace?.kind !== "ssh") void this.startThreadInBackground(threadId);
         this.scheduleDesktopStateSave();
       }
     },
@@ -999,6 +1072,15 @@ export const useAppStore = defineStore("app", {
     },
     async openWorkspace(id: string) {
       await catalogService.openWorkspace(id);
+    },
+    async renameWorkspace(id: string, name: string) {
+      const index = this.workspaces.findIndex((workspace) => workspace.id === id);
+      if (index < 0) {
+        throw new Error("Workspace not found");
+      }
+      const renamed = await catalogService.renameWorkspace(id, name);
+      this.workspaces[index] = { ...renamed, trust: renamed.trust as "approve" | "deny" };
+      this.scheduleDesktopStateSave();
     },
     async openActiveWorkspaceWith(applicationId = ""): Promise<boolean> {
       this.workspaceApplicationError = "";
@@ -1013,8 +1095,8 @@ export const useAppStore = defineStore("app", {
         this.workspaceApplicationError = tr("topbar.trustToOpen");
         return false;
       }
-      const workspace = this.workspaces.find((item) => pathKey(item.path) === pathKey(active.workspacePath));
-      if (!workspace || workspace.discovered) {
+      const workspace = this.workspaces.find((item) => active.workspaceId ? item.id === active.workspaceId : pathKey(item.path) === pathKey(active.workspacePath));
+      if (!workspace || workspace.discovered || workspace.kind === "ssh") {
         this.workspaceApplicationError = tr("topbar.workspaceUnavailable");
         return false;
       }
@@ -1028,24 +1110,84 @@ export const useAppStore = defineStore("app", {
         return false;
       }
     },
+    remoteTargetEpoch(targetID: string): number {
+      return remoteTargetProjectionEpochByID.get(targetID) ?? 0;
+    },
+    remoteWorkspaceHasConnection(workspaceID: string): boolean {
+      return this.remoteReadyByWorkspace[workspaceID] === true
+        || this.threads.some((thread) => thread.workspaceId === workspaceID && thread.started);
+    },
+    assertRemoteTargetEpoch(targetID: string, epoch: number) {
+      if (this.remoteTargetEpoch(targetID) !== epoch) throw new Error("REMOTE_DISCONNECTED: remote target operation was revoked");
+    },
+    forgetRemoteTargetEpoch(targetID: string) {
+      remoteTargetProjectionEpochByID.delete(targetID);
+    },
+    async stopRemoteTargetThreads(targetID: string): Promise<string> {
+      this.markRemoteTargetStale(targetID);
+      const reconnectThread = this.remoteReconnectThread;
+      if (reconnectThread && this.remoteWorkspaceForThread(reconnectThread)?.targetId === targetID) {
+        this.remoteReconnectOpen = false;
+        this.remoteReconnectThreadId = "";
+        this.remoteReconnectError = "";
+      }
+      const targetWorkspaces = this.workspaces.filter((item) => item.kind === "ssh" && item.targetId === targetID);
+      const workspaceIDs = new Set(targetWorkspaces.map((item) => item.id));
+      const threads = this.threads.filter((thread) => Boolean(thread.workspaceId && workspaceIDs.has(thread.workspaceId)));
+      let stopFailure = "";
+      for (const thread of threads) {
+        await waitForPiStart(thread.id);
+        if (thread.started && !await this.stopThread(thread.id)) stopFailure ||= `Unable to close ${thread.title}`;
+      }
+      return stopFailure;
+    },
+    async disconnectRemoteTarget(targetID: string) {
+      const stopFailure = await this.stopRemoteTargetThreads(targetID);
+      await remoteWorkspaceService.disconnect(targetID);
+      if (stopFailure) throw new Error(stopFailure);
+    },
+    async disconnectRemoteWorkspace(id: string) {
+      const workspace = this.workspaces.find((item) => item.id === id);
+      if (!workspace?.targetId || workspace.kind !== "ssh") throw new Error("Remote workspace not found");
+      // A workspace may own multiple remote Pi sessions. Stop every one before
+      // revoking the shared target connection and its helper runtime.
+      await this.disconnectRemoteTarget(workspace.targetId);
+    },
     async removeWorkspace(id: string) {
       const workspace = this.workspaces.find((item) => item.id === id);
       if (!workspace) throw new Error("Workspace not found");
-      const threads = this.threads.filter((thread) => pathKey(thread.workspacePath) === pathKey(workspace.path));
-      for (const thread of threads) {
-        if (thread.started && !await this.stopThread(thread.id)) {
-          throw new Error(`Unable to close ${thread.title}`);
+      const removedThreads = this.threads.filter((thread) => workspace.kind === "ssh"
+        ? thread.workspaceId === workspace.id
+        : pathKey(thread.workspacePath) === pathKey(workspace.path));
+      let stopFailure = "";
+      if (workspace.targetId) {
+        stopFailure = await this.stopRemoteTargetThreads(workspace.targetId);
+      } else {
+        for (const thread of removedThreads) {
+          await waitForPiStart(thread.id);
+          if (thread.started && !await this.stopThread(thread.id)) stopFailure ||= `Unable to close ${thread.title}`;
         }
       }
+      if (stopFailure && workspace.targetId) {
+        await remoteWorkspaceService.disconnect(workspace.targetId);
+        throw new Error(stopFailure);
+      }
+      if (stopFailure) throw new Error(stopFailure);
       await catalogService.removeWorkspace(id);
-      for (const thread of threads) this.removeThreadState(thread.id);
+      for (const thread of removedThreads) this.removeThreadState(thread.id);
       this.workspaces = this.workspaces.filter((item) => item.id !== id);
+      delete this.remoteReadyByWorkspace[id];
       this.scheduleDesktopStateSave();
     },
     async setActiveWorkspaceTrust(trust: "approve" | "deny"): Promise<boolean> {
       const active = this.activeThread;
       if (!active || active.trust === trust || this.workspaceTrustUpdatingPath) return false;
       this.workspaceTrustError = "";
+      const workspace = this.workspaces.find((item) => item.id === active.workspaceId);
+      if (workspace?.kind === "ssh") {
+        this.workspaceTrustError = "Disconnect or remove the SSH workspace to revoke remote trust.";
+        return false;
+      }
       const workspaceKey = pathKey(active.workspacePath);
       const affected = this.threads.filter((thread) => pathKey(thread.workspacePath) === workspaceKey);
       if (affected.some((thread) => thread.status === "running" || thread.status === "starting" || this.bashRunningByThread[thread.id])) {
@@ -1078,6 +1220,53 @@ export const useAppStore = defineStore("app", {
         this.workspaceTrustUpdatingPath = "";
       }
     },
+    recordRemoteWorkspace(workspace: HostWorkspaceSummary, ready = false): WorkspaceSummary {
+      if (!workspace.id || workspace.kind !== "ssh" || !workspace.targetId || !workspace.remoteRoot || !["approve", "deny"].includes(workspace.trust)) {
+        throw new Error("Remote workspace identity is invalid");
+      }
+      const normalized: WorkspaceSummary = {
+        id: workspace.id, name: workspace.name, path: "", kind: "ssh", targetId: workspace.targetId,
+        remoteRoot: workspace.remoteRoot, trust: workspace.trust as "approve" | "deny", addedAt: workspace.addedAt, lastOpenedAt: workspace.lastOpenedAt,
+        discovered: false,
+      };
+      this.remoteReadyByWorkspace[normalized.id] = ready && normalized.trust === "approve";
+      const existingIndex = this.workspaces.findIndex((item) => item.id === normalized.id);
+      if (existingIndex >= 0) this.workspaces[existingIndex] = normalized;
+      else this.workspaces.unshift(normalized);
+      return normalized;
+    },
+    async createRemoteThread(workspace: HostWorkspaceSummary) {
+      if (workspace.trust !== "approve") throw new Error("Remote workspace is not ready");
+      const normalized = this.recordRemoteWorkspace(workspace, true);
+      const threadID = createID("thread");
+      const thread: ThreadSummary = {
+        id: threadID, title: "New task", workspace: normalized.name,
+        workspaceId: normalized.id, workspacePath: "", trust: "approve",
+        status: "idle", started: false, generation: 0,
+        createdAt: nowISO(), modifiedAt: nowISO(), unread: false,
+      };
+      this.threads.unshift(thread);
+      this.messagesByThread[thread.id] = [];
+      this.draftsByThread[thread.id] = "";
+      this.activeThreadId = thread.id;
+      this.newTaskOpen = false;
+      this.scheduleDesktopStateSave();
+    },
+    async createRemoteTaskInWorkspace(workspaceID: string) {
+      const current = this.workspaces.find((workspace) => workspace.id === workspaceID);
+      if (!current || current.kind !== "ssh" || !current.targetId || !current.remoteRoot || current.trust !== "approve") {
+        throw new Error("Remote workspace is not ready");
+      }
+      let workspace: HostWorkspaceSummary = {
+        id: current.id, name: current.name, path: "", kind: "ssh", targetId: current.targetId,
+        remoteRoot: current.remoteRoot, trust: "approve", addedAt: current.addedAt ?? new Date().toISOString(), lastOpenedAt: current.lastOpenedAt ?? new Date().toISOString(),
+      };
+      if (!this.remoteReadyByWorkspace[current.id]) {
+        workspace = await remoteWorkspaceService.resume(current.id);
+        this.recordRemoteWorkspace(workspace, true);
+      }
+      await this.createRemoteThread(workspace);
+    },
     async createThread(path: string, trust: "approve" | "deny") {
       const workspacePath = path.trim();
       if (!workspacePath) throw new Error("Choose a workspace folder");
@@ -1099,6 +1288,7 @@ export const useAppStore = defineStore("app", {
         id: threadID,
         title: "New task",
         workspace: normalized.name,
+        workspaceId: normalized.id,
         workspacePath: normalized.path,
         trust: normalized.trust,
         status: "idle",
@@ -1210,49 +1400,67 @@ export const useAppStore = defineStore("app", {
       const separator = current && !/\s$/.test(current) ? " " : "";
       this.updateDraft(`${current}${separator}${formatFileMention(path, directory)} `);
     },
-    async refreshActiveRepository() {
-      const thread = this.activeThread;
+    async refreshActiveRepository(threadID?: string) {
+      const thread = this.threads.find((item) => item.id === (threadID || this.activeThreadId));
       if (!thread) return;
-      const workingPath = thread.workspacePath;
-      const key = pathKey(workingPath);
+      const key = repositoryKey(thread);
       if (thread.trust !== "approve") {
+        this.repositoryRefreshGenerationByWorkspace[key] = (this.repositoryRefreshGenerationByWorkspace[key] ?? 0) + 1;
+        this.repositoryLoadingByWorkspace[key] = false;
         this.repositoryByWorkspace[key] = undefined;
         this.repositoryErrorByWorkspace[key] = "Workspace access is disabled";
+        this.repositoryStaleByWorkspace[key] = true;
         return;
       }
       if (this.repositoryLoadingByWorkspace[key]) return;
+      const generation = (this.repositoryRefreshGenerationByWorkspace[key] ?? 0) + 1;
+      this.repositoryRefreshGenerationByWorkspace[key] = generation;
       this.repositoryLoadingByWorkspace[key] = true;
       this.repositoryErrorByWorkspace[key] = "";
       try {
-        this.repositoryByWorkspace[key] = await repositoryService.snapshot(workingPath);
+        const snapshot = await repositoryService.snapshot(repositoryReference(thread));
+        if (this.repositoryRefreshGenerationByWorkspace[key] !== generation) return;
+        this.repositoryByWorkspace[key] = snapshot;
+        this.repositoryStaleByWorkspace[key] = false;
       } catch (error) {
-        this.repositoryErrorByWorkspace[key] = errorMessage(error);
+        if (this.repositoryRefreshGenerationByWorkspace[key] !== generation) return;
+        this.repositoryErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
+        this.repositoryStaleByWorkspace[key] = true;
       } finally {
-        this.repositoryLoadingByWorkspace[key] = false;
+        if (this.repositoryRefreshGenerationByWorkspace[key] === generation) {
+          this.repositoryLoadingByWorkspace[key] = false;
+        }
       }
     },
     async openRepositoryDiff(path: string) {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
-      const workingPath = thread.workspacePath;
-      const key = pathKey(workingPath);
+      const workingPath = repositoryReference(thread);
+      const key = repositoryKey(thread);
+      const generation = (this.repositoryDiffGenerationByWorkspace[key] ?? 0) + 1;
+      this.repositoryDiffGenerationByWorkspace[key] = generation;
       this.repositoryDiffPathByWorkspace[key] = path;
       this.repositoryDiffByWorkspace[key] = undefined;
       this.repositoryDiffLoadingByWorkspace[key] = true;
       this.repositoryDiffErrorByWorkspace[key] = "";
       try {
-        this.repositoryDiffByWorkspace[key] = await repositoryService.diff(workingPath, path);
+        const diff = await repositoryService.diff(workingPath, path);
+        if (this.repositoryDiffGenerationByWorkspace[key] === generation) this.repositoryDiffByWorkspace[key] = diff;
       } catch (error) {
-        this.repositoryDiffErrorByWorkspace[key] = errorMessage(error);
+        if (this.repositoryDiffGenerationByWorkspace[key] === generation) {
+          this.repositoryDiffErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
+        }
       } finally {
-        this.repositoryDiffLoadingByWorkspace[key] = false;
+        if (this.repositoryDiffGenerationByWorkspace[key] === generation) this.repositoryDiffLoadingByWorkspace[key] = false;
       }
     },
     async openRepositoryFilePreview(path: string, line?: number) {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
       const threadId = thread.id;
-      const workingPath = thread.workspacePath;
+      const workingPath = repositoryReference(thread);
+      const generation = (this.repositoryFilePreviewGenerationByThread[threadId] ?? 0) + 1;
+      this.repositoryFilePreviewGenerationByThread[threadId] = generation;
       this.inspectorOpen = true;
       this.scheduleDesktopStateSave();
       this.repositoryFilePreviewPathByThread[threadId] = path;
@@ -1261,25 +1469,30 @@ export const useAppStore = defineStore("app", {
       this.repositoryFilePreviewLoadingByThread[threadId] = true;
       this.repositoryFilePreviewErrorByThread[threadId] = "";
       try {
-        this.repositoryFilePreviewByThread[threadId] = await repositoryService.previewFile(workingPath, path);
+        const preview = await repositoryService.previewFile(workingPath, path);
+        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) this.repositoryFilePreviewByThread[threadId] = preview;
       } catch (error) {
-        this.repositoryFilePreviewErrorByThread[threadId] = errorMessage(error);
+        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) {
+          this.repositoryFilePreviewErrorByThread[threadId] = this.remoteFailureMessage(thread.id, error);
+        }
       } finally {
-        this.repositoryFilePreviewLoadingByThread[threadId] = false;
+        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) this.repositoryFilePreviewLoadingByThread[threadId] = false;
       }
     },
     closeRepositoryFilePreview() {
       const threadId = this.activeThreadId;
       if (!threadId) return;
+      this.repositoryFilePreviewGenerationByThread[threadId] = (this.repositoryFilePreviewGenerationByThread[threadId] ?? 0) + 1;
       this.repositoryFilePreviewPathByThread[threadId] = "";
       this.repositoryFilePreviewLineByThread[threadId] = undefined;
       this.repositoryFilePreviewByThread[threadId] = undefined;
+      this.repositoryFilePreviewLoadingByThread[threadId] = false;
       this.repositoryFilePreviewErrorByThread[threadId] = "";
     },
     async openPreviewedRepositoryFile(reveal = false) {
       const thread = this.activeThread;
       const path = this.activeRepositoryFilePreviewPath;
-      if (!thread || !path || thread.trust !== "approve") return;
+      if (!thread || !path || thread.trust !== "approve" || this.remoteWorkspaceForThread(thread)) return;
       try {
         if (reveal) await repositoryService.revealFile(thread.workspacePath, path);
         else await repositoryService.openFile(thread.workspacePath, path);
@@ -1290,37 +1503,44 @@ export const useAppStore = defineStore("app", {
     async refreshActiveRepositoryBranches() {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
-      const workingPath = thread.workspacePath;
-      const key = pathKey(workingPath);
+      const workingPath = repositoryReference(thread);
+      const key = repositoryKey(thread);
       if (this.repositoryBranchesLoadingByWorkspace[key]) return;
+      const generation = (this.repositoryBranchesGenerationByWorkspace[key] ?? 0) + 1;
+      this.repositoryBranchesGenerationByWorkspace[key] = generation;
       this.repositoryBranchesLoadingByWorkspace[key] = true;
       this.repositoryBranchesErrorByWorkspace[key] = "";
       try {
-        this.repositoryBranchesByWorkspace[key] = await repositoryService.branches(workingPath);
+        const branches = await repositoryService.branches(workingPath);
+        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) this.repositoryBranchesByWorkspace[key] = branches;
       } catch (error) {
-        this.repositoryBranchesErrorByWorkspace[key] = errorMessage(error);
+        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) {
+          this.repositoryBranchesErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
+        }
       } finally {
-        this.repositoryBranchesLoadingByWorkspace[key] = false;
+        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) this.repositoryBranchesLoadingByWorkspace[key] = false;
       }
     },
     closeRepositoryDiff() {
       const thread = this.activeThread;
       if (!thread) return;
-      const key = pathKey(thread.workspacePath);
+      const key = repositoryKey(thread);
+      this.repositoryDiffGenerationByWorkspace[key] = (this.repositoryDiffGenerationByWorkspace[key] ?? 0) + 1;
       this.repositoryDiffPathByWorkspace[key] = "";
       this.repositoryDiffByWorkspace[key] = undefined;
+      this.repositoryDiffLoadingByWorkspace[key] = false;
       this.repositoryDiffErrorByWorkspace[key] = "";
     },
     async openActiveRepositoryFile(reveal = false) {
       const thread = this.activeThread;
       const path = this.activeRepositoryDiffPath;
-      if (!thread || !path || thread.trust !== "approve") return;
+      if (!thread || !path || thread.trust !== "approve" || this.remoteWorkspaceForThread(thread)) return;
       const workingPath = thread.workspacePath;
       try {
         if (reveal) await repositoryService.revealFile(workingPath, path);
         else await repositoryService.openFile(workingPath, path);
       } catch (error) {
-        this.repositoryDiffErrorByWorkspace[pathKey(workingPath)] = errorMessage(error);
+        this.repositoryDiffErrorByWorkspace[repositoryKey(thread)] = errorMessage(error);
       }
     },
     addActiveAttachments(images: PreparedImage[]) {
@@ -1400,6 +1620,78 @@ export const useAppStore = defineStore("app", {
     closeAbout() {
       this.aboutOpen = false;
     },
+    openOrphanSessions() {
+      this.orphanSessionsOpen = true;
+    },
+    closeOrphanSessions() {
+      this.orphanSessionsOpen = false;
+    },
+    remoteWorkspaceForThread(thread: ThreadSummary): WorkspaceSummary | undefined {
+      if (!thread.workspaceId) return undefined;
+      const workspace = this.workspaces.find((item) => item.id === thread.workspaceId);
+      return workspace?.kind === "ssh" ? workspace : undefined;
+    },
+    requestRemoteReconnect(thread: ThreadSummary, intent: RemoteReconnectIntent): boolean {
+      const workspace = this.remoteWorkspaceForThread(thread);
+      if (!workspace || this.remoteReadyByWorkspace[workspace.id]) return false;
+      if (this.remoteReconnectOpen || this.remoteReconnectBusy) return true;
+      this.remoteReconnectThreadId = thread.id;
+      this.remoteReconnectIntent = intent;
+      this.remoteReconnectError = "";
+      this.remoteReconnectProgress = [];
+      this.remoteReconnectOpen = true;
+      return true;
+    },
+    cancelRemoteReconnect() {
+      if (this.remoteReconnectBusy) return;
+      this.remoteReconnectOpen = false;
+      this.remoteReconnectThreadId = "";
+      this.remoteReconnectError = "";
+      this.remoteReconnectProgress = [];
+    },
+    async confirmRemoteReconnect() {
+      const thread = this.remoteReconnectThread;
+      const workspace = thread ? this.remoteWorkspaceForThread(thread) : undefined;
+      const targetID = workspace?.targetId;
+      if (!thread || !workspace || !targetID || this.remoteReconnectBusy) return;
+      const intent = this.remoteReconnectIntent;
+      const reconnectThreadID = thread.id;
+      this.remoteReconnectBusy = true;
+      this.remoteReconnectError = "";
+      this.remoteReconnectProgress = remoteReconnectProgressDefinitions.map((step) => ({ ...step }));
+      const setProgress = (id: string, status: RemoteReconnectProgressStatus) => {
+        this.remoteReconnectProgress = this.remoteReconnectProgress.map((step) => step.id === id ? { ...step, status } : step);
+      };
+      try {
+        if (thread.started && !await this.stopThread(thread.id)) {
+          throw new Error("Unable to close the stale remote Pi session");
+        }
+        setProgress("stop", "complete");
+        setProgress("connect", "active");
+        await remoteWorkspaceService.resume(workspace.id);
+        setProgress("connect", "complete");
+        setProgress("restore", "complete");
+        if (!this.remoteReconnectOpen || this.remoteReconnectThreadId !== reconnectThreadID) {
+          await remoteWorkspaceService.disconnect(targetID).catch(() => undefined);
+          this.markRemoteTargetStale(targetID);
+          return;
+        }
+        this.remoteReadyByWorkspace[workspace.id] = true;
+        this.remoteReconnectOpen = false;
+        this.remoteReconnectThreadId = "";
+        this.activeThreadId = thread.id;
+      } catch (error) {
+        this.remoteReconnectError = errorMessage(error);
+        const activeStep = this.remoteReconnectProgress.find((step) => step.status === "active");
+        if (activeStep) setProgress(activeStep.id, "error");
+        return;
+      } finally {
+        this.remoteReconnectBusy = false;
+      }
+      if (intent === "prompt") await this.sendActivePrompt();
+      else if (intent === "bash") await this.sendActiveBash();
+      else this.startThreadInBackground(thread.id, true);
+    },
     async waitForSettledReload(threadId: string) {
       const pending = settledReloadPromises.get(threadId);
       if (pending) await pending;
@@ -1409,6 +1701,7 @@ export const useAppStore = defineStore("app", {
       const message = this.activeDraft.trim();
       const attachments = this.activeAttachments.map((image) => ({ ...image }));
       if (!thread || (!message && attachments.length === 0)) return;
+      if (this.requestRemoteReconnect(thread, "prompt")) return;
 
       if (thread.sessionFile && this.transcriptStateByThread[thread.id] !== "loaded") {
         await this.loadThreadTranscript(thread.id);
@@ -1480,8 +1773,18 @@ export const useAppStore = defineStore("app", {
           if (index >= 0) messages.splice(index, 1);
         }
         thread.status = wasRunning ? "running" : "attention";
-        thread.error = errorMessage(error);
-        this.appendSystem(thread.id, `Unable to send prompt: ${thread.error}`, thread.error);
+        thread.error = this.remoteFailureMessage(thread.id, error);
+        const remoteWorkspace = this.remoteWorkspaceForThread(thread);
+        const reconnectRequired = Boolean(remoteWorkspace && requiresRemoteReconnect(thread.error));
+        if (reconnectRequired && retainFailedMessage) {
+          const index = messages.indexOf(timelineMessage);
+          if (index >= 0) messages.splice(index, 1);
+          this.draftsByThread[thread.id] = message;
+          this.attachmentsByThread[thread.id] = attachments;
+          this.requestRemoteReconnect(thread, "prompt");
+        } else {
+          this.appendSystem(thread.id, `Unable to send prompt: ${thread.error}`, thread.error);
+        }
         this.scheduleDesktopStateSave();
         return false;
       }
@@ -1522,6 +1825,7 @@ export const useAppStore = defineStore("app", {
       const excludeFromContext = raw.startsWith("!!");
       const command = raw.slice(excludeFromContext ? 2 : 1).trim();
       if (!command || thread.status === "running") return;
+      if (this.requestRemoteReconnect(thread, "bash")) return;
 
       if (thread.sessionFile && this.transcriptStateByThread[thread.id] !== "loaded") {
         await this.loadThreadTranscript(thread.id);
@@ -1543,6 +1847,7 @@ export const useAppStore = defineStore("app", {
         }
         this.scheduleDesktopStateSave();
 
+        this.markRemoteRepositoryStale(thread.id);
         const result = await agentService.bash<BashResponse>({ threadId: thread.id, command, excludeFromContext });
         if (!excludeFromContext && !thread.sessionFile) {
           thread.sessionId = this.sessionStateByThread[thread.id]?.sessionId || thread.sessionId;
@@ -1561,8 +1866,16 @@ export const useAppStore = defineStore("app", {
       } catch (error) {
         const messageID = this.bashMessageByThread[thread.id];
         const message = this.messagesByThread[thread.id].find((item) => item.id === messageID);
-        const failure = errorMessage(error);
-        if (message) {
+        const failure = this.remoteFailureMessage(thread.id, error);
+        const remoteWorkspace = this.remoteWorkspaceForThread(thread);
+        const reconnectRequired = Boolean(remoteWorkspace && requiresRemoteReconnect(failure));
+        if (reconnectRequired) {
+          const index = message ? this.messagesByThread[thread.id].indexOf(message) : -1;
+          if (index >= 0) this.messagesByThread[thread.id].splice(index, 1);
+          this.draftsByThread[thread.id] = raw;
+          this.requestRemoteReconnect(thread, "bash");
+          this.scheduleDesktopStateSave();
+        } else if (message) {
           message.streaming = false;
           message.error = failure;
         } else {
@@ -1604,7 +1917,8 @@ export const useAppStore = defineStore("app", {
         this.scheduleDesktopStateSave();
         return true;
       } catch (error) {
-        this.appendSystem(thread.id, `Unable to close session: ${errorMessage(error)}`, errorMessage(error));
+        const failure = this.remoteFailureMessage(thread.id, error);
+        this.appendSystem(thread.id, `Unable to close session: ${failure}`, failure);
         return false;
       }
     },
@@ -1669,6 +1983,7 @@ export const useAppStore = defineStore("app", {
       this.deleteSessionError = "";
       this.sessionOperationByThread[thread.id] = "Deleting";
       try {
+        await waitForPiStart(thread.id);
         if (thread.started) {
           await agentService.stopSession(thread.id);
           thread.started = false;
@@ -1687,7 +2002,7 @@ export const useAppStore = defineStore("app", {
         this.deletedRecoveryPath = deleted.recoveryPath;
         this.scheduleDesktopStateSave();
       } catch (error) {
-        this.deleteSessionError = errorMessage(error);
+        this.deleteSessionError = this.remoteFailureMessage(thread.id, error);
       } finally {
         delete this.sessionOperationByThread[thread.id];
       }
@@ -1708,8 +2023,10 @@ export const useAppStore = defineStore("app", {
         this.sessionBranchesByThread, this.sessionBranchesErrorByThread, this.sessionOperationByThread, this.pendingModelByThread,
         this.modelSelectionGenerationByThread,
         this.repositoryFilePreviewByThread, this.repositoryFilePreviewPathByThread, this.repositoryFilePreviewLineByThread,
-        this.repositoryFilePreviewLoadingByThread, this.repositoryFilePreviewErrorByThread,
+        this.repositoryFilePreviewLoadingByThread, this.repositoryFilePreviewGenerationByThread, this.repositoryFilePreviewErrorByThread,
+        this.terminalGenerationByThread,
       ]) delete collection[threadId];
+      piExitedGenerationByThread.delete(threadId);
       if (this.activeThreadId === threadId) {
         this.activeThreadId = this.threads[0]?.id ?? "";
       }
@@ -2018,23 +2335,30 @@ export const useAppStore = defineStore("app", {
       const request = this.extensionRequestByThread[this.activeThreadId];
       if (request?.id === requestID) this.extensionRequestByThread[this.activeThreadId] = undefined;
     },
-    startThreadInBackground(threadId: string) {
+    startThreadInBackground(threadId: string, explicit = false) {
       const thread = this.threads.find((candidate) => candidate.id === threadId);
       if (!thread || thread.started || piStartPromises.has(thread.id)) return;
+      if (!explicit && this.requestRemoteReconnect(thread, "start")) return;
       void this.ensureSession(thread).catch((error) => {
         thread.started = false;
         thread.status = "attention";
-        thread.error = errorMessage(error);
+        thread.error = this.remoteFailureMessage(thread.id, error);
         this.appendSystem(thread.id, `Unable to start Pi: ${thread.error}`, thread.error);
         this.scheduleDesktopStateSave();
       });
     },
     async ensureSession(thread: ThreadSummary) {
+      const remoteWorkspace = this.remoteWorkspaceForThread(thread);
+      if (remoteWorkspace && !this.remoteReadyByWorkspace[remoteWorkspace.id]) {
+        throw new Error("SSH workspace must be reconnected before starting Pi");
+      }
       if (thread.started) return;
       const existing = piStartPromises.get(thread.id);
       if (existing) return existing;
       thread.status = "starting";
       thread.error = undefined;
+      const generationFloor = thread.generation;
+      piStartingGenerationFloor.set(thread.id, generationFloor);
       const operation = piStartQueue.then(() => this.startSessionNow(thread));
       piStartPromises.set(thread.id, operation);
       piStartQueue = operation.catch(() => undefined);
@@ -2042,6 +2366,7 @@ export const useAppStore = defineStore("app", {
         await operation;
       } finally {
         piStartPromises.delete(thread.id);
+        if (piStartingGenerationFloor.get(thread.id) === generationFloor) piStartingGenerationFloor.delete(thread.id);
       }
     },
     async callWithSession<T>(thread: ThreadSummary, operation: () => Promise<T>): Promise<T> {
@@ -2060,6 +2385,10 @@ export const useAppStore = defineStore("app", {
     },
     async startSessionNow(thread: ThreadSummary) {
       if (thread.started) return;
+      const queuedRemoteWorkspace = this.remoteWorkspaceForThread(thread);
+      if (queuedRemoteWorkspace && !this.remoteReadyByWorkspace[queuedRemoteWorkspace.id]) {
+        throw new Error("SSH workspace must be reconnected before starting Pi");
+      }
       const resumesPersistedSession = Boolean(thread.sessionFile);
       this.piProcessOrder = this.piProcessOrder.filter((id) => this.threads.some((candidate) => candidate.id === id && candidate.started));
       while (this.piProcessOrder.length >= MAX_PI_PROCESSES) {
@@ -2072,20 +2401,35 @@ export const useAppStore = defineStore("app", {
       }
       thread.status = "starting";
       thread.error = undefined;
+      const remoteWorkspace = this.remoteWorkspaceForThread(thread);
       const session = await agentService.startSession({
         threadId: thread.id,
-        workspace: thread.workspacePath,
+        workspace: remoteWorkspace ? "" : thread.workspacePath,
+        workspaceId: remoteWorkspace?.id,
         sessionPath: thread.sessionFile,
         trust: thread.trust,
         offline: this.offlineMode,
         disableThemes: true,
         proxyUrl: this.proxyEnabled ? this.proxyURL.trim() : undefined,
       });
+      if (piExitedGenerationByThread.get(thread.id) === session.generation) {
+        throw new Error(thread.error || "Pi process exited during startup");
+      }
+      let state: PiSessionState;
+      try {
+        state = JSON.parse(session.stateJson) as PiSessionState;
+      } catch (error) {
+        try {
+          await agentService.stopSession(thread.id);
+        } catch (stopError) {
+          throw new Error(`${errorMessage(error)}; unable to stop invalid Pi session: ${errorMessage(stopError)}`);
+        }
+        throw error;
+      }
       thread.started = true;
       this.piProcessOrder = [...this.piProcessOrder.filter((id) => id !== thread.id), thread.id];
       thread.generation = session.generation;
       thread.status = "idle";
-      const state = JSON.parse(session.stateJson) as PiSessionState;
       this.sessionStateByThread[thread.id] = state;
       if (this.bootstrap) {
         this.bootstrap.runtime = {
@@ -2104,46 +2448,73 @@ export const useAppStore = defineStore("app", {
         this.transcriptStateByThread[thread.id] = "loaded";
       }
       await this.applyPendingModel(thread);
+      if (!thread.started || piExitedGenerationByThread.get(thread.id) === session.generation) {
+        throw new Error(thread.error || "Pi process exited during startup");
+      }
       this.scheduleDesktopStateSave();
       await Promise.allSettled([
         this.refreshModels(thread.id), this.refreshThinkingLevels(thread.id), this.refreshCommands(thread.id), this.refreshStats(thread.id),
       ]);
     },
     async refreshState(threadId: string) {
-      this.sessionStateByThread[threadId] = await agentService.getState<PiSessionState>(threadId);
+      const thread = this.threads.find((item) => item.id === threadId);
+      const generation = thread?.generation;
+      const wasStarted = thread?.started;
+      const state = await agentService.getState<PiSessionState>(threadId);
+      if (!isCurrentPiRequest(this.threads, thread, generation, wasStarted)) return;
+      this.sessionStateByThread[threadId] = state;
     },
     async refreshModels(threadId: string) {
+      const thread = this.threads.find((item) => item.id === threadId);
+      const generation = thread?.generation;
+      const wasStarted = thread?.started;
       const response = await agentService.getAvailableModels<ModelResponse>(threadId);
+      if (!isCurrentPiRequest(this.threads, thread, generation, wasStarted)) return;
       this.modelsByThread[threadId] = response.models ?? [];
       this.knownRuntimeModels = mergeModels(this.knownRuntimeModels, this.modelsByThread[threadId]);
     },
-    async refreshConfiguredModels() {
+    async refreshConfiguredModels(throwOnError = false) {
       try {
         this.configuredModels = (await modelConfigService.selectable()).map((model) => ({ ...model }));
         this.modelCatalogError = "";
       } catch (error) {
         this.modelCatalogError = errorMessage(error);
+        if (throwOnError) throw error;
       }
     },
     async applyPendingModel(thread: ThreadSummary) {
       const pending = this.pendingModelByThread[thread.id];
       if (!pending || !thread.started) return;
+      const generation = thread.generation;
       const current = this.sessionStateByThread[thread.id]?.model;
+      let clearPending = true;
       try {
         if (!current || modelKey(current) !== modelKey(pending)) {
           await agentService.setModel({ threadId: thread.id, provider: pending.provider, modelId: pending.id });
+          if (!thread.started || thread.generation !== generation) {
+            clearPending = false;
+            return;
+          }
           await this.refreshState(thread.id);
         }
+        if (!thread.started || thread.generation !== generation) clearPending = false;
       } catch (error) {
+        if (!thread.started || thread.generation !== generation || isThreadNotRunningError(error)) {
+          clearPending = false;
+          return;
+        }
         const message = errorMessage(error);
         thread.status = "attention";
         thread.error = message;
         this.appendSystem(thread.id, `Unable to apply selected model: ${message}`, message);
       } finally {
-        delete this.pendingModelByThread[thread.id];
+        if (clearPending && this.pendingModelByThread[thread.id] === pending) delete this.pendingModelByThread[thread.id];
       }
     },
     async refreshThinkingLevels(threadId: string) {
+      const thread = this.threads.find((item) => item.id === threadId);
+      const piGeneration = thread?.generation;
+      const wasStarted = thread?.started;
       const generation = (this.thinkingLevelsRefreshGenerationByThread[threadId] ?? 0) + 1;
       this.thinkingLevelsRefreshGenerationByThread[threadId] = generation;
       const requestedModel = this.sessionStateByThread[threadId]?.model;
@@ -2151,11 +2522,16 @@ export const useAppStore = defineStore("app", {
       const response = await agentService.getAvailableThinkingLevels<ThinkingResponse>(threadId);
       const currentModel = this.sessionStateByThread[threadId]?.model;
       const currentModelKey = currentModel ? modelKey(currentModel) : "";
+      if (!isCurrentPiRequest(this.threads, thread, piGeneration, wasStarted)) return;
       if (this.thinkingLevelsRefreshGenerationByThread[threadId] !== generation || currentModelKey !== requestedModelKey) return;
       this.thinkingLevelsByThread[threadId] = response.levels ?? [];
     },
     async refreshCommands(threadId: string) {
+      const thread = this.threads.find((item) => item.id === threadId);
+      const generation = thread?.generation;
+      const wasStarted = thread?.started;
       const response = await agentService.getCommands<CommandsResponse>(threadId);
+      if (!isCurrentPiRequest(this.threads, thread, generation, wasStarted)) return;
       this.commandsByThread[threadId] = (response.commands ?? []).map((command) => ({
         name: command.name,
         description: command.description,
@@ -2189,9 +2565,13 @@ export const useAppStore = defineStore("app", {
       };
     },
     async refreshStats(threadId: string) {
+      const thread = this.threads.find((item) => item.id === threadId);
+      const piGeneration = thread?.generation;
+      const wasStarted = thread?.started;
       const generation = (this.sessionStatsRefreshGenerationByThread[threadId] ?? 0) + 1;
       this.sessionStatsRefreshGenerationByThread[threadId] = generation;
       let stats = await agentService.getSessionStats<SessionStats>(threadId);
+      if (!isCurrentPiRequest(this.threads, thread, piGeneration, wasStarted)) return;
       if (this.sessionStatsRefreshGenerationByThread[threadId] !== generation) return;
       const estimate = this.latestCompactionEstimateByThread[threadId];
       const contextWindow = stats.contextUsage?.contextWindow ?? this.sessionStateByThread[threadId]?.model?.contextWindow;
@@ -2208,13 +2588,80 @@ export const useAppStore = defineStore("app", {
       }
       this.sessionStatsByThread[threadId] = stats;
     },
+    remoteFailureMessage(threadID: string, error: unknown): string {
+      const message = errorMessage(error);
+      const thread = this.threads.find((item) => item.id === threadID);
+      const workspace = thread ? this.remoteWorkspaceForThread(thread) : undefined;
+      if (workspace && hasRemoteCode(message, "REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE")) {
+        this.remoteReadyByWorkspace[workspace.id] = false;
+        this.clearTerminalGenerations(workspace.id);
+        this.markRemoteRepositoryStale(threadID);
+      } else if (workspace && requiresRemoteReconnect(message)) {
+        this.markRemoteTargetStale(workspace.targetId);
+      }
+      return message;
+    },
+    markRemoteWorkspaceStale(workspaceID: string) {
+      this.repositoryRefreshGenerationByWorkspace[workspaceID] = (this.repositoryRefreshGenerationByWorkspace[workspaceID] ?? 0) + 1;
+      this.repositoryLoadingByWorkspace[workspaceID] = false;
+      this.repositoryBranchesGenerationByWorkspace[workspaceID] = (this.repositoryBranchesGenerationByWorkspace[workspaceID] ?? 0) + 1;
+      this.repositoryBranchesLoadingByWorkspace[workspaceID] = false;
+      this.repositoryDiffGenerationByWorkspace[workspaceID] = (this.repositoryDiffGenerationByWorkspace[workspaceID] ?? 0) + 1;
+      this.repositoryDiffLoadingByWorkspace[workspaceID] = false;
+      this.repositoryStaleByWorkspace[workspaceID] = true;
+      for (const thread of this.threads) {
+        if (thread.workspaceId !== workspaceID) continue;
+        this.repositoryFilePreviewGenerationByThread[thread.id] = (this.repositoryFilePreviewGenerationByThread[thread.id] ?? 0) + 1;
+        this.repositoryFilePreviewLoadingByThread[thread.id] = false;
+      }
+    },
+    markRemoteTargetStale(targetID?: string) {
+      if (!targetID) return;
+      remoteTargetProjectionEpochByID.set(targetID, (remoteTargetProjectionEpochByID.get(targetID) ?? 0) + 1);
+      for (const workspace of this.workspaces) {
+        if (workspace.kind !== "ssh" || workspace.targetId !== targetID) continue;
+        const key = workspace.id;
+        this.remoteReadyByWorkspace[key] = false;
+        this.clearTerminalGenerations(key);
+        this.markRemoteWorkspaceStale(key);
+      }
+    },
+    clearTerminalGenerations(workspaceID: string) {
+      for (const thread of this.threads) {
+        if (thread.workspaceId === workspaceID) delete this.terminalGenerationByThread[thread.id];
+      }
+    },
+    markRemoteRepositoryStale(threadID: string) {
+      const thread = this.threads.find((item) => item.id === threadID);
+      const workspace = thread ? this.remoteWorkspaceForThread(thread) : undefined;
+      if (workspace) this.markRemoteWorkspaceStale(workspace.id);
+    },
+    setTerminalGeneration(threadID: string, generation?: number) {
+      if (generation) this.terminalGenerationByThread[threadID] = generation;
+      else delete this.terminalGenerationByThread[threadID];
+    },
+    handleTerminalEvent(event: TerminalEvent) {
+      if (event.type !== "exit" && event.type !== "error") return;
+      if (event.generation && this.terminalGenerationByThread[event.threadId] !== event.generation) return;
+      this.markRemoteRepositoryStale(event.threadId);
+      if (event.error) this.remoteFailureMessage(event.threadId, event.error);
+    },
     appendSystem(threadId: string, text: string, error?: string) {
       const messages = this.messagesByThread[threadId] ?? (this.messagesByThread[threadId] = []);
       messages.push({ id: createID("system"), role: "system", text, thinking: "", timestamp: nowLabel(), streaming: false, error, tools: [] });
     },
     handlePiEvent(sessionEvent: PiSessionEvent) {
       const thread = this.threads.find((item) => item.id === sessionEvent.threadId);
-      if (!thread || (thread.generation && thread.generation !== sessionEvent.event.generation)) return;
+      if (!thread) return;
+      const generationFloor = piStartingGenerationFloor.get(thread.id);
+      const exitedGeneration = piExitedGenerationByThread.get(thread.id);
+      if (exitedGeneration !== undefined && sessionEvent.event.generation <= exitedGeneration) return;
+      if (generationFloor !== undefined) {
+        if (sessionEvent.event.generation <= generationFloor) return;
+        if (sessionEvent.event.generation > thread.generation) thread.generation = sessionEvent.event.generation;
+      } else if (thread.generation && thread.generation !== sessionEvent.event.generation) {
+        return;
+      }
       const payload = sessionEvent.event.payload ?? {};
       const messages = this.messagesByThread[thread.id] ?? (this.messagesByThread[thread.id] = []);
 
@@ -2263,7 +2710,7 @@ export const useAppStore = defineStore("app", {
           {
             const reload = (async () => {
               if (thread.sessionFile) await this.reloadSessionTranscript(thread).catch(() => undefined);
-              void this.refreshActiveRepository();
+              void this.refreshActiveRepository(thread.id);
             })();
             settledReloadPromises.set(thread.id, reload);
             void reload.finally(() => {
@@ -2355,6 +2802,7 @@ export const useAppStore = defineStore("app", {
             startedAt: Date.now(),
             diff: buildToolDiff(String(payload.toolName ?? "tool"), payload.args),
           });
+          if (REMOTE_MUTATING_TOOLS.has(String(payload.toolName ?? ""))) this.markRemoteRepositoryStale(thread.id);
           break;
         }
         case "tool_execution_update":
@@ -2379,6 +2827,7 @@ export const useAppStore = defineStore("app", {
             if (tool.startedAt !== undefined) tool.durationMs = Math.max(0, Date.now() - tool.startedAt);
             const result = payload.result && typeof payload.result === "object" ? payload.result as Record<string, unknown> : undefined;
             tool.diff = buildToolDiff(tool.name, tool.arguments, result?.details) ?? tool.diff;
+            if (REMOTE_MUTATING_TOOLS.has(tool.name)) this.markRemoteRepositoryStale(thread.id);
           }
           break;
         }
@@ -2513,6 +2962,7 @@ export const useAppStore = defineStore("app", {
           break;
         }
         case "runtime_exit":
+          piExitedGenerationByThread.set(thread.id, sessionEvent.event.generation);
           thread.started = false;
           this.waitingForOutputByThread[thread.id] = false;
           this.piProcessOrder = this.piProcessOrder.filter((id) => id !== thread.id);
@@ -2626,7 +3076,10 @@ export const useAppStore = defineStore("app", {
         for (const session of sessions as CatalogSession[]) {
           if (!session.cwd) continue;
           const basePath = session.cwd;
-          let workspace = this.workspaces.find((item) => pathKey(item.path) === pathKey(basePath));
+          let workspace = session.anchorWorkspaceId
+            ? this.workspaces.find((item) => item.id === session.anchorWorkspaceId)
+            : this.workspaces.find((item) => pathKey(item.path) === pathKey(basePath));
+          if (session.anchorWorkspaceId && !workspace) continue;
           if (!workspace) {
             workspace = {
               id: `discovered-${session.id}`,
@@ -2643,6 +3096,7 @@ export const useAppStore = defineStore("app", {
             id,
             title: session.title,
             workspace: workspace.name,
+            workspaceId: workspace.discovered ? undefined : workspace.id,
             workspacePath: workspace.path,
             trust: workspace.trust,
             status: "idle",
@@ -2663,15 +3117,18 @@ export const useAppStore = defineStore("app", {
         for (const saved of desktop.threads ?? []) {
           const existing = saved.sessionPath
             ? historicalThreads.find((thread) => thread.sessionFile && pathKey(thread.sessionFile) === pathKey(saved.sessionPath!)
-              && pathKey(thread.workspacePath) === pathKey(saved.workspacePath))
+              && (saved.workspaceId ? thread.workspaceId === saved.workspaceId : pathKey(thread.workspacePath) === pathKey(saved.workspacePath)))
             : undefined;
-          const workspace = this.workspaces.find((item) => pathKey(item.path) === pathKey(saved.workspacePath));
+          const workspace = saved.workspaceId
+            ? this.workspaces.find((item) => item.id === saved.workspaceId)
+            : this.workspaces.find((item) => pathKey(item.path) === pathKey(saved.workspacePath));
           const interrupted = saved.status === "running" || saved.status === "starting";
           if (existing) {
             existing.id = saved.id;
             existing.trust = (workspace?.trust ?? saved.trust) as "approve" | "deny";
             if (workspace) {
               existing.workspace = workspace.name;
+              existing.workspaceId = workspace.id;
               existing.workspacePath = workspace.path;
             }
             existing.unread = saved.unread;
@@ -2685,6 +3142,7 @@ export const useAppStore = defineStore("app", {
               id: saved.id,
               title: saved.title,
               workspace: workspace.name,
+              workspaceId: workspace.id,
               workspacePath: workspace.path,
               trust: workspace.trust,
               status: interrupted ? "attention" : saved.status as ThreadStatus,
@@ -2750,6 +3208,7 @@ export const useAppStore = defineStore("app", {
         threads: this.threads.map((thread) => ({
           id: thread.id,
           title: thread.title,
+          workspaceId: thread.workspaceId,
           workspacePath: thread.workspacePath,
           trust: thread.trust,
           status: thread.status,

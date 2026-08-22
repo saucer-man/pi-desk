@@ -1,0 +1,24 @@
+Port 22
+ListenAddress 0.0.0.0
+HostKey /hostkeys/ssh_host_ed25519_key
+KexAlgorithms curve25519-sha256,diffie-hellman-group14-sha256
+PidFile /run/sshd/sshd.pid
+AuthorizedKeysFile .ssh/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+AllowUsers fixture
+UsePAM no
+PrintMotd no
+PermitUserEnvironment no
+AllowAgentForwarding no
+AllowTcpForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+ClientAliveInterval 15
+ClientAliveCountMax 2
+LogLevel VERBOSE
+Subsystem sftp internal-sftp

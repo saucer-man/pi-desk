@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"pi-desk/internal/pirpc"
 	"pi-desk/internal/piruntime"
 	"pi-desk/internal/sessionindex"
+	"pi-desk/internal/workspace"
 )
 
 type fakeAgentRuntime struct {
@@ -27,6 +29,7 @@ type fakeAgentRuntime struct {
 	callHasDeadline bool
 	failCommand     string
 	stopError       error
+	stopCheck       func()
 	sent            map[string]any
 	stateData       json.RawMessage
 	responseData    json.RawMessage
@@ -53,6 +56,67 @@ func (runtime *fakeAgentRuntime) Call(ctx context.Context, threadID string, comm
 		return pirpc.Response{Type: "response", Command: command["type"].(string), Success: true, Data: runtime.responseData}, nil
 	}
 	return pirpc.Response{Type: "response", Command: command["type"].(string), Success: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+func TestAgentServiceRejectsAmbiguousWorkspaceAndHashesRemoteContext(t *testing.T) {
+	runtime := &fakeAgentRuntime{}
+	service := newAgentService(runtime)
+	if _, err := service.StartSession(domain.StartSessionRequest{ThreadID: "thread", Workspace: "local", WorkspaceID: "workspace-remote", Trust: "approve"}); err == nil {
+		t.Fatal("ambiguous local and remote workspace was accepted")
+	}
+	record := workspace.Record{ID: "workspace-a", Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{
+		TargetID: "target-a", RequestedRoot: "/srv/repo", CanonicalRoot: "/srv/repo", Device: 1, Inode: 2,
+		HostKeyBinding: workspace.HostKeyBinding{Algorithm: "ssh-ed25519", SHA256: "SHA256:key"},
+	}}}
+	first := remoteTaskContextHash(record, 7, "context-a")
+	if first != remoteTaskContextHash(record, 7, "context-a") || first == remoteTaskContextHash(record, 8, "context-a") {
+		t.Fatal("remote prompt context hash is unstable or ignores generation")
+	}
+	if first == remoteTaskContextHash(record, 7, "context-b") {
+		t.Fatal("remote prompt context hash ignores AGENTS context")
+	}
+	record.Location.SSH.Inode++
+	if first == remoteTaskContextHash(record, 7, "context-a") {
+		t.Fatal("remote prompt context hash ignores root identity")
+	}
+}
+
+func TestAgentServiceRejectsRemotePromptAndBashBeforeRPCWhenBrokerIsRevoked(t *testing.T) {
+	runtime := &fakeAgentRuntime{}
+	service := newAgentService(runtime)
+	service.remoteLifecycle = &RemoteWorkspaceLifecycle{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service.remoteSessions["thread-remote"] = remoteAgentSession{
+		workspaceID: "workspace-remote",
+		broker:      &remoteTaskBroker{ctx: ctx},
+	}
+	service.remoteThreads["thread-remote"] = "workspace-remote"
+
+	_, err := service.SendPrompt(domain.PromptRequest{ThreadID: "thread-remote", Message: "continue"})
+	if !errors.Is(err, ErrRemoteContextChanged) {
+		t.Fatalf("SendPrompt error = %v, want %v", err, ErrRemoteContextChanged)
+	}
+	if runtime.command != nil {
+		t.Fatalf("revoked remote prompt reached Pi RPC: %#v", runtime.command)
+	}
+	_, err = service.Bash(domain.BashRequest{ThreadID: "thread-remote", Command: "git status"})
+	if !errors.Is(err, ErrRemoteContextChanged) {
+		t.Fatalf("Bash error = %v, want %v", err, ErrRemoteContextChanged)
+	}
+	if runtime.command != nil {
+		t.Fatalf("revoked remote Bash reached Pi RPC: %#v", runtime.command)
+	}
+	delete(service.remoteSessions, "thread-remote")
+	if _, err := service.SendPrompt(domain.PromptRequest{ThreadID: "thread-remote", Message: "still remote"}); !errors.Is(err, ErrRemoteContextChanged) {
+		t.Fatalf("unbound remote prompt error=%v", err)
+	}
+	if _, err := service.StartSession(domain.StartSessionRequest{ThreadID: "thread-remote", Workspace: "D:\\local", Trust: "approve"}); err == nil {
+		t.Fatal("remote-owned thread fell back to a local Pi workspace")
+	}
+	if _, err := service.StartSession(domain.StartSessionRequest{ThreadID: "thread-remote", WorkspaceID: "workspace-other", Trust: "approve"}); err == nil {
+		t.Fatal("remote-owned thread changed WorkspaceID")
+	}
 }
 
 func TestAgentServiceEditsPersistedMessageAndReloadsPi(t *testing.T) {
@@ -165,6 +229,9 @@ func TestAgentServiceForksBeforeRootUserIntoPersistedSession(t *testing.T) {
 
 func (runtime *fakeAgentRuntime) Stop(threadID string) error {
 	runtime.stopped = threadID
+	if runtime.stopCheck != nil {
+		runtime.stopCheck()
+	}
 	return runtime.stopError
 }
 
@@ -177,6 +244,9 @@ func (*fakeAgentRuntime) Diagnostics(string) (string, error) { return "diagnosti
 func (*fakeAgentRuntime) ActiveCount() int                   { return 0 }
 func (runtime *fakeAgentRuntime) StopAll() error {
 	runtime.stopped = "*"
+	if runtime.stopCheck != nil {
+		runtime.stopCheck()
+	}
 	return runtime.stopError
 }
 func (runtime *fakeAgentRuntime) Shutdown() { runtime.shutdown = true }
@@ -315,6 +385,20 @@ func TestCompactSessionBranchesRejectsMalformedResponse(t *testing.T) {
 	}
 }
 
+func TestAgentServicePreservesRemoteBashErrorCodePrefix(t *testing.T) {
+	for _, message := range []string{
+		"REMOTE_DISCONNECTED: transport closed",
+		"REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE",
+		"REMOTE_OUTCOME_UNKNOWN: inspect before retry",
+	} {
+		runtime := &fakeAgentRuntime{callError: &pirpc.RemoteError{Command: "bash", Message: message}}
+		service := newAgentService(runtime)
+		if _, err := service.Bash(domain.BashRequest{ThreadID: "thread-1", Command: "git status"}); err == nil || err.Error() != message {
+			t.Fatalf("bash error=%v want %q", err, message)
+		}
+	}
+}
+
 func TestAgentServiceForwardsSessionLifecycleCommands(t *testing.T) {
 	runtime := &fakeAgentRuntime{}
 	service := newAgentService(runtime)
@@ -398,6 +482,59 @@ func TestAgentServiceStopsAndShutsDownRuntime(t *testing.T) {
 	}
 	if _, err := service.GetState(domain.ThreadRequest{ThreadID: "thread-1"}); err == nil {
 		t.Fatal("expected service to reject calls after shutdown")
+	}
+}
+
+func TestAgentServiceRevokesRemoteBrokerBeforePiMaintenance(t *testing.T) {
+	runtime := &fakeAgentRuntime{}
+	service := newAgentService(runtime)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	broker := &remoteTaskBroker{ctx: ctx, cancel: cancel, listener: listener, conns: make(map[net.Conn]struct{}), dir: t.TempDir()}
+	service.remoteSessions["thread-remote"] = remoteAgentSession{workspaceID: "workspace-remote", broker: broker}
+	runtime.stopCheck = func() {
+		if broker.ctx.Err() == nil {
+			t.Error("remote broker remained active while stopping Pi for maintenance")
+		}
+	}
+
+	release, err := service.preparePiMaintenance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if runtime.stopped != "*" || len(service.remoteSessions) != 0 {
+		t.Fatalf("maintenance cleanup stopped=%q sessions=%#v", runtime.stopped, service.remoteSessions)
+	}
+}
+
+func TestAgentServiceReportsStableDisconnectWhenRemoteStopRevokesTask(t *testing.T) {
+	runtime := &fakeAgentRuntime{stopError: errors.New("Pi stop timed out")}
+	service := newAgentService(runtime)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service.remoteSessions["thread-remote"] = remoteAgentSession{workspaceID: "workspace-remote", broker: &remoteTaskBroker{
+		ctx: ctx, cancel: cancel, listener: listener, conns: make(map[net.Conn]struct{}), dir: t.TempDir(),
+	}}
+	service.remoteThreads["thread-remote"] = "workspace-remote"
+
+	runtime.stopCheck = func() {
+		if _, exists := service.remoteSessions["thread-remote"]; exists {
+			t.Error("remote broker was still active while stopping Pi")
+		}
+	}
+	err = service.StopSession(domain.ThreadRequest{ThreadID: "thread-remote"})
+	if err == nil || !strings.HasPrefix(err.Error(), "REMOTE_DISCONNECTED:") {
+		t.Fatalf("remote stop error=%v", err)
+	}
+	if _, exists := service.remoteSessions["thread-remote"]; exists {
+		t.Fatal("failed remote stop retained the revoked task session")
 	}
 }
 

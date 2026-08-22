@@ -18,6 +18,8 @@ const repository = computed(() => appStore.activeRepository);
 const repositoryFiles = computed(() => repository.value?.files ?? []);
 const changedFiles = computed(() => repository.value?.git.files ?? []);
 const activeDiff = computed(() => appStore.activeRepositoryDiff);
+const remoteWorkspace = computed(() => appStore.activeThread ? appStore.remoteWorkspaceForThread(appStore.activeThread) : undefined);
+const workspaceLabel = computed(() => remoteWorkspace.value?.remoteRoot || appStore.activeThread?.workspacePath || "");
 const filePreview = computed(() => appStore.activeRepositoryFilePreview);
 const filePreviewName = computed(() => appStore.activeRepositoryFilePreviewPath.split(/[\\/]/).pop() || appStore.activeRepositoryFilePreviewPath);
 const filteredBranches = computed(() => {
@@ -90,7 +92,7 @@ watch(() => appStore.activeThreadId, () => {
         <FileCode2 :size="14" aria-hidden="true" />
         <strong :title="filePreview?.absolutePath || appStore.activeRepositoryFilePreviewPath">{{ filePreviewName }}</strong>
         <span v-if="appStore.activeRepositoryFilePreviewLine" class="file-preview-line">:{{ appStore.activeRepositoryFilePreviewLine }}</span>
-        <div class="inspector-file-actions">
+        <div v-if="!remoteWorkspace" class="inspector-file-actions">
           <button class="icon-button" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
           <button class="icon-button" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
         </div>
@@ -164,7 +166,7 @@ watch(() => appStore.activeThreadId, () => {
       <div v-if="appStore.activeRepositoryDiffPath" class="diff-toolbar">
         <button class="icon-button" type="button" title="Back to changes" @click="appStore.closeRepositoryDiff()"><ArrowLeft :size="15" /></button>
         <strong :title="appStore.activeRepositoryDiffPath">{{ appStore.activeRepositoryDiffPath }}</strong>
-        <div class="diff-toolbar-actions">
+        <div v-if="!remoteWorkspace" class="diff-toolbar-actions">
           <button class="icon-button" type="button" title="Open file" @click="void appStore.openActiveRepositoryFile()"><ExternalLink :size="14" /></button>
           <button class="icon-button" type="button" title="Show in file manager" @click="void appStore.openActiveRepositoryFile(true)"><FolderOpen :size="14" /></button>
         </div>
@@ -193,8 +195,9 @@ watch(() => appStore.activeThreadId, () => {
         </template>
       </div>
       <template v-else>
+        <div v-if="appStore.activeRepositoryStale && repository" class="diff-notice error-text">Repository data is stale. Refresh after reconnecting.</div>
         <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-        <div v-else-if="appStore.activeRepositoryError" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
+        <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
         <div v-else-if="!changedFiles.length" class="repository-state">
           <FileDiff :size="18" /><span>No working tree changes</span>
         </div>
@@ -210,7 +213,7 @@ watch(() => appStore.activeThreadId, () => {
 
     <div v-else-if="appStore.inspectorTab === 'context'" class="inspector-content context-panel">
       <dl v-if="appStore.activeThread">
-        <div><dt>{{ tr("inspector.workspace") }}</dt><dd :title="appStore.activeThread.workspacePath">{{ appStore.activeThread.workspacePath }}</dd></div>
+        <div><dt>{{ tr("inspector.workspace") }}</dt><dd :title="workspaceLabel">{{ workspaceLabel }}</dd></div>
         <div><dt>{{ tr("inspector.piProcess") }}</dt><dd>{{ appStore.activeThread.started ? tr("inspector.generation", { generation: appStore.activeThread.generation }) : tr("common.notStarted") }}</dd></div>
         <div><dt>{{ tr("inspector.session") }}</dt><dd>{{ state?.sessionId || tr("inspector.createdOnPrompt") }}</dd></div>
         <div><dt>{{ tr("inspector.model") }}</dt><dd>{{ state?.model ? `${state.model.provider}/${state.model.id}` : tr("common.auto") }}</dd></div>
@@ -227,8 +230,9 @@ watch(() => appStore.activeThreadId, () => {
           <Search :size="13" />
           <input v-model="fileQuery" type="search" :placeholder="tr('inspector.filterFiles')" :aria-label="tr('inspector.filterFiles')" />
         </label>
+        <div v-if="appStore.activeRepositoryStale && repository" class="diff-notice error-text">Repository data is stale. Refresh after reconnecting.</div>
         <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-        <div v-else-if="appStore.activeRepositoryError" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
+        <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
         <div v-else-if="fileTree.length" class="file-tree">
           <FileTreeNode v-for="node in fileTree" :key="`${node.directory}-${node.path}`" :node="node" @mention="appStore.insertFileMention" />
         </div>

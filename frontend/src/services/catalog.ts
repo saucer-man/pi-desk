@@ -18,6 +18,9 @@ export const catalogService = {
   async addWorkspace(path: string, trust: "approve" | "deny"): Promise<WorkspaceSummary> {
     return await CatalogService.AddWorkspace({ path, trust });
   },
+  async renameWorkspace(id: string, name: string): Promise<WorkspaceSummary> {
+    return await CatalogService.RenameWorkspace({ id, name });
+  },
   async removeWorkspace(id: string): Promise<void> {
     await CatalogService.RemoveWorkspace({ id });
   },

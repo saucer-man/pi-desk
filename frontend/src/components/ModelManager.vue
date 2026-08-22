@@ -115,6 +115,7 @@ const hasRequiredProbeFields = computed(() => Boolean(editor.baseUrl.trim() && e
 const hasRequiredQuotaFields = computed(() => Boolean(editor.baseUrl.trim() && editor.api));
 const availableDiscoveredModels = computed(() => discoveredModels.value.filter((model) => !findModel(editor.providerId.trim(), model.id)));
 const modelDefaults = computed(() => defaultsForModel(editor.modelId));
+const usesBuiltInOpenAIProvider = computed(() => editor.providerId.trim().toLocaleLowerCase() === "openai");
 const testModelName = computed(() => editor.modelName.trim() || editor.modelId.trim());
 
 function defaultsForModel(modelId: string, discovered?: DiscoveredModel): ModelDefaults | undefined {
@@ -609,7 +610,8 @@ onMounted(() => { void loadConfig(); });
           </label>
           <label class="model-field">
             <span>{{ tr("settings.providerName") }}</span>
-            <input v-model="editor.providerId" spellcheck="false" placeholder="openai" />
+            <input v-model="editor.providerId" data-testid="provider-id" spellcheck="false" placeholder="openai-custom" />
+            <small v-if="usesBuiltInOpenAIProvider" class="is-warning" role="status">{{ tr("settings.openAIProviderMergeWarning") }}</small>
             <small v-if="isExisting">{{ tr("settings.providerRenameHelp") }}</small>
           </label>
           <label class="model-field model-field-wide">

@@ -2,6 +2,7 @@ package appservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"pi-desk/internal/pirpc"
 	"pi-desk/internal/piruntime"
 	"pi-desk/internal/sessionindex"
+	"pi-desk/internal/workspace"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -36,6 +38,7 @@ const (
 	maxBranchTextRunes     = 400
 	maxBranchLabelRunes    = 200
 	maxExtensionUIResponse = 1 << 20
+	remoteHandshakeTimeout = 5 * time.Second
 )
 
 type agentRuntime interface {
@@ -57,28 +60,47 @@ func (service *AgentService) runningSessionCount() int {
 	return runtime.ActiveCount()
 }
 
-type AgentService struct {
-	locator *piruntime.Locator
-	index   *sessionindex.Index
+var ErrRemoteContextChanged = errors.New("REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE")
 
-	mu            sync.RWMutex
-	mutationMu    sync.Mutex
-	maintenanceMu sync.RWMutex
-	runtime       agentRuntime
+type remoteAgentSession struct {
+	workspaceID string
+	generation  uint64
+	contextHash [32]byte
+	broker      *remoteTaskBroker
 }
 
-func NewAgentService(locator *piruntime.Locator, index *sessionindex.Index) *AgentService {
-	return &AgentService{locator: locator, index: index}
+type AgentService struct {
+	locator         *piruntime.Locator
+	index           *sessionindex.Index
+	remoteLifecycle *RemoteWorkspaceLifecycle
+	anchorRoot      string
+
+	mu             sync.RWMutex
+	mutationMu     sync.Mutex
+	maintenanceMu  sync.RWMutex
+	runtime        agentRuntime
+	remoteSessions map[string]remoteAgentSession
+	remoteThreads  map[string]string
+}
+
+func NewAgentService(locator *piruntime.Locator, index *sessionindex.Index, remoteLifecycle *RemoteWorkspaceLifecycle, anchorRoot string) *AgentService {
+	return &AgentService{
+		locator: locator, index: index, remoteLifecycle: remoteLifecycle, anchorRoot: anchorRoot,
+		remoteSessions: make(map[string]remoteAgentSession), remoteThreads: make(map[string]string),
+	}
 }
 
 func newAgentService(runtime agentRuntime) *AgentService {
-	return &AgentService{runtime: runtime}
+	return &AgentService{runtime: runtime, remoteSessions: make(map[string]remoteAgentSession), remoteThreads: make(map[string]string)}
 }
 
 func (service *AgentService) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	app := application.Get()
 	runtime := piruntime.NewSupervisor(ctx, piruntime.NewExecStarter(service.locator), func(event piruntime.SessionEvent) {
 		app.Event.Emit(piEventName, event)
+		if event.Event.Type == "runtime_exit" {
+			service.closeRemoteSession(event.ThreadID, event.Event.Generation)
+		}
 	})
 	service.mu.Lock()
 	service.runtime = runtime
@@ -93,6 +115,7 @@ func (service *AgentService) ServiceShutdown() error {
 	runtime := service.runtime
 	service.runtime = nil
 	service.mu.Unlock()
+	service.closeAllRemoteSessions()
 	if runtime != nil {
 		runtime.Shutdown()
 	}
@@ -109,21 +132,104 @@ func (service *AgentService) StartSession(request domain.StartSessionRequest) (d
 	ctx, cancel := context.WithTimeout(context.Background(), sessionTimeout)
 	defer cancel()
 
-	info, err := runtime.Start(ctx, piruntime.StartConfig{
-		ThreadID:       strings.TrimSpace(request.ThreadID),
-		Workspace:      strings.TrimSpace(request.Workspace),
-		SessionPath:    strings.TrimSpace(request.SessionPath),
-		SessionName:    strings.TrimSpace(request.SessionName),
-		Trust:          piruntime.TrustMode(request.Trust),
-		NoSession:      request.NoSession,
-		Offline:        request.Offline,
-		DisableThemes:  request.DisableThemes,
-		DisableSkills:  request.DisableSkills,
-		DisablePlugins: request.DisablePlugins,
-		ProxyURL:       strings.TrimSpace(request.ProxyURL),
-	})
+	threadID, workspaceID, localWorkspace := strings.TrimSpace(request.ThreadID), strings.TrimSpace(request.WorkspaceID), strings.TrimSpace(request.Workspace)
+	service.mu.RLock()
+	ownedWorkspaceID := service.remoteThreads[threadID]
+	service.mu.RUnlock()
+	if ownedWorkspaceID != "" && workspaceID != ownedWorkspaceID {
+		return domain.LiveSession{}, errors.New("remote Pi thread workspace identity cannot change")
+	}
+	if workspaceID != "" && localWorkspace != "" {
+		return domain.LiveSession{}, errors.New("workspace id and local workspace path are mutually exclusive")
+	}
+	config := piruntime.StartConfig{
+		ThreadID: threadID, Workspace: localWorkspace,
+		SessionPath: strings.TrimSpace(request.SessionPath), SessionName: strings.TrimSpace(request.SessionName),
+		Trust: piruntime.TrustMode(request.Trust), NoSession: request.NoSession, Offline: request.Offline,
+		DisableThemes: request.DisableThemes, DisableSkills: request.DisableSkills,
+		DisablePlugins: request.DisablePlugins, ProxyURL: strings.TrimSpace(request.ProxyURL),
+	}
+	var broker *remoteTaskBroker
+	if workspaceID != "" {
+		if config.Trust != piruntime.TrustApprove || service.remoteLifecycle == nil || service.locator == nil {
+			return domain.LiveSession{}, errors.New("remote workspace requires trust approval and an available lifecycle")
+		}
+		probeContext, probeCancel := context.WithTimeout(ctx, commandTimeout)
+		piStatus := service.locator.Probe(probeContext)
+		probeCancel()
+		if piStatus.State != domain.RuntimeReady || piStatus.Version == "" {
+			return domain.LiveSession{}, errors.New("remote workspace requires a compatible installed Pi version")
+		}
+		if _, err := verifyRemoteAdapterBundle(piStatus.Version); err != nil {
+			return domain.LiveSession{}, err
+		}
+		if _, err := service.remoteLifecycle.AcquireTask(ctx, threadID, workspaceID); err != nil {
+			return domain.LiveSession{}, err
+		}
+		service.mu.Lock()
+		if service.remoteThreads[threadID] == "" && len(service.remoteThreads) >= 500 {
+			service.mu.Unlock()
+			_ = service.remoteLifecycle.StopTask(threadID)
+			return domain.LiveSession{}, errors.New("remote Pi thread identity limit reached")
+		}
+		service.remoteThreads[threadID] = workspaceID
+		service.mu.Unlock()
+		remoteRuntime, lease, record, err := service.remoteLifecycle.taskBackend(threadID)
+		if err != nil {
+			_ = service.remoteLifecycle.StopTask(threadID)
+			return domain.LiveSession{}, err
+		}
+		anchor, err := workspace.EnsureSSHAnchor(service.anchorRoot, workspaceID)
+		if err != nil {
+			_ = service.remoteLifecycle.StopTask(threadID)
+			return domain.LiveSession{}, err
+		}
+		broker, err = newRemoteTaskBroker(remoteRuntime, lease, record.Location.SSH.CanonicalRoot, piStatus.Version)
+		if err != nil {
+			_ = service.remoteLifecycle.StopTask(threadID)
+			return domain.LiveSession{}, err
+		}
+		config.Workspace = anchor
+		config.RemoteAdapter, config.RemoteSocket, config.RemoteToken, config.RemoteRoot = broker.adapter, broker.socket, broker.token, record.Location.SSH.CanonicalRoot
+		config.RemoteAdapterSHA256, config.RemoteAdapterSize = broker.manifest.SHA256, int64(broker.manifest.Size)
+		service.mu.Lock()
+		if _, exists := service.remoteSessions[threadID]; exists {
+			service.mu.Unlock()
+			_ = broker.Close(context.Background())
+			_ = service.remoteLifecycle.StopTask(threadID)
+			return domain.LiveSession{}, errors.New("remote Pi task is already active")
+		}
+		service.remoteSessions[threadID] = remoteAgentSession{workspaceID: workspaceID, contextHash: remoteTaskContextHash(record, lease.Generation(), broker.contextHash), broker: broker}
+		service.mu.Unlock()
+	}
+	info, err := runtime.Start(ctx, config)
 	if err != nil {
+		if broker != nil {
+			service.closeRemoteSession(threadID, 0)
+		}
 		return domain.LiveSession{}, err
+	}
+	if broker != nil {
+		handshakeContext, handshakeCancel := context.WithTimeout(ctx, remoteHandshakeTimeout)
+		handshakeErr := broker.waitHandshake(handshakeContext, info.ProcessID)
+		handshakeCancel()
+		if handshakeErr != nil {
+			service.closeRemoteSession(threadID, 0)
+			_ = runtime.Stop(threadID)
+			return domain.LiveSession{}, fmt.Errorf("%w: remote adapter coverage handshake", handshakeErr)
+		}
+		service.mu.Lock()
+		current, exists := service.remoteSessions[threadID]
+		if exists && current.broker == broker {
+			current.generation = info.Generation
+			service.remoteSessions[threadID] = current
+		}
+		service.mu.Unlock()
+		if !exists {
+			service.closeRemoteSession(threadID, 0)
+			_ = runtime.Stop(threadID)
+			return domain.LiveSession{}, errors.New("remote Pi task exited during startup")
+		}
 	}
 	return domain.LiveSession{
 		ThreadID:   info.ThreadID,
@@ -140,6 +246,7 @@ func (service *AgentService) preparePiMaintenance() (func(), error) {
 		release()
 		return nil, err
 	}
+	service.closeAllRemoteSessions()
 	if err := runtime.StopAll(); err != nil {
 		release()
 		return nil, err
@@ -156,14 +263,27 @@ func (service *AgentService) stopThreadIfRunning(threadID string) error {
 	if err != nil {
 		return err
 	}
-	err = runtime.Stop(strings.TrimSpace(threadID))
+	threadID = strings.TrimSpace(threadID)
+	service.mu.RLock()
+	remoteOwned := service.remoteThreads[threadID] != ""
+	service.mu.RUnlock()
+	if remoteOwned {
+		service.closeRemoteSession(threadID, 0)
+	}
+	err = runtime.Stop(threadID)
 	if errors.Is(err, piruntime.ErrThreadNotRunning) {
 		return nil
+	}
+	if err != nil && remoteOwned {
+		return errors.New("REMOTE_DISCONNECTED: remote task was revoked because Pi did not stop cleanly")
 	}
 	return err
 }
 
 func (service *AgentService) SendPrompt(request domain.PromptRequest) (domain.CommandResult, error) {
+	if err := service.admitRemotePrompt(strings.TrimSpace(request.ThreadID)); err != nil {
+		return domain.CommandResult{}, err
+	}
 	message := strings.TrimSpace(request.Message)
 	if message == "" && len(request.Images) == 0 {
 		return domain.CommandResult{}, errors.New("prompt is required")
@@ -253,6 +373,9 @@ func (service *AgentService) AbortRetry(request domain.ThreadRequest) (domain.Co
 }
 
 func (service *AgentService) Bash(request domain.BashRequest) (domain.CommandResult, error) {
+	if err := service.admitRemotePrompt(strings.TrimSpace(request.ThreadID)); err != nil {
+		return domain.CommandResult{}, err
+	}
 	commandText := strings.TrimSpace(request.Command)
 	if commandText == "" {
 		return domain.CommandResult{}, errors.New("bash command is required")
@@ -260,9 +383,23 @@ func (service *AgentService) Bash(request domain.BashRequest) (domain.CommandRes
 	if len(commandText) > maxPromptBytes {
 		return domain.CommandResult{}, errors.New("bash command exceeds the 1 MiB limit")
 	}
-	return service.callWithTimeout(request.ThreadID, map[string]any{
+	result, err := service.callWithTimeout(request.ThreadID, map[string]any{
 		"type": "bash", "command": commandText, "excludeFromContext": request.ExcludeFromContext,
 	}, longCommandTimeout)
+	var remoteError *pirpc.RemoteError
+	if errors.As(err, &remoteError) && isRemoteReconnectMessage(remoteError.Message) {
+		return domain.CommandResult{}, errors.New(remoteError.Message)
+	}
+	return result, err
+}
+
+func isRemoteReconnectMessage(message string) bool {
+	for _, code := range [...]string{"REMOTE_DISCONNECTED", "REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE", "REMOTE_OUTCOME_UNKNOWN"} {
+		if message == code || strings.HasPrefix(message, code+":") {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *AgentService) AbortBash(request domain.ThreadRequest) (domain.CommandResult, error) {
@@ -665,6 +802,73 @@ func (service *AgentService) callWithContext(ctx context.Context, threadID strin
 		return domain.CommandResult{}, err
 	}
 	return domain.CommandResult{Command: response.Command, DataJSON: string(response.Data)}, nil
+}
+
+func (service *AgentService) admitRemotePrompt(threadID string) error {
+	service.mu.RLock()
+	session, remote := service.remoteSessions[threadID]
+	remoteOwned := service.remoteThreads[threadID] != ""
+	service.mu.RUnlock()
+	if !remoteOwned {
+		return nil
+	}
+	if !remote {
+		return ErrRemoteContextChanged
+	}
+	if service.remoteLifecycle == nil || session.broker == nil || session.broker.ctx.Err() != nil {
+		return ErrRemoteContextChanged
+	}
+	_, lease, record, err := service.remoteLifecycle.taskBackend(threadID)
+	if err != nil || lease.WorkspaceID() != session.workspaceID {
+		return ErrRemoteContextChanged
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	if session.broker.validateContext(ctx) != nil || remoteTaskContextHash(record, lease.Generation(), session.broker.contextHash) != session.contextHash {
+		return ErrRemoteContextChanged
+	}
+	return nil
+}
+
+func remoteTaskContextHash(record workspace.Record, generation uint64, contextHash string) [32]byte {
+	ssh := record.Location.SSH
+	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%d\x00%d\x00%s\x00%s\x00%s\x00%s", record.ID, ssh.TargetID, generation, ssh.RequestedRoot, ssh.CanonicalRoot, ssh.Device, ssh.Inode, ssh.HostKeyBinding.Algorithm, ssh.HostKeyBinding.SHA256, ssh.HostKeyBinding.ConfigFingerprint, contextHash)))
+}
+
+func (service *AgentService) closeRemoteSession(threadID string, generation uint64) {
+	service.mu.Lock()
+	session, ok := service.remoteSessions[threadID]
+	if ok && generation != 0 && session.generation != 0 && session.generation != generation {
+		ok = false
+	}
+	if ok {
+		delete(service.remoteSessions, threadID)
+	}
+	service.mu.Unlock()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = session.broker.Close(ctx)
+	if service.remoteLifecycle != nil {
+		_ = service.remoteLifecycle.StopTask(threadID)
+	}
+}
+
+func (service *AgentService) closeAllRemoteSessions() {
+	service.mu.Lock()
+	sessions := service.remoteSessions
+	service.remoteSessions = make(map[string]remoteAgentSession)
+	service.mu.Unlock()
+	for threadID, session := range sessions {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = session.broker.Close(ctx)
+		cancel()
+		if service.remoteLifecycle != nil {
+			_ = service.remoteLifecycle.StopTask(threadID)
+		}
+	}
 }
 
 func (service *AgentService) getRuntime() (agentRuntime, error) {

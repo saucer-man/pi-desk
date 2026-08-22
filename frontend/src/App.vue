@@ -11,6 +11,8 @@ import ExtensionDialog from "./components/ExtensionDialog.vue";
 import ExportResultDialog from "./components/ExportResultDialog.vue";
 import InspectorPanel from "./components/InspectorPanel.vue";
 import NewTaskDialog from "./components/NewTaskDialog.vue";
+import OrphanSessionsDialog from "./components/OrphanSessionsDialog.vue";
+import RemoteReconnectDialog from "./components/RemoteReconnectDialog.vue";
 import PaneResizer from "./components/PaneResizer.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import WindowControls from "./components/WindowControls.vue";
@@ -125,6 +127,8 @@ watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
     <NewTaskDialog v-if="appStore.newTaskOpen" />
     <SettingsDialog v-if="appStore.settingsOpen" />
     <AboutDialog v-if="appStore.aboutOpen" />
+    <OrphanSessionsDialog v-if="appStore.orphanSessionsOpen" />
+    <RemoteReconnectDialog v-if="appStore.remoteReconnectOpen" />
     <BranchDialog v-if="appStore.branchPanelOpen" />
     <DeleteSessionDialog v-if="appStore.deleteDialogOpen" />
     <ExportResultDialog v-if="appStore.exportDialogOpen" />

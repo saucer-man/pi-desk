@@ -57,6 +57,10 @@ export function RemoveWorkspace(request: domain$0.WorkspaceRequest): $Cancellabl
     return $Call.ByID(1732600386, request);
 }
 
+export function RenameWorkspace(request: domain$0.RenameWorkspaceRequest): $CancellablePromise<domain$0.WorkspaceSummary> {
+    return $Call.ByID(3678873748, request);
+}
+
 export function SaveDesktopState(state: domain$0.DesktopState): $CancellablePromise<void> {
     return $Call.ByID(2642902473, state);
 }

@@ -239,6 +239,65 @@ func TestCatalogServiceMapsSessions(t *testing.T) {
 	}
 }
 
+func TestCatalogServiceMapsOnlyKnownSSHAnchorSessions(t *testing.T) {
+	catalog, _, record := remoteBackendCatalog(t)
+	index := &fakeSessionLister{sessions: []sessionindex.Summary{
+		{ID: "known", Path: "known.jsonl", CWD: "anchor", SSHAnchor: true, AnchorWorkspaceID: record.ID, Title: "Known"},
+		{ID: "orphan", Path: "orphan.jsonl", CWD: "anchor", SSHAnchor: true, AnchorWorkspaceID: "workspace-fedcba9876543210fedcba9876543210", Title: "Orphan"},
+	}}
+	service := newCatalogService(catalog, index, nil)
+
+	sessions, err := service.ListSessions(domain.ListSessionsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "known" || sessions[0].AnchorWorkspaceID != record.ID {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if _, err := service.GetSessionSnapshot(domain.SessionSnapshotRequest{Path: "known.jsonl"}); err != nil {
+		t.Fatalf("known SSH session snapshot failed: %v", err)
+	}
+	if _, err := service.GetSessionSnapshot(domain.SessionSnapshotRequest{Path: "orphan.jsonl"}); err == nil {
+		t.Fatal("ordinary snapshot accepted an orphan SSH transcript")
+	}
+}
+
+func TestCatalogServiceRejectsSSHAnchorForLocalWorkspaceIdentity(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	catalog := workspace.NewCatalog(filepath.Join(root, "state.json"))
+	record, err := catalog.Add(project, "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := &fakeSessionLister{sessions: []sessionindex.Summary{{
+		ID: "invalid-anchor", Path: "invalid.jsonl", CWD: project,
+		SSHAnchor: true, AnchorWorkspaceID: record.ID, Title: "Invalid",
+	}}}
+	service := newCatalogService(catalog, index, nil)
+
+	sessions, err := service.ListSessions(domain.ListSessionsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("local workspace accepted an SSH anchor session: %#v", sessions)
+	}
+	service.trash = func(string) (string, error) {
+		t.Fatal("ordinary delete reached trash for an invalid SSH anchor")
+		return "", nil
+	}
+	if _, err := service.GetSessionSnapshot(domain.SessionSnapshotRequest{Path: "invalid.jsonl"}); err == nil {
+		t.Fatal("ordinary snapshot accepted an SSH anchor bound to a local workspace")
+	}
+	if _, err := service.DeleteSession(domain.DeleteSessionRequest{Path: "invalid.jsonl"}); err == nil {
+		t.Fatal("ordinary delete accepted an SSH anchor bound to a local workspace")
+	}
+}
+
 func TestCatalogServiceReadsSessionSnapshotWithoutStartingPi(t *testing.T) {
 	want := []json.RawMessage{json.RawMessage(`{"role":"user","content":"Inspect runtime"}`)}
 	index := &fakeSessionLister{
@@ -306,8 +365,38 @@ func TestCatalogServicePersistsDesktopState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ActiveThreadID != "thread-1" || len(state.Threads) != 1 || state.Threads[0].Draft != "continue" || !state.Threads[0].Unread || state.Preferences == nil || state.Preferences.Language != "zh-CN" || !state.Preferences.OfflineMode || state.Preferences.SidebarWidth != 344 || state.Preferences.InspectorWidth != 468 || state.Preferences.WorkspaceApplication != "vscode" {
+	if state.ActiveThreadID != "thread-1" || len(state.Threads) != 1 || state.Threads[0].WorkspaceID != workspaceRecord.ID || state.Threads[0].Draft != "continue" || !state.Threads[0].Unread || state.Preferences == nil || state.Preferences.Language != "zh-CN" || !state.Preferences.OfflineMode || state.Preferences.SidebarWidth != 344 || state.Preferences.InspectorWidth != 468 || state.Preferences.WorkspaceApplication != "vscode" {
 		t.Fatalf("unexpected desktop state: %#v", state)
+	}
+}
+
+func TestCatalogServicePersistsRemoteDesktopStateByAnchorIdentity(t *testing.T) {
+	catalog, _, remoteWorkspace := remoteBackendCatalog(t)
+	index := &fakeSessionLister{sessions: []sessionindex.Summary{{
+		ID: "session-remote", Path: "remote.jsonl", CWD: filepath.Join(t.TempDir(), "anchor"),
+		SSHAnchor: true, AnchorWorkspaceID: remoteWorkspace.ID,
+	}}}
+	service := newCatalogService(catalog, index, nil)
+	state := domain.DesktopState{ActiveThreadID: "thread-remote", Threads: []domain.DesktopThreadState{{
+		ID: "thread-remote", Title: "Remote audit", WorkspaceID: remoteWorkspace.ID, WorkspacePath: "",
+		Trust: "approve", Status: "idle", SessionPath: "remote.jsonl", Draft: "continue",
+	}}}
+	if err := service.SaveDesktopState(state); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := service.GetDesktopState()
+	if err != nil || len(persisted.Threads) != 1 || persisted.Threads[0].WorkspaceID != remoteWorkspace.ID || persisted.Threads[0].WorkspacePath != "" || persisted.Threads[0].SessionPath != "remote.jsonl" {
+		t.Fatalf("remote desktop state=%#v err=%v", persisted, err)
+	}
+
+	index.sessions[0].AnchorWorkspaceID = "workspace-fedcba9876543210fedcba9876543210"
+	if err := service.SaveDesktopState(state); err == nil {
+		t.Fatal("mismatched remote session anchor was accepted")
+	}
+	index.sessions[0].AnchorWorkspaceID = remoteWorkspace.ID
+	state.Threads[0].WorkspaceID = ""
+	if err := service.SaveDesktopState(state); err == nil {
+		t.Fatal("remote session without immutable WorkspaceID was accepted")
 	}
 }
 

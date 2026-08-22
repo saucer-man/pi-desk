@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"pi-desk/internal/workspace"
 )
 
 const (
@@ -33,6 +35,8 @@ type Summary struct {
 	ID                string
 	Path              string
 	CWD               string
+	SSHAnchor         bool
+	AnchorWorkspaceID string
 	Name              string
 	Title             string
 	FirstMessage      string
@@ -85,6 +89,7 @@ type UsageSummary struct {
 
 type Index struct {
 	root       string
+	anchorRoot string
 	mutationMu sync.Mutex
 }
 
@@ -108,6 +113,61 @@ func DefaultRoot() (string, error) {
 
 func New(root string) *Index {
 	return &Index{root: filepath.Clean(root)}
+}
+
+// NewWithAnchorRoot enables local-only SSH anchor projection. The root is not
+// scanned by itself; marker reads occur only for a session CWD that is one
+// direct child below this configured directory.
+func NewWithAnchorRoot(root, anchorRoot string) *Index {
+	cleanAnchorRoot := ""
+	if strings.TrimSpace(anchorRoot) != "" {
+		cleanAnchorRoot = filepath.Clean(anchorRoot)
+	}
+	return &Index{root: filepath.Clean(root), anchorRoot: cleanAnchorRoot}
+}
+
+// ListOrphanSSH returns only anchor transcripts whose immutable WorkspaceID is
+// absent from the caller's current catalog projection. It performs local JSONL
+// and marker reads only and cannot establish an SSH connection.
+func (index *Index) ListOrphanSSH(ctx context.Context, knownWorkspaceIDs map[string]struct{}) ([]Summary, error) {
+	summaries, err := index.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	orphans := make([]Summary, 0)
+	for _, summary := range summaries {
+		if !summary.SSHAnchor {
+			continue
+		}
+		if _, known := knownWorkspaceIDs[summary.AnchorWorkspaceID]; !known {
+			orphans = append(orphans, summary)
+		}
+	}
+	return orphans, nil
+}
+
+func (index *Index) projectSSHAnchor(summary *Summary) bool {
+	if summary == nil || strings.TrimSpace(index.anchorRoot) == "" || strings.TrimSpace(summary.CWD) == "" {
+		return true
+	}
+	relative, err := filepath.Rel(index.anchorRoot, summary.CWD)
+	if err != nil || filepath.IsAbs(relative) {
+		// Different Windows volumes cannot share an anchor boundary.
+		return true
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if relative == "." || strings.Contains(relative, string(filepath.Separator)) {
+		return false
+	}
+	marker, err := workspace.ReadSSHAnchor(index.anchorRoot, summary.CWD)
+	if err != nil {
+		return false
+	}
+	summary.SSHAnchor = true
+	summary.AnchorWorkspaceID = marker.WorkspaceID
+	return true
 }
 
 func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, error) {
@@ -142,7 +202,7 @@ func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, 
 			defer workers.Done()
 			for path := range jobs {
 				summary, ok := readSummary(path)
-				if !ok || (workspaceKey != "" && pathKey(summary.CWD) != workspaceKey) {
+				if !ok || !index.projectSSHAnchor(&summary) || (workspaceKey != "" && pathKey(summary.CWD) != workspaceKey) {
 					continue
 				}
 				select {
@@ -319,14 +379,48 @@ func (index *Index) ValidatePath(path string) (string, error) {
 	return filepath.Clean(canonical), nil
 }
 
+// CopyValidated copies one stable regular session file after rechecking that
+// its opened handle still matches the canonical directory entry. It is used by
+// local export so a path swap cannot make Pi read outside the session root.
+func (index *Index) CopyValidated(path string, destination io.Writer) error {
+	if destination == nil {
+		return errors.New("session copy destination is required")
+	}
+	canonical, err := index.ValidatePath(path)
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(canonical)
+	if err != nil {
+		return fmt.Errorf("open session path: %w", err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Size() > maxSessionBytes {
+		return errors.New("session path is not a bounded regular file")
+	}
+	current, err := os.Lstat(canonical)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return errors.New("session path changed during validation")
+	}
+	written, err := io.Copy(destination, io.LimitReader(file, maxSessionBytes+1))
+	if err != nil {
+		return fmt.Errorf("copy session path: %w", err)
+	}
+	if written > maxSessionBytes {
+		return errors.New("session file exceeds the safety limit")
+	}
+	return nil
+}
+
 func (index *Index) Resolve(path string) (Summary, error) {
 	canonical, err := index.ValidatePath(path)
 	if err != nil {
 		return Summary{}, err
 	}
 	summary, ok := readSummary(canonical)
-	if !ok {
-		return Summary{}, errors.New("session file is malformed or exceeds safety limits")
+	if !ok || !index.projectSSHAnchor(&summary) {
+		return Summary{}, errors.New("session file or SSH anchor is malformed or exceeds safety limits")
 	}
 	return summary, nil
 }
@@ -340,8 +434,8 @@ func (index *Index) Header(path string) (Summary, error) {
 		return Summary{}, err
 	}
 	summary, ok := readHeader(canonical)
-	if !ok {
-		return Summary{}, errors.New("session header is malformed or exceeds safety limits")
+	if !ok || !index.projectSSHAnchor(&summary) {
+		return Summary{}, errors.New("session header or SSH anchor is malformed or exceeds safety limits")
 	}
 	return summary, nil
 }

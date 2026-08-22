@@ -98,6 +98,12 @@ describe("InspectorPanel", () => {
     const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
 
     expect(wrapper.text()).toContain("old.png -> new.png");
+    store.repositoryStaleByWorkspace["d:/repo"] = true;
+    store.repositoryErrorByWorkspace["d:/repo"] = "remote repository is disconnected or stale";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("Repository data is stale");
+    expect(wrapper.text()).toContain("old.png -> new.png");
+
     store.repositoryDiffPathByWorkspace["d:/repo"] = "new.png";
     store.repositoryDiffLoadingByWorkspace["d:/repo"] = true;
     await wrapper.vm.$nextTick();
@@ -114,6 +120,29 @@ describe("InspectorPanel", () => {
     };
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain("Binary file changed");
+  });
+
+  it("does not expose local open actions for a remote preview", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      workspaces: [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }],
+      threads: [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }],
+      activeThreadId: "thread-remote",
+      repositoryFilePreviewPathByThread: { "thread-remote": "README.md" },
+      repositoryFilePreviewByThread: { "thread-remote": { path: "README.md", absolutePath: "", content: "remote", size: 6, binary: false, truncated: false } },
+    });
+    store.refreshActiveRepository = vi.fn().mockResolvedValue(undefined);
+
+    const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
+
+    expect(wrapper.find('button[title="Open file"]').exists()).toBe(false);
+    expect(wrapper.find('button[title="Show in file manager"]').exists()).toBe(false);
+    store.closeRepositoryFilePreview();
+    store.inspectorTab = "context";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("/srv/repo");
   });
 
   it("renders a linked file in the right inspector preview", async () => {

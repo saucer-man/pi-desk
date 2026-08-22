@@ -56,6 +56,10 @@ func (resolver terminalWorkspaceResolver) ResolvePath(string) (workspace.Record,
 	return resolver.record, resolver.err
 }
 
+func (resolver terminalWorkspaceResolver) ResolveID(string) (workspace.Record, error) {
+	return resolver.record, resolver.err
+}
+
 func TestTerminalServiceRequiresTrustAndMapsRuntimeState(t *testing.T) {
 	runtime := &fakeTerminalRuntime{state: terminalruntime.Snapshot{
 		ThreadID: "thread-1", CWD: "D:\\repo", Shell: "pwsh.exe", Running: true, Sequence: 4, Output: []byte("ready"),
@@ -72,6 +76,61 @@ func TestTerminalServiceRequiresTrustAndMapsRuntimeState(t *testing.T) {
 	denied := newTerminalService(terminalWorkspaceResolver{record: workspace.Record{Path: "D:\\repo", Trust: "deny"}}, runtime)
 	if _, err := denied.Start(domain.StartTerminalRequest{ThreadID: "thread-1", WorkspacePath: "D:\\repo", Columns: 80, Rows: 24}); err == nil {
 		t.Fatal("expected untrusted workspace to be rejected")
+	}
+}
+
+func TestTerminalServiceFailsClosedForUnboundRemoteWorkspace(t *testing.T) {
+	record := workspace.Record{
+		ID: "workspace-0123456789abcdef0123456789abcdef", Trust: "approve",
+		Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{CanonicalRoot: "/srv/repository"}},
+	}
+	local := &fakeTerminalRuntime{}
+	service := newTerminalService(terminalWorkspaceResolver{record: record}, local)
+	if _, err := service.Snapshot(domain.TerminalRequest{ThreadID: "cold-remote", WorkspaceID: record.ID}); !errors.Is(err, ErrRemoteTerminalInactive) {
+		t.Fatalf("cold remote snapshot error=%v", err)
+	}
+	if local.startConfig.ThreadID != "" {
+		t.Fatalf("cold remote snapshot reached local runtime: %#v", local)
+	}
+	if _, err := service.Start(domain.StartTerminalRequest{ThreadID: "thread-remote", WorkspaceID: record.ID, Columns: 80, Rows: 24}); err == nil {
+		t.Fatal("unbound remote Terminal was accepted")
+	}
+	if _, err := service.Start(domain.StartTerminalRequest{ThreadID: "thread-remote", WorkspaceID: record.ID, WorkspacePath: "anchor", Columns: 80, Rows: 24}); err == nil {
+		t.Fatal("ambiguous remote Terminal identity was accepted")
+	}
+}
+
+func TestTerminalServiceKeepsRemoteRoutingAfterUnbind(t *testing.T) {
+	local := &fakeTerminalRuntime{}
+	record := workspace.Record{
+		ID: "workspace-remote", Trust: "approve",
+		Location: workspace.Location{Kind: workspace.KindSSH, SSH: workspace.SSHLocation{CanonicalRoot: "/srv/repository"}},
+	}
+	service := newTerminalService(terminalWorkspaceResolver{record: record}, local)
+	service.remote = terminalruntime.NewRemoteManager(t.Context(), nil)
+	service.remoteThreads["thread-remote"] = remoteTerminalThread{workspaceID: "workspace-remote", active: true}
+
+	if err := service.unbindRemoteThread("thread-remote"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Snapshot(domain.TerminalRequest{ThreadID: "thread-remote"}); !errors.Is(err, ErrRemoteTerminalInactive) {
+		t.Fatalf("unbound remote snapshot error=%v", err)
+	}
+	if err := service.Write(domain.TerminalWriteRequest{ThreadID: "thread-remote", Data: "pwd\r"}); !errors.Is(err, ErrRemoteTerminalInactive) {
+		t.Fatalf("unbound remote write error=%v", err)
+	}
+	if local.writeID != "" {
+		t.Fatalf("unbound remote thread fell back to local runtime: %#v", local)
+	}
+	service.remoteThreads["thread-remote"] = remoteTerminalThread{workspaceID: "workspace-remote"}
+	if _, err := service.Start(domain.StartTerminalRequest{ThreadID: "thread-remote", WorkspaceID: "workspace-remote", Columns: 80, Rows: 24}); !errors.Is(err, ErrRemoteTerminalInactive) {
+		t.Fatalf("disconnected remote start error=%v", err)
+	}
+	if _, err := service.runtimeFor("thread-remote", "workspace-other"); !errors.Is(err, ErrRemoteTerminalInactive) {
+		t.Fatalf("remote thread changed workspace identity: %v", err)
+	}
+	if local.startConfig.ThreadID != "" {
+		t.Fatalf("disconnected remote start fell back to local runtime: %#v", local)
 	}
 }
 

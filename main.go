@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"log"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"pi-desk/internal/appservice"
 	"pi-desk/internal/domain"
 	"pi-desk/internal/piruntime"
+	"pi-desk/internal/remotessh"
 	"pi-desk/internal/repository"
 	"pi-desk/internal/sessionindex"
 	"pi-desk/internal/workspace"
@@ -25,6 +27,9 @@ var assets embed.FS
 
 //go:embed build/windows/icon.ico
 var trayIcon []byte
+
+//go:embed all:build/remote-helper/artifacts
+var remoteHelperArtifactBundle embed.FS
 
 func centeredWindowState(width, height int, screens []*application.Screen) domain.WindowState {
 	var target *application.Screen
@@ -150,19 +155,66 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	anchorRoot, err := workspace.DefaultAnchorRoot()
+	if err != nil {
+		log.Fatal(err)
+	}
 	catalog := workspace.NewCatalog(statePath)
+	remoteRuntimes := remotessh.NewRuntimeRegistry()
+	defer func() {
+		if shutdownErr := remoteRuntimes.Close(5 * time.Second); shutdownErr != nil {
+			log.Printf("close remote runtimes: %v", shutdownErr)
+		}
+	}()
 	desktopService := appservice.NewDesktopService(locator, catalog)
-	sessionIndex := sessionindex.New(sessionsPath)
-	agentService := appservice.NewAgentService(locator, sessionIndex)
-	piMaintenanceService := appservice.NewPiMaintenanceService(locator, agentService)
+	sessionIndex := sessionindex.NewWithAnchorRoot(sessionsPath, anchorRoot)
 	modelConfigService := appservice.NewModelConfigService()
 	promptTemplateService := appservice.NewPromptTemplateService(catalog)
 	managedSkillService := appservice.NewManagedSkillService(catalog)
 	piExtensionService := appservice.NewPiExtensionService()
 	mcpConfigService := appservice.NewMcpConfigService(catalog)
-	catalogService := appservice.NewCatalogService(catalog, sessionIndex)
+	orphanSessionService, err := appservice.NewOrphanSessionService(catalog, sessionIndex, locator)
+	if err != nil {
+		log.Fatal(err)
+	}
 	repositoryService := appservice.NewRepositoryService(catalog, repository.New())
 	terminalService := appservice.NewTerminalService(catalog)
+	remoteBackends, err := appservice.NewRemoteBackendCoordinator(catalog, repositoryService, terminalService)
+	if err != nil {
+		log.Fatal(err)
+	}
+	remoteCatalog, err := appservice.NewRemoteCatalogCoordinator(catalog, remoteRuntimes, remoteBackends)
+	if err != nil {
+		log.Fatal(err)
+	}
+	remoteArtifacts, err := remotessh.NewHelperArtifactBundle(remoteHelperArtifactBundle, "build/remote-helper/artifacts")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sshLocator := remotessh.NewLocator()
+	remoteLifecycle, err := appservice.NewRemoteWorkspaceLifecycle(catalog, sshLocator, remoteArtifacts, remoteRuntimes, remoteBackends, remoteCatalog)
+	if err != nil {
+		log.Fatal(err)
+	}
+	remoteWorkspaceService, err := appservice.NewRemoteWorkspaceService(catalog, remoteLifecycle, locator)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := remoteLifecycle.Close(ctx); shutdownErr != nil {
+			log.Printf("close remote workspace lifecycle: %v", shutdownErr)
+		}
+	}()
+	agentService := appservice.NewAgentService(locator, sessionIndex, remoteLifecycle, anchorRoot)
+	defer func() {
+		if shutdownErr := agentService.ServiceShutdown(); shutdownErr != nil {
+			log.Printf("shutdown agent service: %v", shutdownErr)
+		}
+	}()
+	piMaintenanceService := appservice.NewPiMaintenanceService(locator, agentService)
+	catalogService := appservice.NewCatalogService(catalog, sessionIndex, remoteCatalog)
 
 	app := application.New(application.Options{
 		Name:        "Pi Desk",
@@ -178,6 +230,8 @@ func main() {
 			application.NewService(piExtensionService),
 			application.NewService(mcpConfigService),
 			application.NewService(catalogService),
+			application.NewService(remoteWorkspaceService),
+			application.NewService(orphanSessionService),
 			application.NewService(repositoryService),
 			application.NewService(terminalService),
 		},

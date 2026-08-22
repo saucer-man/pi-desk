@@ -1,16 +1,19 @@
 package domain
 
 type RepositoryRequest struct {
-	WorkspacePath string `json:"workspacePath"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 }
 
 type RepositoryFileRequest struct {
-	WorkspacePath string `json:"workspacePath"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 	Path          string `json:"path"`
 }
 
 type RepositorySaveFileRequest struct {
-	WorkspacePath string `json:"workspacePath"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 	Path          string `json:"path"`
 	OutputPath    string `json:"outputPath"`
 }

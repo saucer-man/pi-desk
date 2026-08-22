@@ -21,7 +21,9 @@ type supervisorFakeProcess struct {
 	stderrReader *io.PipeReader
 	stderrWriter *io.PipeWriter
 	wait         chan error
+	killed       chan struct{}
 	exitOnce     sync.Once
+	pid          int
 }
 
 func newSupervisorFakeProcess() *supervisorFakeProcess {
@@ -32,16 +34,20 @@ func newSupervisorFakeProcess() *supervisorFakeProcess {
 		stdinReader: stdinReader, stdinWriter: stdinWriter,
 		stdoutReader: stdoutReader, stdoutWriter: stdoutWriter,
 		stderrReader: stderrReader, stderrWriter: stderrWriter,
-		wait: make(chan error, 1),
+		wait: make(chan error, 1), killed: make(chan struct{}), pid: 4242,
 	}
 }
 
+func (process *supervisorFakeProcess) PID() int              { return process.pid }
 func (process *supervisorFakeProcess) Stdin() io.WriteCloser { return process.stdinWriter }
 func (process *supervisorFakeProcess) Stdout() io.Reader     { return process.stdoutReader }
 func (process *supervisorFakeProcess) Stderr() io.Reader     { return process.stderrReader }
 func (process *supervisorFakeProcess) Wait() error           { return <-process.wait }
 func (process *supervisorFakeProcess) Kill() error {
-	process.exitOnce.Do(func() { process.wait <- pirpc.ErrClientClosed })
+	process.exitOnce.Do(func() {
+		close(process.killed)
+		process.wait <- pirpc.ErrClientClosed
+	})
 	return nil
 }
 
@@ -136,6 +142,72 @@ func serveReady(t *testing.T, process *supervisorFakeProcess) {
 	}()
 }
 
+func TestSupervisorRejectsStopWhileProcessIsStillStarting(t *testing.T) {
+	process := newSupervisorFakeProcess()
+	serveReady(t, process)
+	starter := &queuedStarter{
+		processes: []*supervisorFakeProcess{process},
+		started:   make(chan struct{}, 1),
+		release:   make(chan struct{}),
+	}
+	supervisor := NewSupervisor(context.Background(), starter, nil)
+	t.Cleanup(func() {
+		supervisor.Shutdown()
+		process.closeStreams()
+	})
+
+	started := make(chan error, 1)
+	go func() {
+		_, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-1"})
+		started <- err
+	}()
+	<-starter.started
+	if err := supervisor.Stop("thread-1"); !errors.Is(err, ErrThreadRunning) {
+		t.Fatalf("Stop during startup error = %v, want ErrThreadRunning", err)
+	}
+	close(starter.release)
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop("thread-1"); err != nil {
+		t.Fatalf("Stop after startup failed: %v", err)
+	}
+}
+
+func TestSupervisorRejectsLateStarterCompletionAfterShutdown(t *testing.T) {
+	process := newSupervisorFakeProcess()
+	starter := &queuedStarter{
+		processes: []*supervisorFakeProcess{process},
+		started:   make(chan struct{}, 1),
+		release:   make(chan struct{}),
+	}
+	supervisor := NewSupervisor(context.Background(), starter, nil)
+	t.Cleanup(process.closeStreams)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-1"})
+		result <- err
+	}()
+	<-starter.started
+	supervisor.Shutdown()
+	close(starter.release)
+	if err := <-result; !errors.Is(err, ErrSupervisorClosed) {
+		t.Fatalf("late starter completion error = %v, want ErrSupervisorClosed", err)
+	}
+	if supervisor.ActiveCount() != 0 || len(supervisor.Running()) != 0 {
+		t.Fatalf("late process registered after shutdown: active=%d running=%#v", supervisor.ActiveCount(), supervisor.Running())
+	}
+	select {
+	case <-process.killed:
+	case <-time.After(time.Second):
+		t.Fatal("late process was not closed after shutdown")
+	}
+	if _, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-2"}); !errors.Is(err, ErrSupervisorClosed) {
+		t.Fatalf("start after shutdown error = %v, want ErrSupervisorClosed", err)
+	}
+}
+
 func TestSupervisorStartsCallsAndStopsSession(t *testing.T) {
 	process := newSupervisorFakeProcess()
 	serveReady(t, process)
@@ -151,7 +223,7 @@ func TestSupervisorStartsCallsAndStopsSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start returned an error: %v", err)
 	}
-	if info.Generation == 0 || len(info.State) == 0 {
+	if info.Generation == 0 || len(info.State) == 0 || info.ProcessID != process.pid {
 		t.Fatalf("unexpected session info: %#v", info)
 	}
 	if len(supervisor.Running()) != 1 {
@@ -196,6 +268,46 @@ func TestSupervisorStopsAllSessionsWithoutShuttingDown(t *testing.T) {
 	}
 	if supervisor.ActiveCount() != 0 || len(supervisor.Running()) != 0 {
 		t.Fatalf("sessions remain after StopAll: active=%d running=%#v", supervisor.ActiveCount(), supervisor.Running())
+	}
+}
+
+func TestSupervisorBlocksRestartUntilNaturalExitIsProjected(t *testing.T) {
+	oldProcess := newSupervisorFakeProcess()
+	newProcess := newSupervisorFakeProcess()
+	serveReady(t, oldProcess)
+	serveReady(t, newProcess)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	supervisor := NewSupervisor(context.Background(), &queuedStarter{processes: []*supervisorFakeProcess{oldProcess, newProcess}}, func(event SessionEvent) {
+		if event.Event.Type == "runtime_exit" {
+			close(entered)
+			<-release
+		}
+	})
+	t.Cleanup(func() {
+		supervisor.Shutdown()
+		oldProcess.closeStreams()
+		newProcess.closeStreams()
+	})
+
+	if _, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+	oldProcess.wait <- errors.New("process exited")
+	_ = oldProcess.stdoutWriter.Close()
+	<-entered
+	if supervisor.ActiveCount() != 1 {
+		t.Fatalf("natural exit projection was not counted as active: %d", supervisor.ActiveCount())
+	}
+	if _, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-1"}); !errors.Is(err, ErrThreadRunning) {
+		t.Fatalf("restart raced natural exit projection: %v", err)
+	}
+	close(release)
+	for supervisor.ActiveCount() != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := supervisor.Start(context.Background(), StartConfig{ThreadID: "thread-1"}); err != nil {
+		t.Fatalf("restart after exit projection failed: %v", err)
 	}
 }
 

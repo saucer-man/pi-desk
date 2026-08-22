@@ -16,12 +16,17 @@
 /build/linux/desktop
 /build/linux/appimage/build/
 /build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+/build/remote-helper/artifacts/helper-*
+/build/remote-helper/artifacts/manifest.json
+/build/remote-helper/artifacts/*.tmp
 
 # Mobile generated files (per-machine overlays contain absolute paths)
 /build/ios/xcode/overlay.json
 /build/ios/xcode/gen/
 /build/android/overlay.json
 /build/android/gen/
+/build/android/.gradle/
+/build/android/build/
 
 # Go binaries and test artifacts
 *.exe

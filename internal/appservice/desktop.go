@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	appVersion   = "0.1.0"
-	wailsVersion = "v3.0.0-beta.6"
+	appVersion        = "0.1.0"
+	wailsVersion      = "v3.0.0-beta.6"
+	updateManifestURL = "https://api.github.com/repos/saucer-man/pi-desk/releases/latest"
 	// Pi's Node CLI can take several seconds to initialise on Windows while
 	// npm shims and package caches are cold. Bootstrap never waits for this
 	// asynchronous probe, so prefer a reliable status over a false negative.
@@ -43,12 +44,11 @@ type DesktopService struct {
 }
 
 func NewDesktopService(runtimeProber RuntimeProber, catalogs ...*workspace.Catalog) *DesktopService {
-	endpoint := strings.TrimSpace(os.Getenv("PI_DESK_UPDATE_URL"))
 	var catalog *workspace.Catalog
 	if len(catalogs) > 0 {
 		catalog = catalogs[0]
 	}
-	return &DesktopService{runtimeProber: runtimeProber, catalog: catalog, updateURL: endpoint}
+	return &DesktopService{runtimeProber: runtimeProber, catalog: catalog, updateURL: updateManifestURL}
 }
 
 func (service *DesktopService) GetBootstrapState() domain.BootstrapState {
@@ -113,11 +113,7 @@ type updateManifest struct {
 }
 
 func (service *DesktopService) CheckForUpdates() domain.UpdateCheckResult {
-	result := domain.UpdateCheckResult{Status: "unconfigured", CurrentVersion: appVersion, CheckedAt: time.Now().UTC()}
-	if service.updateURL == "" {
-		result.Message = "Update checks are not configured for this build"
-		return result
-	}
+	result := domain.UpdateCheckResult{Status: "error", CurrentVersion: appVersion, CheckedAt: time.Now().UTC()}
 	parsed, err := url.Parse(service.updateURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !isLocalHTTP(parsed)) {
 		result.Status, result.Message = "error", "Update source must use HTTPS"

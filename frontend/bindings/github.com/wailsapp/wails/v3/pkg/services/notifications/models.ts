@@ -44,7 +44,7 @@ export interface NotificationCategory {
 
 /**
  * NotificationOptions contains configuration for a notification.
- *
+ * 
  * New optional fields (Sound, Attachments, ThreadID, InterruptionLevel,
  * Schedule) gracefully degrade when a platform cannot honour them; see the
  * package-level godoc for the per-platform support matrix.

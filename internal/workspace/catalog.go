@@ -1,8 +1,6 @@
 package workspace
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +16,7 @@ import (
 	"github.com/natefinch/atomic"
 )
 
-const stateVersion = 5
+const stateVersion = 6
 
 const (
 	maxDesktopThreads = 500
@@ -27,17 +25,19 @@ const (
 )
 
 type Record struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Trust        string    `json:"trust"`
-	AddedAt      time.Time `json:"addedAt"`
-	LastOpenedAt time.Time `json:"lastOpenedAt"`
+	ID           string
+	Name         string
+	Path         string // Local-only compatibility projection; always empty for SSH.
+	Location     Location
+	Trust        string
+	AddedAt      time.Time
+	LastOpenedAt time.Time
 }
 
 type ThreadRecord struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
 	WorkspacePath string `json:"workspacePath"`
 	Trust         string `json:"trust"`
 	Status        string `json:"status"`
@@ -83,9 +83,10 @@ type PreferencesRecord struct {
 }
 
 type stateFile struct {
-	Version    int           `json:"version"`
-	Workspaces []Record      `json:"workspaces"`
-	Desktop    DesktopRecord `json:"desktop"`
+	Version    int                    `json:"version"`
+	Targets    []TargetRecord         `json:"targets,omitempty"`
+	Workspaces []stateWorkspaceRecord `json:"workspaces"`
+	Desktop    DesktopRecord          `json:"desktop"`
 }
 
 type Catalog struct {
@@ -95,6 +96,7 @@ type Catalog struct {
 	mu      sync.RWMutex
 	loaded  bool
 	records []Record
+	targets []TargetRecord
 	desktop DesktopRecord
 }
 
@@ -127,6 +129,24 @@ func (catalog *Catalog) List() ([]Record, error) {
 		return b.LastOpenedAt.Compare(a.LastOpenedAt)
 	})
 	return records, nil
+}
+
+func (catalog *Catalog) ResolveID(id string) (Record, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Record{}, errors.New("workspace id is required")
+	}
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	if err := catalog.loadLocked(); err != nil {
+		return Record{}, err
+	}
+	for _, record := range catalog.records {
+		if record.ID == id {
+			return record, nil
+		}
+	}
+	return Record{}, errors.New("workspace is not registered")
 }
 
 func (catalog *Catalog) ResolvePath(path string) (Record, error) {
@@ -176,10 +196,15 @@ func (catalog *Catalog) Add(path, trust string) (Record, error) {
 		return records[index], nil
 	}
 
+	id, err := newIdentity("workspace")
+	if err != nil {
+		return Record{}, err
+	}
 	record := Record{
-		ID:           workspaceID(canonical),
+		ID:           id,
 		Name:         filepath.Base(canonical),
 		Path:         canonical,
+		Location:     Location{Kind: KindLocal, Local: LocalLocation{CanonicalPath: canonical}},
 		Trust:        trust,
 		AddedAt:      now,
 		LastOpenedAt: now,
@@ -193,6 +218,12 @@ func (catalog *Catalog) Add(path, trust string) (Record, error) {
 }
 
 func (catalog *Catalog) Remove(id string) error {
+	return catalog.RemoveAfter(id, nil)
+}
+
+// RemoveAfter invokes beforeRemove after validation and before catalog state is
+// persisted. Remote workspace owners use it to revoke capabilities first.
+func (catalog *Catalog) RemoveAfter(id string, beforeRemove func(Record) error) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("workspace id is required")
@@ -207,16 +238,24 @@ func (catalog *Catalog) Remove(id string) error {
 	if index < 0 {
 		return errors.New("workspace not found")
 	}
-	removedPath := records[index].Path
+	removed := records[index]
 	records = slices.Delete(records, index, index+1)
 	desktop := catalog.desktop
 	desktop.Threads = slices.DeleteFunc(slices.Clone(desktop.Threads), func(thread ThreadRecord) bool {
-		return pathKey(thread.WorkspacePath) == pathKey(removedPath)
+		if thread.WorkspaceID == removed.ID {
+			return true
+		}
+		return removed.Location.Kind == KindLocal && thread.WorkspaceID == "" && pathKey(thread.WorkspacePath) == pathKey(removed.Path)
 	})
 	if desktop.ActiveThreadID != "" && !slices.ContainsFunc(desktop.Threads, func(thread ThreadRecord) bool {
 		return thread.ID == desktop.ActiveThreadID
 	}) {
 		desktop.ActiveThreadID = ""
+	}
+	if beforeRemove != nil {
+		if err := beforeRemove(removed); err != nil {
+			return err
+		}
 	}
 	if err := catalog.saveLocked(records, desktop); err != nil {
 		return err
@@ -286,13 +325,36 @@ func (catalog *Catalog) SaveDesktop(desktop DesktopRecord) error {
 	if err := catalog.loadLocked(); err != nil {
 		return err
 	}
-	workspacePaths := make(map[string]struct{}, len(catalog.records))
+	workspaceIDs := make(map[string]Record, len(catalog.records))
+	workspacePaths := make(map[string]string, len(catalog.records))
 	for _, record := range catalog.records {
-		workspacePaths[pathKey(record.Path)] = struct{}{}
+		workspaceIDs[record.ID] = record
+		if record.Location.Kind == KindLocal {
+			workspacePaths[pathKey(record.Path)] = record.ID
+		}
 	}
 	threadIDs := make(map[string]struct{}, len(desktop.Threads))
-	for _, thread := range desktop.Threads {
-		if _, ok := workspacePaths[pathKey(thread.WorkspacePath)]; !ok && thread.SessionPath == "" {
+	for index := range desktop.Threads {
+		thread := &desktop.Threads[index]
+		knownWorkspace := false
+		if thread.WorkspaceID != "" {
+			workspaceRecord, exists := workspaceIDs[thread.WorkspaceID]
+			if !exists {
+				return fmt.Errorf("thread %s references an unknown workspace", thread.ID)
+			}
+			knownWorkspace = true
+			if workspaceRecord.Location.Kind == KindSSH {
+				if strings.TrimSpace(thread.WorkspacePath) != "" {
+					return fmt.Errorf("thread %s projects an SSH workspace as a local path", thread.ID)
+				}
+			} else if pathKey(thread.WorkspacePath) != pathKey(workspaceRecord.Path) {
+				return fmt.Errorf("thread %s workspace identity does not match its local path", thread.ID)
+			}
+		} else if workspaceID, ok := workspacePaths[pathKey(thread.WorkspacePath)]; ok {
+			thread.WorkspaceID = workspaceID
+			knownWorkspace = true
+		}
+		if !knownWorkspace && thread.SessionPath == "" {
 			return fmt.Errorf("thread %s references an unknown workspace", thread.ID)
 		}
 		if _, exists := threadIDs[thread.ID]; exists {
@@ -405,16 +467,104 @@ func (catalog *Catalog) loadLocked() error {
 			state.Desktop.Preferences.CloseToTray = true
 		}
 	}
-	catalog.records = slices.Clone(state.Workspaces)
-	catalog.desktop = state.Desktop
-	catalog.desktop.Threads = cloneThreads(state.Desktop.Threads)
+	targets := slices.Clone(state.Targets)
+	if state.Version < 6 {
+		targets = nil
+	}
+	targetIDs := make(map[string]TargetRecord, len(targets))
+	targetAliases := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if err := validateTarget(target); err != nil {
+			return fmt.Errorf("invalid SSH target state: %w", err)
+		}
+		if _, duplicate := targetIDs[target.ID]; duplicate {
+			return errors.New("duplicate SSH target identity")
+		}
+		aliasKey := targetAliasKey(target.HostAlias)
+		if _, duplicate := targetAliases[aliasKey]; duplicate {
+			return errors.New("duplicate SSH target alias")
+		}
+		targetIDs[target.ID] = target
+		targetAliases[aliasKey] = struct{}{}
+	}
+
+	records := make([]Record, 0, len(state.Workspaces))
+	workspaceIDs := make(map[string]struct{}, len(state.Workspaces))
+	localPaths := make(map[string]struct{}, len(state.Workspaces))
+	for _, persisted := range state.Workspaces {
+		record, err := persisted.toRecord(state.Version)
+		if err != nil {
+			return fmt.Errorf("invalid workspace state: %w", err)
+		}
+		if state.Version < 6 {
+			record.ID, err = newIdentity("workspace")
+			if err != nil {
+				return err
+			}
+		}
+		if err := validateRecord(record); err != nil {
+			return fmt.Errorf("invalid workspace state: %w", err)
+		}
+		if _, duplicate := workspaceIDs[record.ID]; duplicate {
+			return errors.New("duplicate workspace identity")
+		}
+		workspaceIDs[record.ID] = struct{}{}
+		if record.Location.Kind == KindLocal {
+			key := pathKey(record.Path)
+			if _, duplicate := localPaths[key]; duplicate {
+				return errors.New("duplicate local workspace path")
+			}
+			localPaths[key] = struct{}{}
+		} else {
+			target, ok := targetIDs[record.Location.SSH.TargetID]
+			if !ok || target.HostKey != record.Location.SSH.HostKeyBinding {
+				return errors.New("SSH workspace target binding is invalid")
+			}
+		}
+		records = append(records, record)
+	}
+	desktop := state.Desktop
+	desktop.Threads = cloneThreads(state.Desktop.Threads)
+	if state.Version < 6 {
+		for index := range desktop.Threads {
+			if workspaceID, ok := workspaceIDForLocalPath(records, desktop.Threads[index].WorkspacePath); ok {
+				desktop.Threads[index].WorkspaceID = workspaceID
+			}
+		}
+	}
+
+	catalog.records = records
+	catalog.targets = targets
+	catalog.desktop = desktop
+	if state.Version < stateVersion {
+		if err := catalog.saveStateLocked(records, targets, desktop); err != nil {
+			return fmt.Errorf("migrate workspace catalog to version %d: %w", stateVersion, err)
+		}
+	}
 	catalog.loaded = true
 	return nil
 }
 
 func (catalog *Catalog) saveLocked(records []Record, desktop DesktopRecord) error {
+	return catalog.saveStateLocked(records, catalog.targets, desktop)
+}
+
+func (catalog *Catalog) saveStateLocked(records []Record, targets []TargetRecord, desktop DesktopRecord) error {
+	persisted := make([]stateWorkspaceRecord, 0, len(records))
+	for _, record := range records {
+		encoded, err := stateRecordFromRecord(record)
+		if err != nil {
+			return fmt.Errorf("encode workspace state: %w", err)
+		}
+		persisted = append(persisted, encoded)
+	}
+	for _, target := range targets {
+		if err := validateTarget(target); err != nil {
+			return fmt.Errorf("encode SSH target state: %w", err)
+		}
+	}
 	data, err := json.MarshalIndent(stateFile{
-		Version: stateVersion, Workspaces: records, Desktop: desktop,
+		Version: stateVersion, Targets: targets, Workspaces: persisted, Desktop: desktop,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace catalog: %w", err)
@@ -515,9 +665,14 @@ func cloneThreads(threads []ThreadRecord) []ThreadRecord {
 	return slices.Clone(threads)
 }
 
-func workspaceID(path string) string {
-	sum := sha256.Sum256([]byte(pathKey(path)))
-	return "workspace-" + hex.EncodeToString(sum[:12])
+func workspaceIDForLocalPath(records []Record, workspacePath string) (string, bool) {
+	key := pathKey(workspacePath)
+	for _, record := range records {
+		if record.Location.Kind == KindLocal && pathKey(record.Path) == key {
+			return record.ID, true
+		}
+	}
+	return "", false
 }
 
 func pathKey(path string) string {

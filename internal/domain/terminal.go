@@ -2,13 +2,15 @@ package domain
 
 type StartTerminalRequest struct {
 	ThreadID      string `json:"threadId"`
-	WorkspacePath string `json:"workspacePath"`
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 	Columns       int    `json:"columns"`
 	Rows          int    `json:"rows"`
 }
 
 type TerminalRequest struct {
-	ThreadID string `json:"threadId"`
+	ThreadID    string `json:"threadId"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
 }
 
 type TerminalWriteRequest struct {
@@ -23,19 +25,21 @@ type TerminalResizeRequest struct {
 }
 
 type TerminalState struct {
-	ThreadID  string `json:"threadId"`
-	CWD       string `json:"cwd,omitempty"`
-	Shell     string `json:"shell,omitempty"`
-	Running   bool   `json:"running"`
-	Sequence  uint64 `json:"sequence"`
-	OutputB64 string `json:"outputB64,omitempty"`
+	ThreadID   string `json:"threadId"`
+	CWD        string `json:"cwd,omitempty"`
+	Shell      string `json:"shell,omitempty"`
+	Running    bool   `json:"running"`
+	Generation uint64 `json:"generation,omitempty"`
+	Sequence   uint64 `json:"sequence"`
+	OutputB64  string `json:"outputB64,omitempty"`
 }
 
 type TerminalEvent struct {
-	ThreadID string `json:"threadId"`
-	Type     string `json:"type"`
-	Sequence uint64 `json:"sequence"`
-	DataB64  string `json:"dataB64,omitempty"`
-	ExitCode int    `json:"exitCode,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ThreadID   string `json:"threadId"`
+	Type       string `json:"type"`
+	Generation uint64 `json:"generation,omitempty"`
+	Sequence   uint64 `json:"sequence"`
+	DataB64    string `json:"dataB64,omitempty"`
+	ExitCode   int    `json:"exitCode,omitempty"`
+	Error      string `json:"error,omitempty"`
 }

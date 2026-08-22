@@ -7,9 +7,11 @@ import * as DesktopService from "./desktopservice.js";
 import * as ManagedSkillService from "./managedskillservice.js";
 import * as McpConfigService from "./mcpconfigservice.js";
 import * as ModelConfigService from "./modelconfigservice.js";
+import * as OrphanSessionService from "./orphansessionservice.js";
 import * as PiExtensionService from "./piextensionservice.js";
 import * as PiMaintenanceService from "./pimaintenanceservice.js";
 import * as PromptTemplateService from "./prompttemplateservice.js";
+import * as RemoteWorkspaceService from "./remoteworkspaceservice.js";
 import * as RepositoryService from "./repositoryservice.js";
 import * as TerminalService from "./terminalservice.js";
 export {
@@ -19,9 +21,11 @@ export {
     ManagedSkillService,
     McpConfigService,
     ModelConfigService,
+    OrphanSessionService,
     PiExtensionService,
     PiMaintenanceService,
     PromptTemplateService,
+    RemoteWorkspaceService,
     RepositoryService,
     TerminalService
 };

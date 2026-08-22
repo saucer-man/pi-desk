@@ -7,18 +7,24 @@ import type {
   RepositorySnapshot,
 } from "../../bindings/pi-desk/internal/domain";
 
+export type RepositoryWorkspaceReference = string | { workspaceId: string };
+
+function workspaceRequest(reference: RepositoryWorkspaceReference): { workspaceId?: string; workspacePath?: string } {
+  return typeof reference === "string" ? { workspacePath: reference } : reference;
+}
+
 export const repositoryService = {
-  snapshot(workspacePath: string): Promise<RepositorySnapshot> {
-    return RepositoryService.Snapshot({ workspacePath });
+  snapshot(workspace: RepositoryWorkspaceReference): Promise<RepositorySnapshot> {
+    return RepositoryService.Snapshot(workspaceRequest(workspace));
   },
-  diff(workspacePath: string, path: string): Promise<RepositoryFileDiff> {
-    return RepositoryService.Diff({ workspacePath, path });
+  diff(workspace: RepositoryWorkspaceReference, path: string): Promise<RepositoryFileDiff> {
+    return RepositoryService.Diff({ ...workspaceRequest(workspace), path });
   },
-  previewFile(workspacePath: string, path: string): Promise<RepositoryFilePreview> {
-    return RepositoryService.PreviewFile({ workspacePath, path });
+  previewFile(workspace: RepositoryWorkspaceReference, path: string): Promise<RepositoryFilePreview> {
+    return RepositoryService.PreviewFile({ ...workspaceRequest(workspace), path });
   },
-  branches(workspacePath: string): Promise<GitBranchInventory> {
-    return RepositoryService.Branches({ workspacePath });
+  branches(workspace: RepositoryWorkspaceReference): Promise<GitBranchInventory> {
+    return RepositoryService.Branches(workspaceRequest(workspace));
   },
   openFile(workspacePath: string, path: string): Promise<void> {
     return RepositoryService.OpenFile({ workspacePath, path });

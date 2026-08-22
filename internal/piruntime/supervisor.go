@@ -17,6 +17,7 @@ const defaultReadyTimeout = 20 * time.Second
 var (
 	ErrThreadRunning    = errors.New("Pi thread is already running")
 	ErrThreadNotRunning = errors.New("Pi thread is not running")
+	ErrSupervisorClosed = errors.New("Pi supervisor is closed")
 )
 
 type SessionEvent struct {
@@ -28,6 +29,7 @@ type SessionInfo struct {
 	ThreadID   string          `json:"threadId"`
 	Generation uint64          `json:"generation"`
 	State      json.RawMessage `json:"state"`
+	ProcessID  int             `json:"-"`
 }
 
 type managedSession struct {
@@ -45,6 +47,8 @@ type Supervisor struct {
 	mu             sync.RWMutex
 	sessions       map[string]*managedSession
 	starting       map[string]struct{}
+	exiting        map[string]struct{}
+	closed         bool
 	shutdownOnce   sync.Once
 }
 
@@ -60,6 +64,7 @@ func NewSupervisor(parent context.Context, starter ProcessStarter, sink func(Ses
 		sink:     sink,
 		sessions: make(map[string]*managedSession),
 		starting: make(map[string]struct{}),
+		exiting:  make(map[string]struct{}),
 	}
 }
 
@@ -69,9 +74,14 @@ func (supervisor *Supervisor) Start(ctx context.Context, config StartConfig) (Se
 	}
 
 	supervisor.mu.Lock()
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		return SessionInfo{}, ErrSupervisorClosed
+	}
 	_, running := supervisor.sessions[config.ThreadID]
 	_, starting := supervisor.starting[config.ThreadID]
-	if running || starting {
+	_, exiting := supervisor.exiting[config.ThreadID]
+	if running || starting || exiting {
 		supervisor.mu.Unlock()
 		return SessionInfo{}, ErrThreadRunning
 	}
@@ -91,6 +101,10 @@ func (supervisor *Supervisor) Start(ctx context.Context, config StartConfig) (Se
 	if err != nil {
 		return SessionInfo{}, err
 	}
+	processID := 0
+	if identified, ok := process.(interface{ PID() int }); ok {
+		processID = identified.PID()
+	}
 	generation := supervisor.nextGeneration.Add(1)
 
 	var client *pirpc.Client
@@ -103,6 +117,11 @@ func (supervisor *Supervisor) Start(ctx context.Context, config StartConfig) (Se
 
 	supervisor.mu.Lock()
 	delete(supervisor.starting, config.ThreadID)
+	if supervisor.closed {
+		supervisor.mu.Unlock()
+		_ = client.Close()
+		return SessionInfo{}, ErrSupervisorClosed
+	}
 	if _, exists := supervisor.sessions[config.ThreadID]; exists {
 		supervisor.mu.Unlock()
 		_ = client.Close()
@@ -130,6 +149,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, config StartConfig) (Se
 		ThreadID:   config.ThreadID,
 		Generation: generation,
 		State:      append(json.RawMessage(nil), response.Data...),
+		ProcessID:  processID,
 	}, nil
 }
 
@@ -152,11 +172,15 @@ func (supervisor *Supervisor) Send(threadID string, command map[string]any) erro
 func (supervisor *Supervisor) Stop(threadID string) error {
 	supervisor.mu.Lock()
 	session, exists := supervisor.sessions[threadID]
+	_, starting := supervisor.starting[threadID]
 	if exists {
 		delete(supervisor.sessions, threadID)
 	}
 	supervisor.mu.Unlock()
 	if !exists {
+		if starting {
+			return ErrThreadRunning
+		}
 		return ErrThreadNotRunning
 	}
 	return session.client.Close()
@@ -180,21 +204,23 @@ func (supervisor *Supervisor) Running() []SessionInfo {
 	return result
 }
 
-// ActiveCount includes processes that are still starting. Shared Pi files must
-// not be replaced while either a ready or an initializing process may use them.
+// ActiveCount includes processes that are starting or whose natural exit is
+// still being projected. Shared Pi files must not be replaced until both
+// startup and exit cleanup have completed.
 func (supervisor *Supervisor) ActiveCount() int {
 	supervisor.mu.RLock()
 	defer supervisor.mu.RUnlock()
-	return len(supervisor.sessions) + len(supervisor.starting)
+	return len(supervisor.sessions) + len(supervisor.starting) + len(supervisor.exiting)
 }
 
 // StopAll closes every ready session without shutting down the supervisor, so
-// new sessions can start again after Pi CLI maintenance completes.
+// new sessions can start again after Pi CLI maintenance completes. It rejects
+// starts and natural exits that have not reached a stable lifecycle boundary.
 func (supervisor *Supervisor) StopAll() error {
 	supervisor.mu.Lock()
-	if len(supervisor.starting) > 0 {
+	if len(supervisor.starting) > 0 || len(supervisor.exiting) > 0 {
 		supervisor.mu.Unlock()
-		return errors.New("cannot stop Pi sessions while a session is starting")
+		return errors.New("cannot stop Pi sessions while a session is starting or exiting")
 	}
 	sessions := supervisor.sessions
 	supervisor.sessions = make(map[string]*managedSession)
@@ -213,6 +239,7 @@ func (supervisor *Supervisor) Shutdown() {
 	supervisor.shutdownOnce.Do(func() {
 		supervisor.cancel()
 		supervisor.mu.Lock()
+		supervisor.closed = true
 		sessions := supervisor.sessions
 		supervisor.sessions = make(map[string]*managedSession)
 		supervisor.mu.Unlock()
@@ -224,9 +251,19 @@ func (supervisor *Supervisor) Shutdown() {
 
 func (supervisor *Supervisor) watch(threadID string, session *managedSession) {
 	<-session.client.Done()
-	if !supervisor.remove(threadID, session) {
+	supervisor.mu.Lock()
+	if supervisor.sessions[threadID] != session {
+		supervisor.mu.Unlock()
 		return
 	}
+	delete(supervisor.sessions, threadID)
+	supervisor.exiting[threadID] = struct{}{}
+	supervisor.mu.Unlock()
+	defer func() {
+		supervisor.mu.Lock()
+		delete(supervisor.exiting, threadID)
+		supervisor.mu.Unlock()
+	}()
 	errorMessage := "Pi RPC process exited"
 	if err := session.client.Err(); err != nil {
 		errorMessage = err.Error()
