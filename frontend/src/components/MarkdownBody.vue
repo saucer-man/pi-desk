@@ -5,7 +5,12 @@ import { useAppStore } from "../stores/app";
 import { resolveWorkspaceFileLink, type WorkspaceFileLink } from "../utils/fileLinks";
 import FileLinkContextMenu from "./FileLinkContextMenu.vue";
 
-const props = defineProps<{ text: string; streaming?: boolean }>();
+const props = defineProps<{
+  text: string;
+  streaming?: boolean;
+  searchQuery?: string;
+  searchActive?: boolean;
+}>();
 const appStore = useAppStore();
 const MAX_MARKDOWN_CHARS = 100_000;
 const workspacePath = computed(() => appStore.activeThread?.workspacePath || "");
@@ -40,7 +45,48 @@ markdown.renderer.rules.link_open = (tokens, index, options, environment, render
 };
 
 const renderMarkdown = computed(() => props.text.length <= MAX_MARKDOWN_CHARS);
-const rendered = computed(() => renderMarkdown.value ? markdown.render(props.text, { workspacePath: workspacePath.value }) : "");
+
+function highlightRenderedHtml(html: string, query: string, active: boolean): string {
+  const needle = query.trim();
+  if (!needle || typeof document === "undefined") return html;
+
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const lowerNeedle = needle.toLocaleLowerCase();
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node instanceof Text && node.nodeValue?.toLocaleLowerCase().includes(lowerNeedle)) textNodes.push(node);
+  }
+
+  for (const node of textNodes) {
+    const text = node.nodeValue ?? "";
+    const lowerText = text.toLocaleLowerCase();
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    let matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+    while (matchIndex >= 0) {
+      if (matchIndex > cursor) fragment.append(document.createTextNode(text.slice(cursor, matchIndex)));
+      const mark = document.createElement("mark");
+      mark.className = `markdown-search-hit${active ? " is-active" : ""}`;
+      mark.textContent = text.slice(matchIndex, matchIndex + needle.length);
+      fragment.append(mark);
+      cursor = matchIndex + needle.length;
+      matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+    }
+    if (cursor < text.length) fragment.append(document.createTextNode(text.slice(cursor)));
+    node.parentNode?.replaceChild(fragment, node);
+  }
+
+  return template.innerHTML;
+}
+
+const rendered = computed(() => {
+  if (!renderMarkdown.value) return "";
+  const html = markdown.render(props.text, { workspacePath: workspacePath.value });
+  return highlightRenderedHtml(html, props.searchQuery ?? "", props.searchActive ?? false);
+});
 
 function fileLinkFromEvent(event: MouseEvent): WorkspaceFileLink | undefined {
   const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a.markdown-file-link") : null;

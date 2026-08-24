@@ -13,6 +13,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@milkdown/core": "7.22.1",
+    "@milkdown/plugin-listener": "7.22.1",
+    "@milkdown/preset-commonmark": "7.22.1",
+    "@milkdown/utils": "7.22.1",
+    "@milkdown/vue": "7.22.1",
     "@tanstack/vue-virtual": "3.13.35",
     "@wailsio/runtime": "3.0.0-beta.5",
     "@xterm/addon-fit": "0.11.0",

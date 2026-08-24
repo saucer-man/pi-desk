@@ -81,6 +81,36 @@ describe("ConversationPane", () => {
     expect(wrapper.find(".waiting-for-output").exists()).toBe(false);
   });
 
+  it("opens conversation search with Ctrl+F and navigates results", async () => {
+    const wrapper = mountTranscript(3);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".conversation-search").exists()).toBe(true);
+    const input = wrapper.get(".conversation-search-input");
+    await input.setValue("Message");
+    expect(wrapper.get(".conversation-search-result").text()).toBe("1 / 3");
+
+    await wrapper.findAll(".conversation-search-control")[1].trigger("click");
+    expect(wrapper.get(".conversation-search-result").text()).toBe("2 / 3");
+
+    await input.trigger("keydown", { key: "Escape" });
+    expect(wrapper.find(".conversation-search").exists()).toBe(false);
+  });
+
+  it("shows a conversation outline preview and jumps to a turn", async () => {
+    const wrapper = mountTranscript(3);
+    const items = wrapper.findAll(".conversation-outline-item");
+
+    expect(items).toHaveLength(2);
+    await items[0].trigger("mouseenter");
+    expect(wrapper.get(".conversation-outline-preview").text()).toContain("Message 0");
+    expect(wrapper.get(".conversation-outline-preview").text()).toContain("Message 1");
+
+    await items[1].trigger("click");
+    expect(items[1].classes()).toContain("is-active");
+  });
+
   it("renders recovery before the later assistant response in timeline order", () => {
     const store = useAppStore();
     store.threads = [{

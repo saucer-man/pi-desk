@@ -7,11 +7,11 @@ import { formatFileMention } from "../utils/fileMentions";
 import { parsePiDeskTodoWidget, PI_DESK_TODO_WIDGET_KEY } from "../utils/todoWidget";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
-import MarkdownBody from "./MarkdownBody.vue";
+import MarkdownEditor from "./MarkdownEditor.vue";
 import PiDeskTodoPanel from "./PiDeskTodoPanel.vue";
 
 const appStore = useAppStore();
-const textarea = ref<HTMLTextAreaElement>();
+const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void }>();
 const commandMenu = ref<HTMLElement>();
 const commandButton = ref<HTMLElement>();
 const modelMenu = ref<HTMLElement>();
@@ -50,7 +50,7 @@ const draft = computed({
   set: (value: string) => appStore.updateDraft(value),
 });
 const commandMenuOpen = computed(() => !modelMenuOpen.value && !accessMenuOpen.value && (commandButtonOpen.value || (!commandDismissed.value && draft.value.startsWith("/") && !draft.value.slice(1).includes(" "))));
-const mentionMatch = computed(() => /(^|\s)@([^\s"]*)$/.exec(draft.value));
+const mentionMatch = computed(() => /(^|\s)@([^\s"]*)\s*$/.exec(draft.value));
 const matchingFiles = computed(() => {
   const query = mentionMatch.value?.[2].toLocaleLowerCase();
   if (query === undefined) return [];
@@ -133,17 +133,13 @@ async function refreshSlashCommands() {
   }
 }
 
-watch(draft, async (value, previousValue) => {
+watch(draft, (value, previousValue) => {
   if (value !== previousValue) commandButtonOpen.value = false;
   commandIndex.value = 0;
   mentionIndex.value = 0;
   commandDismissed.value = false;
   mentionDismissed.value = false;
   if (value.startsWith("/") && !previousValue.startsWith("/")) void refreshSlashCommands();
-  await nextTick();
-  if (!textarea.value) return;
-  textarea.value.style.height = "0";
-  textarea.value.style.height = `${Math.min(textarea.value.scrollHeight, 180)}px`;
 });
 
 watch(matchingCommands, (commands) => {
@@ -272,12 +268,16 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+function updateEditorMarkdown(value: string) {
+  draft.value = value;
+  markdownEditor.value?.replaceMarkdown(value);
+}
+
 function chooseFileMention(path: string) {
   const match = mentionMatch.value;
   if (!match) return;
   const prefix = `${draft.value.slice(0, match.index)}${match[1]}`;
-  draft.value = `${prefix}${formatFileMention(path)} `;
-  textarea.value?.focus();
+  updateEditorMarkdown(`${prefix}${formatFileMention(path)} `);
 }
 
 function toggleCommandMenu() {
@@ -292,7 +292,7 @@ function toggleCommandMenu() {
   commandIndex.value = 0;
   commandButtonOpen.value = true;
   void refreshSlashCommands();
-  textarea.value?.focus();
+  markdownEditor.value?.focus();
 }
 
 function commandArguments(value: string): string {
@@ -307,17 +307,16 @@ function chooseCommand(command: ComposerSlashCommand) {
   commandButtonOpen.value = false;
   commandDismissed.value = true;
   if (command.source === "desktop") {
-    if (!openedFromButton) draft.value = "";
+    if (!openedFromButton) updateEditorMarkdown("");
     appStore.openSettings(command.settingsSection);
     return;
   }
   if (openedFromButton) {
     const argumentsText = commandArguments(draft.value);
-    draft.value = argumentsText ? `/${command.name} ${argumentsText}` : `/${command.name} `;
+    updateEditorMarkdown(argumentsText ? `/${command.name} ${argumentsText}` : `/${command.name} `);
   } else {
-    draft.value = `/${command.name} `;
+    updateEditorMarkdown(`/${command.name} `);
   }
-  textarea.value?.focus();
 }
 
 function beginQueueEdit(promptId: string, text: string, images: PreparedImage[]) {
@@ -390,7 +389,7 @@ async function moveQueueEditToComposer(promptId: string) {
   appStore.movePendingPromptToDraft(promptId, editingPromptText.value, editingPromptImages.value);
   cancelQueueEdit();
   await nextTick();
-  textarea.value?.focus();
+  markdownEditor.value?.focus();
 }
 
 function modelLabel(model?: PiModel): string {
@@ -525,18 +524,12 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
         </div>
       </div>
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
-      <div class="composer-editor">
-        <div v-if="draft.trim()" class="composer-markdown-layer" aria-hidden="true">
-          <MarkdownBody :text="draft" />
-        </div>
-        <textarea
-          ref="textarea"
+      <div class="composer-editor" @keydown="onKeydown" @paste="onPaste">
+        <MarkdownEditor
+          ref="markdownEditor"
           v-model="draft"
-          rows="1"
           :placeholder="tr('composer.placeholder')"
-          :aria-label="tr('composer.promptLabel')"
-          @keydown="onKeydown"
-          @paste="onPaste"
+          :ariaLabel="tr('composer.promptLabel')"
         />
       </div>
       <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu" role="listbox" :aria-label="tr('composer.commands')">

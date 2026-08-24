@@ -67,4 +67,13 @@ describe("MarkdownBody", () => {
     expect(menu?.textContent).toContain("Show in file manager");
     wrapper.unmount();
   });
+
+  it("highlights search matches in rendered Markdown", async () => {
+    const { wrapper } = mountMarkdown("**Done** and done");
+    await wrapper.setProps({ searchQuery: "done", searchActive: true });
+
+    expect(wrapper.findAll("mark.markdown-search-hit")).toHaveLength(2);
+    expect(wrapper.findAll("mark.is-active")).toHaveLength(2);
+    wrapper.unmount();
+  });
 });

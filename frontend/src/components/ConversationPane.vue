@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useVirtualizer } from "@tanstack/vue-virtual";
-import { CircleDot, History, LoaderCircle } from "lucide-vue-next";
-import { computed, nextTick, ref, watch, type ComponentPublicInstance } from "vue";
+import { ChevronDown, ChevronUp, CircleDot, History, LoaderCircle, Search, X } from "lucide-vue-next";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from "vue";
 import ComposerBar from "./ComposerBar.vue";
 import ConversationMessage from "./ConversationMessage.vue";
 import { useAppStore } from "../stores/app";
@@ -12,6 +12,10 @@ import { tr } from "../i18n";
 
 const appStore = useAppStore();
 const timeline = ref<HTMLElement>();
+const searchInput = ref<HTMLInputElement>();
+const searchOpen = ref(false);
+const searchQuery = ref("");
+const activeSearchMatch = ref(0);
 const stickToBottom = ref(true);
 const messages = computed(() => groupConversationTurns(appStore.activeMessages));
 const shouldVirtualize = computed(() => shouldVirtualizeMessages(messages.value)
@@ -34,6 +38,65 @@ const virtualizer = useVirtualizer(computed(() => ({
 const virtualRows = computed(() => virtualizer.value.getVirtualItems());
 const virtualTotalSize = computed(() => virtualizer.value.getTotalSize());
 
+type SearchMatch = { messageId: string; messageIndex: number };
+type ConversationNavigationItem = SearchMatch & { title: string; answer: string };
+
+function previewText(text: string, maxLength = 120): string {
+  const normalized = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "图片")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[\\`*_>#~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+const navigationItems = computed<ConversationNavigationItem[]>(() => messages.value.flatMap((message, messageIndex) => {
+  if (message.role !== "user") return [];
+  const nextMessage = messages.value[messageIndex + 1];
+  const answer = nextMessage?.role === "assistant" ? nextMessage.text : "";
+  return [{
+    messageId: message.id,
+    messageIndex,
+    title: previewText(message.text) || tr("conversation.navigationUntitled"),
+    answer: previewText(answer) || tr("conversation.navigationNoAnswer"),
+  }];
+}));
+const activeNavigationId = ref("");
+const hoveredNavigationId = ref("");
+const hoveredNavigationTop = ref(0);
+const hoverClearTimer = ref<number>();
+const hoveredNavigationItem = computed(() => navigationItems.value.find((item) => item.messageId === hoveredNavigationId.value));
+
+function findMatches(text: string, query: string): number {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return 0;
+  const haystack = text.toLocaleLowerCase();
+  let count = 0;
+  let from = 0;
+  while (true) {
+    const index = haystack.indexOf(needle, from);
+    if (index < 0) return count;
+    count += 1;
+    from = index + needle.length;
+  }
+}
+
+const searchMatches = computed<SearchMatch[]>(() => {
+  const query = searchQuery.value;
+  if (!query.trim()) return [];
+  return messages.value.flatMap((message, messageIndex) => Array.from(
+    { length: findMatches(message.text, query) },
+    () => ({ messageId: message.id, messageIndex }),
+  ));
+});
+const currentSearchMatch = computed(() => searchMatches.value[activeSearchMatch.value]);
+const searchResultLabel = computed(() => searchMatches.value.length
+  ? `${activeSearchMatch.value + 1} / ${searchMatches.value.length}`
+  : tr("conversation.searchResults", { count: 0 }));
+const activeSearchMessageId = computed(() => currentSearchMatch.value?.messageId ?? "");
+
 function measureVirtualRow(element: Element | ComponentPublicInstance | null) {
   if (element instanceof Element) virtualizer.value.measureElement(element);
 }
@@ -51,13 +114,116 @@ function onTimelineScroll() {
   const element = timeline.value;
   if (!element) return;
   stickToBottom.value = isNearBottom(element.scrollTop, element.clientHeight, element.scrollHeight);
+  updateActiveNavigation();
+}
+
+function updateActiveNavigation() {
+  const element = timeline.value;
+  if (!element || !navigationItems.value.length) return;
+  const viewportTop = element.getBoundingClientRect().top + 48;
+  const rows = Array.from(element.querySelectorAll<HTMLElement>('.message-row[data-role="user"]'));
+  let activeID = "";
+  for (const row of rows) {
+    if (row.getBoundingClientRect().top <= viewportTop) activeID = row.dataset.messageId ?? activeID;
+  }
+  if (!activeID) activeID = rows[0]?.dataset.messageId ?? activeNavigationId.value;
+  if (activeID) activeNavigationId.value = activeID;
+}
+
+async function focusSearch() {
+  await nextTick();
+  searchInput.value?.focus();
+  searchInput.value?.select();
+}
+
+async function openSearch() {
+  if (!appStore.activeThread) return;
+  searchOpen.value = true;
+  await focusSearch();
+}
+
+function closeSearch() {
+  searchOpen.value = false;
+  searchQuery.value = "";
+  activeSearchMatch.value = 0;
+}
+
+async function scrollToMessage(messageIndex: number, messageId: string, block: ScrollLogicalPosition) {
+  if (shouldVirtualize.value) virtualizer.value.scrollToIndex(messageIndex, { align: block === "start" ? "start" : "center" });
+  await nextTick();
+  const row = Array.from(timeline.value?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [])
+    .find((element) => element.dataset.messageId === messageId);
+  if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ behavior: "smooth", block });
+  updateActiveNavigation();
+}
+
+async function scrollToSearchMatch() {
+  const match = currentSearchMatch.value;
+  if (match) await scrollToMessage(match.messageIndex, match.messageId, "center");
+}
+
+async function scrollToNavigation(item: ConversationNavigationItem) {
+  activeNavigationId.value = item.messageId;
+  await scrollToMessage(item.messageIndex, item.messageId, "start");
+}
+
+function setHoveredNavigation(messageId: string, event: Event) {
+  if (hoverClearTimer.value !== undefined) window.clearTimeout(hoverClearTimer.value);
+  hoveredNavigationId.value = messageId;
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  const outline = target.closest<HTMLElement>(".conversation-outline");
+  if (!outline) return;
+  const targetRect = target.getBoundingClientRect();
+  hoveredNavigationTop.value = targetRect.top - outline.getBoundingClientRect().top + targetRect.height / 2;
+}
+
+function keepHoveredNavigation() {
+  if (hoverClearTimer.value !== undefined) window.clearTimeout(hoverClearTimer.value);
+}
+
+function clearHoveredNavigation() {
+  if (hoverClearTimer.value !== undefined) window.clearTimeout(hoverClearTimer.value);
+  hoverClearTimer.value = window.setTimeout(() => {
+    hoveredNavigationId.value = "";
+    hoverClearTimer.value = undefined;
+  }, 120);
+}
+
+function hideHoveredNavigation() {
+  if (hoverClearTimer.value !== undefined) window.clearTimeout(hoverClearTimer.value);
+  hoverClearTimer.value = undefined;
+  hoveredNavigationId.value = "";
+}
+
+function moveSearchMatch(direction: 1 | -1) {
+  const total = searchMatches.value.length;
+  if (!total) return;
+  activeSearchMatch.value = (activeSearchMatch.value + direction + total) % total;
+  void scrollToSearchMatch();
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "f") {
+    if (!appStore.activeThread) return;
+    event.preventDefault();
+    void openSearch();
+    return;
+  }
+  if (!searchOpen.value) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSearch();
+  }
 }
 
 watch(() => appStore.activeThreadId, async () => {
+  activeNavigationId.value = navigationItems.value[0]?.messageId ?? "";
   stickToBottom.value = true;
   await nextTick();
   virtualizer.value.measure();
   scrollToBottom();
+  updateActiveNavigation();
 });
 
 watch(streamSignal, async (_signal, previous) => {
@@ -72,11 +238,89 @@ watch(virtualTotalSize, async () => {
   if (!stickToBottom.value || !shouldVirtualize.value) return;
   await nextTick();
   scrollToBottom();
+  updateActiveNavigation();
+});
+
+watch(navigationItems, (items) => {
+  if (!items.some((item) => item.messageId === activeNavigationId.value)) activeNavigationId.value = items[0]?.messageId ?? "";
+}, { flush: "post" });
+
+watch(searchQuery, () => {
+  activeSearchMatch.value = 0;
+  if (searchOpen.value) void nextTick().then(scrollToSearchMatch);
+});
+
+watch(searchMatches, (matches) => {
+  activeSearchMatch.value = matches.length ? Math.min(activeSearchMatch.value, matches.length - 1) : 0;
+  if (searchOpen.value) void nextTick().then(scrollToSearchMatch);
+}, { flush: "post" });
+
+onMounted(() => document.addEventListener("keydown", onDocumentKeydown, true));
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onDocumentKeydown, true);
+  hideHoveredNavigation();
 });
 </script>
 
 <template>
   <section class="conversation-pane" :aria-label="tr('conversation.label')">
+    <div v-if="searchOpen" class="conversation-search" role="search" :aria-label="tr('conversation.search')">
+      <div class="conversation-search-main">
+        <Search :size="17" aria-hidden="true" />
+        <input
+          ref="searchInput"
+          v-model="searchQuery"
+          class="conversation-search-input"
+          type="search"
+          autocomplete="off"
+          :placeholder="tr('conversation.searchPlaceholder')"
+          :aria-label="tr('conversation.searchPlaceholder')"
+          @keydown.enter.prevent="moveSearchMatch($event.shiftKey ? -1 : 1)"
+          @keydown.esc.prevent.stop="closeSearch"
+        />
+        <span class="conversation-search-result" aria-live="polite">{{ searchResultLabel }}</span>
+        <button class="conversation-search-control" type="button" :title="tr('conversation.previousSearchResult')" :aria-label="tr('conversation.previousSearchResult')" :disabled="!searchMatches.length" @click="moveSearchMatch(-1)">
+          <ChevronUp :size="15" aria-hidden="true" />
+        </button>
+        <button class="conversation-search-control" type="button" :title="tr('conversation.nextSearchResult')" :aria-label="tr('conversation.nextSearchResult')" :disabled="!searchMatches.length" @click="moveSearchMatch(1)">
+          <ChevronDown :size="15" aria-hidden="true" />
+        </button>
+        <button class="conversation-search-close" type="button" :title="tr('conversation.closeSearch')" :aria-label="tr('conversation.closeSearch')" @click="closeSearch">
+          <X :size="17" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+    <nav v-if="navigationItems.length" class="conversation-outline" :aria-label="tr('conversation.navigation')">
+      <div class="conversation-outline-scroll" @scroll="hideHoveredNavigation">
+        <div class="conversation-outline-list">
+          <button
+            v-for="(item, index) in navigationItems"
+            :key="item.messageId"
+            class="conversation-outline-item"
+            :class="{ 'is-active': item.messageId === activeNavigationId, 'is-hovered': item.messageId === hoveredNavigationId }"
+            type="button"
+            :aria-label="tr('conversation.navigationItem', { index: index + 1, title: item.title })"
+            @mouseenter="setHoveredNavigation(item.messageId, $event)"
+        @mouseleave="clearHoveredNavigation"
+            @focus="setHoveredNavigation(item.messageId, $event)"
+            @blur="clearHoveredNavigation"
+            @click="void scrollToNavigation(item)"
+          >
+            <span class="conversation-outline-line" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+      <span
+        v-if="hoveredNavigationItem"
+        class="conversation-outline-preview"
+        :style="{ top: `${hoveredNavigationTop}px` }"
+        @mouseenter="keepHoveredNavigation"
+        @mouseleave="clearHoveredNavigation"
+      >
+        <strong>{{ hoveredNavigationItem.title }}</strong>
+        <span><em>{{ tr("conversation.navigationAnswer") }}</em>{{ hoveredNavigationItem.answer }}</span>
+      </span>
+    </nav>
     <div ref="timeline" class="timeline" role="log" aria-live="polite" @scroll="onTimelineScroll">
       <div v-if="appStore.activeSessionOperation === tr('topbar.compacting')" class="conversation-operation-banner" role="status" aria-live="polite">
         <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
@@ -118,11 +362,11 @@ watch(virtualTotalSize, async () => {
           :data-index="row.index"
           :style="{ transform: `translateY(${row.start}px)` }"
         >
-          <ConversationMessage :message="messages[row.index]" />
+          <ConversationMessage :message="messages[row.index]" :search-query="searchQuery" :search-active="messages[row.index]?.id === activeSearchMessageId" />
         </div>
       </div>
 
-      <ConversationMessage v-else v-for="message in messages" :key="message.id" :message="message" />
+      <ConversationMessage v-else v-for="message in messages" :key="message.id" :message="message" :search-query="searchQuery" :search-active="message.id === activeSearchMessageId" />
       <div
         v-if="appStore.activeWaitingForOutput"
         class="waiting-for-output"

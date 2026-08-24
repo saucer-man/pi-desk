@@ -10,7 +10,11 @@ import MarkdownBody from "./MarkdownBody.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import { tr } from "../i18n";
 
-const props = defineProps<{ message: TimelineMessage }>();
+const props = defineProps<{
+  message: TimelineMessage;
+  searchQuery?: string;
+  searchActive?: boolean;
+}>();
 const appStore = useAppStore();
 const editing = ref(false);
 const editText = ref("");
@@ -154,8 +158,10 @@ function stepThinking(step: ExecutionStep): string {
       'message-row--compact': Boolean(message.thinking || message.tools.length),
       'message-row--editing': editing,
       'message-row--compaction': Boolean(message.compaction),
+      'message-row--search-active': searchActive,
     }"
     :data-role="message.role"
+    :data-message-id="message.id"
   >
     <details v-if="message.compaction" class="compaction-divider">
       <summary>
@@ -170,7 +176,7 @@ function stepThinking(step: ExecutionStep): string {
         <span class="compaction-line" aria-hidden="true" />
       </summary>
       <div class="compaction-summary">
-        <MarkdownBody :text="message.compaction.summary" :streaming="false" />
+        <MarkdownBody :text="message.compaction.summary" :streaming="false" :search-query="searchQuery" :search-active="searchActive" />
       </div>
     </details>
     <div v-else class="message-content">
@@ -198,7 +204,7 @@ function stepThinking(step: ExecutionStep): string {
             <template v-else-if="step.kind === 'tools'">
               <ToolCallPanel v-for="tool in step.tools" :key="tool.id" :tool="tool" />
             </template>
-            <MarkdownBody v-else-if="step.text" :text="step.text" :streaming="false" />
+            <MarkdownBody v-else-if="step.text" :text="step.text" :streaming="false" :search-query="searchQuery" :search-active="searchActive" />
           </template>
         </div>
       </details>
@@ -226,7 +232,7 @@ function stepThinking(step: ExecutionStep): string {
         </div>
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>
-      <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" />
+      <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" :search-query="searchQuery" :search-active="searchActive" />
       <div
         v-if="runNotice"
         class="message-run-notice"

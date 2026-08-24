@@ -46,6 +46,18 @@ describe("application rail alignment", () => {
   });
 });
 
+describe("conversation outline spacing", () => {
+  it("uses fixed rows instead of distributing gaps across the rail", async () => {
+    const layout = await layoutText();
+    const outline = firstRuleBody(layout, ".conversation-outline-list");
+    expect(outline).toMatch(/display:\s*grid/);
+    expect(outline).toMatch(/grid-auto-rows:\s*10px/);
+    expect(outline).toMatch(/row-gap:\s*0/);
+      expect(outline).toMatch(/align-content:\s*safe center/);
+    expect(outline).not.toMatch(/space-around/);
+  });
+});
+
 describe("message editor theme colors", () => {
   it("uses defined foreground and background tokens in light and dark themes", async () => {
     const layout = await layoutText();

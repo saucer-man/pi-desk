@@ -56,6 +56,8 @@ describe("ComposerBar", () => {
     store.abortActiveRetry = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
 
+    expect(wrapper.find("textarea").exists()).toBe(false);
+    expect(wrapper.find(".composer-markdown-layer").exists()).toBe(false);
     expect(wrapper.text()).toContain("Inspect logs");
     expect(wrapper.text()).toContain("Run tests");
     expect(wrapper.text()).toContain("Retry 2 of 4");
@@ -69,14 +71,14 @@ describe("ComposerBar", () => {
       "Delete queued message",
     ]);
 
-    const textarea = wrapper.get("textarea");
-    for (let index = 0; index < 3; index += 1) await textarea.trigger("keydown", { key: "ArrowDown" });
-    await textarea.trigger("keydown", { key: "Enter" });
+    const editor = wrapper.get(".composer-editor");
+    for (let index = 0; index < 3; index += 1) await editor.trigger("keydown", { key: "ArrowDown" });
+    await editor.trigger("keydown", { key: "Enter" });
     expect(store.activeDraft).toBe("/review ");
     expect(store.sendActivePrompt).not.toHaveBeenCalled();
 
     store.updateDraft("Check @view");
-    await textarea.trigger("keydown", { key: "Enter" });
+    await editor.trigger("keydown", { key: "Enter" });
     expect(store.activeDraft).toBe("Check @src/view.ts ");
     expect(store.sendActivePrompt).not.toHaveBeenCalled();
 
@@ -172,8 +174,8 @@ describe("ComposerBar", () => {
     expect(commands[13].text()).toContain("Skill");
     expect(commands[13].attributes("title")).toBe("Skill · C:\\skills\\command-12\\SKILL.md");
 
-    const textarea = wrapper.get("textarea");
-    for (let index = 0; index < 13; index += 1) await textarea.trigger("keydown", { key: "ArrowDown" });
+    const editor = wrapper.get(".composer-editor");
+    for (let index = 0; index < 13; index += 1) await editor.trigger("keydown", { key: "ArrowDown" });
     expect(commands[13].attributes("aria-selected")).toBe("true");
   });
 
@@ -474,7 +476,7 @@ describe("ComposerBar", () => {
     expect(wrapper.find('input[type="file"]').exists()).toBe(false);
     expect(wrapper.find('button[title="Attach images"]').exists()).toBe(false);
 
-    await wrapper.get("textarea").trigger("paste", {
+    await wrapper.get(".composer-editor").trigger("paste", {
       clipboardData: {
         items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
       },
