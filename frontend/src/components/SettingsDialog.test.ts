@@ -81,7 +81,7 @@ describe("SettingsDialog", () => {
     await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Extensions")!.trigger("click");
     expect(wrapper.text()).toContain("Global Pi extensions and packages");
 
-    await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Runtime resources (read-only)")!.trigger("click");
+    await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Runtime resources")!.trigger("click");
     expect(wrapper.findAll(".resource-row")).toHaveLength(3);
     expect(wrapper.text()).toContain("SKILL.md");
     await wrapper.findAll(".resource-filters button")[1].trigger("click");

@@ -303,13 +303,14 @@ describe("AppSidebar", () => {
     expect(menu.findAll('[role="menuitem"]').map((item) => item.text())).toEqual([
       "New task",
       "Show in File Explorer",
+      "Rename workspace",
       "Remove workspace",
     ]);
-    await menu.findAll('[role="menuitem"]')[1].trigger("click");
+    await menu.findAll('[role="menuitem"]').find((item) => item.text() === "Show in File Explorer")!.trigger("click");
     expect(store.openWorkspace).toHaveBeenCalledWith("workspace-1");
 
     await wrapper.get('button[aria-label="Actions for pi-desk"]').trigger("click", { clientX: 20, clientY: 20 });
-    await wrapper.get(".workspace-context-menu").findAll('[role="menuitem"]')[2].trigger("click");
+    await wrapper.get(".workspace-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Remove workspace")!.trigger("click");
     expect(store.removeWorkspace).toHaveBeenCalledWith("workspace-1");
   });
 
@@ -335,7 +336,7 @@ describe("AppSidebar", () => {
     expect(wrapper.text()).toContain("Runtime audit");
   });
 
-  it("opens the task workspace before offering Pi lifecycle and delete actions", async () => {
+  it("offers task session, Pi lifecycle, and delete actions from the task menu", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -346,8 +347,14 @@ describe("AppSidebar", () => {
         id: "thread-1", title: "Context actions", workspace: "pi-desk", workspacePath: "D:\\repo", trust: "deny",
         status: "idle", started: false, generation: 0, sessionFile: "one.jsonl",
       }],
+      activeThreadId: "thread-1",
     });
     store.openWorkspace = vi.fn().mockResolvedValue(undefined);
+    store.renameActiveSession = vi.fn().mockResolvedValue(undefined);
+    store.openBranchPanel = vi.fn().mockResolvedValue(undefined);
+    store.cloneActiveSession = vi.fn().mockResolvedValue(undefined);
+    store.exportActiveSession = vi.fn().mockResolvedValue(undefined);
+    store.compactActiveSession = vi.fn().mockResolvedValue(undefined);
     store.startThreadInBackground = vi.fn();
     store.requestDeleteThread = vi.fn();
     const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
@@ -356,6 +363,11 @@ describe("AppSidebar", () => {
     const menuItems = wrapper.get(".thread-context-menu").findAll('[role="menuitem"]');
     expect(menuItems.map((item) => item.text())).toEqual([
       "Show in File Explorer",
+      "Rename task",
+      "Session branches",
+      "Clone task",
+      "Export HTML",
+      "Compact context",
       "Start Pi process",
       "Delete task",
     ]);
@@ -364,8 +376,28 @@ describe("AppSidebar", () => {
     await menuItems[0].trigger("click");
     expect(store.openWorkspace).toHaveBeenCalledWith("workspace-1");
 
+    for (const [label, action] of [
+      ["Session branches", store.openBranchPanel],
+      ["Clone task", store.cloneActiveSession],
+      ["Export HTML", store.exportActiveSession],
+    ] as const) {
+      await wrapper.get(".thread-row").trigger("contextmenu", { clientX: 40, clientY: 60 });
+      await wrapper.get(".thread-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === label)!.trigger("click");
+      expect(action).toHaveBeenCalledOnce();
+    }
+
     await wrapper.get(".thread-row").trigger("contextmenu", { clientX: 40, clientY: 60 });
-    const deleteAction = wrapper.get(".thread-context-menu").findAll('[role="menuitem"]')[2];
+    await wrapper.get(".thread-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Rename task")!.trigger("click");
+    await wrapper.get("#task-rename-input").setValue("Renamed task");
+    await wrapper.get(".task-rename-menu").trigger("submit");
+    expect(store.renameActiveSession).toHaveBeenCalledWith("Renamed task");
+
+    await wrapper.get(".thread-row").trigger("contextmenu", { clientX: 40, clientY: 60 });
+    await wrapper.get(".thread-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Start Pi process")!.trigger("click");
+    expect(store.startThreadInBackground).toHaveBeenCalledWith("thread-1");
+
+    await wrapper.get(".thread-row").trigger("contextmenu", { clientX: 40, clientY: 60 });
+    const deleteAction = wrapper.get(".thread-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Delete task")!;
     await deleteAction.trigger("click");
     expect(store.requestDeleteThread).toHaveBeenCalledWith("thread-1");
   });

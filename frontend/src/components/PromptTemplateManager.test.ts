@@ -80,6 +80,6 @@ describe("PromptTemplateManager", () => {
     const projectOption = scopeSelect.findAll('option').find((option) => option.element.value === PromptTemplateScope.PromptTemplateScopeProject);
     expect(projectOption?.attributes("disabled")).toBeDefined();
     expect(wrapper.get(".runtime-resource-scope").text()).toContain("/package-prompt");
-    expect(wrapper.get(".runtime-resource-scope").text()).toContain("Loaded by Pi (read-only)");
+    expect(wrapper.get(".runtime-resource-scope").text()).toContain("Loaded by Pi");
   });
 });

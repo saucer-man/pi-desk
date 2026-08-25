@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../stores/app";
@@ -14,11 +14,16 @@ const remoteWorkspaceService = vi.hoisted(() => ({
 }));
 vi.mock("../services/remoteWorkspaces", () => ({ remoteWorkspaceService }));
 
+async function chooseRemoteAlias(wrapper: VueWrapper) {
+  await wrapper.get("#remote-alias").trigger("click");
+  await wrapper.get('[role="option"]').trigger("click");
+}
+
 describe("NewTaskDialog", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
-    remoteWorkspaceService.discover.mockResolvedValue([]);
+    remoteWorkspaceService.discover.mockResolvedValue([{ name: "work", risky: false }]);
     remoteWorkspaceService.disconnect.mockResolvedValue(undefined);
   });
 
@@ -116,17 +121,16 @@ describe("NewTaskDialog", () => {
 
     await vi.waitFor(() => expect(wrapper.findAll(".segmented-control button")).toHaveLength(2));
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
 
     await vi.waitFor(() => expect(wrapper.text()).toContain("/srv/repo"));
     expect(store.createRemoteThread).not.toHaveBeenCalled();
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(store.createRemoteThread).toHaveBeenCalled());
-    expect(remoteWorkspaceService.connectNew).toHaveBeenCalledWith("repo", "work", true);
+    expect(remoteWorkspaceService.connectNew).toHaveBeenCalledWith("repo", "work");
     expect(remoteWorkspaceService.decideRoot).toHaveBeenCalledWith("a".repeat(64), "approve");
     expect(store.startThreadInBackground).toHaveBeenCalledWith("thread-remote");
   });
@@ -142,10 +146,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
 
     await vi.waitFor(() => expect(wrapper.text()).toContain("root probe failed"));
@@ -167,10 +170,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(wrapper.text()).toContain("/srv/repo"));
     await wrapper.get("footer .primary").trigger("click");
@@ -195,10 +197,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(wrapper.text()).toContain("SHA256:test"));
     await wrapper.get("footer .primary").trigger("click");
@@ -227,10 +228,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(wrapper.text()).toContain("SHA256:test"));
     await wrapper.get("footer .primary").trigger("click");
@@ -255,10 +255,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(remoteWorkspaceService.connectNew).toHaveBeenCalled());
     store.markRemoteTargetStale("target-2");
@@ -280,10 +279,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(remoteWorkspaceService.prepareRoot).toHaveBeenCalled());
     store.markRemoteTargetStale("target-1");
@@ -329,10 +327,9 @@ describe("NewTaskDialog", () => {
 
     await vi.waitFor(() => expect(wrapper.findAll(".segmented-control button")).toHaveLength(2));
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
-    await wrapper.get("#remote-alias").setValue("work");
+    await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
-    await wrapper.get('.checkbox-row input[type="checkbox"]').setValue(true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(wrapper.text()).toContain("/srv/repo"));
     await wrapper.get("footer .danger-button").trigger("click");

@@ -524,7 +524,7 @@ describe("app store", () => {
     expect(mocks.startSession).not.toHaveBeenCalled();
     await store.confirmRemoteReconnect();
 
-    expect(mocks.resumeRemoteWorkspace).toHaveBeenCalledWith("workspace-remote", true);
+    expect(mocks.resumeRemoteWorkspace).toHaveBeenCalledWith("workspace-remote");
     await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "thread-remote", workspace: "", workspaceId: "workspace-remote",
       sessionPath: "C:\\sessions\\remote.jsonl",

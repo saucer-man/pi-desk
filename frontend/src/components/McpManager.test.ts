@@ -42,7 +42,7 @@ describe("McpManager", () => {
     expect(JSON.parse(mcpMocks.upsert.mock.calls[0][0].definition).headers).toEqual({ "X-Test": "value" });
   });
 
-  it("shows only global MCP configuration", async () => {
+  it("shows project MCP availability for the active workspace", async () => {
     mcpMocks.list.mockResolvedValue({
       globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json",
       servers: [],
@@ -51,9 +51,10 @@ describe("McpManager", () => {
     const wrapper = mount(McpManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    expect(mcpMocks.list).toHaveBeenCalledWith({});
+    expect(mcpMocks.list).toHaveBeenCalledWith({ workspacePath: "" });
     expect(wrapper.text()).toContain("Global MCP");
-    expect(wrapper.text()).not.toContain("Project MCP");
-    expect(wrapper.findAll("option").some((option) => option.element.value === McpConfigScope.McpConfigScopeProject)).toBe(false);
+    expect(wrapper.text()).toContain("Project MCP servers require a trusted workspace.");
+    const projectOption = wrapper.findAll("option").find((option) => option.element.value === McpConfigScope.McpConfigScopeProject);
+    expect(projectOption?.attributes("disabled")).toBeDefined();
   });
 });

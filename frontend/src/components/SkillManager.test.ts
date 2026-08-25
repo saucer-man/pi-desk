@@ -69,7 +69,7 @@ describe("SkillManager", () => {
     expect(wrapper.text()).toContain("Skill saved.");
   });
 
-  it("shows one merged skill list without project scope controls", async () => {
+  it("shows merged global roots and project availability without scope controls", async () => {
     skillMocks.list.mockResolvedValue({
       globalDirectory: piSkillRoot,
       globalDirectories: [piSkillRoot, sharedSkillRoot],
@@ -89,8 +89,8 @@ describe("SkillManager", () => {
 
     expect(wrapper.text()).toContain(sharedSkillRoot);
     expect(wrapper.find("select").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Project skills");
+    expect(wrapper.text()).toContain("Project skills require a trusted workspace.");
     expect(wrapper.get(".runtime-resource-scope").text()).toContain("/package-skill");
-    expect(wrapper.get(".runtime-resource-scope").text()).toContain("Loaded by Pi (read-only)");
+    expect(wrapper.get(".runtime-resource-scope").text()).toContain("Loaded by Pi");
   });
 });
