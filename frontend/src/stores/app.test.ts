@@ -350,13 +350,13 @@ describe("app store", () => {
       appearance: "dark", language: "en",
       offlineMode: false, proxyEnabled: true, proxyURL: "http://127.0.0.1:7890",
       streamingBehavior: "followUp", sidebarCollapsed: true, sidebarWidth: 344,
-      inspectorOpen: false, inspectorWidth: 400, inspectorTab: "context", workspaceApplication: "vscode",
+      inspectorOpen: false, inspectorWidth: 468, inspectorTab: "context", workspaceApplication: "vscode",
     });
     await store.persistDesktopState();
     expect(mocks.saveDesktopState).toHaveBeenCalledWith(expect.objectContaining({
       preferences: expect.objectContaining({
         proxyUrl: "http://127.0.0.1:7890", streamingBehavior: "followUp",
-        sidebarWidth: 344, inspectorOpen: false, inspectorWidth: 400, workspaceApplication: "vscode",
+        sidebarWidth: 344, inspectorOpen: false, inspectorWidth: 468, workspaceApplication: "vscode",
       }),
     }));
   });
@@ -414,8 +414,8 @@ describe("app store", () => {
     store.setSidebarWidth(100);
     store.setInspectorWidth(2_000);
 
-    expect(store.sidebarWidth).toBe(240);
-    expect(store.inspectorWidth).toBe(400);
+    expect(store.sidebarWidth).toBe(180);
+    expect(store.inspectorWidth).toBe(840);
   });
 
   it("restores layout preferences before slow session discovery finishes", async () => {

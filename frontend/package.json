@@ -13,6 +13,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@codemirror/language-data": "6.5.2",
+    "@lezer/highlight": "1.2.3",
     "@milkdown/core": "7.22.1",
     "@milkdown/preset-commonmark": "7.22.1",
     "@milkdown/preset-gfm": "7.22.1",

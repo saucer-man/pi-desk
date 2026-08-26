@@ -37,11 +37,11 @@ const remoteReconnectProgressDefinitions: RemoteReconnectProgressStep[] = [
 
 export const MAX_PI_PROCESSES = 10;
 export const DEFAULT_SIDEBAR_WIDTH = 272;
-export const MIN_SIDEBAR_WIDTH = 240;
-export const MAX_SIDEBAR_WIDTH = 360;
+export const MIN_SIDEBAR_WIDTH = 180;
+export const MAX_SIDEBAR_WIDTH = 560;
 export const DEFAULT_INSPECTOR_WIDTH = 320;
-export const MIN_INSPECTOR_WIDTH = 280;
-export const MAX_INSPECTOR_WIDTH = 400;
+export const MIN_INSPECTOR_WIDTH = 240;
+export const MAX_INSPECTOR_WIDTH = 840;
 const TODO_WIDGET_KEYS = ["pi-deck-todo", "pi-desk-todo"] as const;
 const REMOTE_RECONNECT_CODES = ["REMOTE_DISCONNECTED", "REMOTE_CONTEXT_CHANGED_WAIT_FOR_IDLE", "REMOTE_OUTCOME_UNKNOWN"] as const;
 const REMOTE_MUTATING_TOOLS = new Set(["write", "edit", "bash", "user_bash"]);

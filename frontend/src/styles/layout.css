@@ -3070,6 +3070,54 @@
   font: inherit;
 }
 
+.file-preview-content .tok-keyword,
+.file-preview-content .tok-typeName,
+.file-preview-content .tok-className,
+.file-preview-content .tok-namespace,
+.file-preview-content .tok-variableName2 {
+  color: var(--blue);
+}
+
+.file-preview-content .tok-string,
+.file-preview-content .tok-string2,
+.file-preview-content .tok-literal,
+.file-preview-content .tok-inserted {
+  color: var(--green);
+}
+
+.file-preview-content .tok-number,
+.file-preview-content .tok-bool,
+.file-preview-content .tok-atom,
+.file-preview-content .tok-macroName {
+  color: var(--amber);
+}
+
+.file-preview-content .tok-comment,
+.file-preview-content .tok-meta {
+  color: var(--text-muted);
+}
+
+.file-preview-content .tok-heading,
+.file-preview-content .tok-strong {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.file-preview-content .tok-emphasis {
+  font-style: italic;
+}
+
+.file-preview-content .tok-link,
+.file-preview-content .tok-url {
+  color: var(--blue);
+  text-decoration: underline;
+}
+
+.file-preview-content .tok-deleted,
+.file-preview-content .tok-invalid {
+  color: var(--red);
+}
+
 .inspector-content {
   min-height: 0;
   padding: 12px 10px;
@@ -3099,6 +3147,52 @@
   display: flex;
   align-items: center;
   gap: 3px;
+}
+
+.repository-file-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.repository-file-filters {
+  display: flex;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+}
+
+.repository-file-filters button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.repository-file-filters button.is-active {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.repository-file-filters span {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+}
+
+.repository-file-controls .file-search {
+  margin: 0;
 }
 
 .changed-count {
@@ -3239,49 +3333,9 @@
   text-align: center;
 }
 
-.changed-file-list {
-  min-height: 0;
-  overflow-y: auto;
-  padding: 5px;
-}
-
-.changed-file-row {
-  display: grid;
-  min-height: 32px;
-  grid-template-columns: 18px minmax(0, 1fr) 26px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 3px 0 7px;
-  border-radius: 4px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.changed-file-row:hover {
-  background: var(--bg-hover);
-}
-
-.changed-file-row > span:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.changed-file-row .changed-file-open {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  height: 26px;
-  overflow: hidden;
-  padding: 0;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.changed-file-row button,
 .file-tree-mention,
-.file-tree-toggle {
+.file-tree-toggle,
+.file-tree-change {
   display: grid;
   width: 26px;
   height: 26px;
@@ -3294,9 +3348,9 @@
   cursor: pointer;
 }
 
-.changed-file-row button:hover,
 .file-tree-mention:hover,
-.file-tree-toggle:hover {
+.file-tree-toggle:hover,
+.file-tree-change:hover {
   background: var(--bg-active);
   color: var(--text);
 }
@@ -3502,12 +3556,6 @@
   white-space: nowrap;
 }
 
-.workspace-files {
-  min-height: 240px;
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
 .section-heading {
   display: flex;
   height: 36px;
@@ -3552,13 +3600,16 @@
 
 .file-tree {
   min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
   padding: 2px 4px 12px;
 }
 
 .file-tree-row {
   display: grid;
   min-height: 29px;
-  grid-template-columns: 18px 16px minmax(0, 1fr) 26px;
+  grid-template-columns: 18px 16px minmax(0, 1fr) 22px 26px;
   align-items: center;
   gap: 4px;
   padding: 0 2px 0 calc(var(--tree-depth) * 13px);
@@ -3587,6 +3638,48 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-tree-open {
+  display: block;
+  width: 100%;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-tree-open:hover {
+  color: var(--text);
+}
+
+.file-tree-open.is-changed {
+  font-weight: 650;
+}
+
+.file-tree-open[data-status="M"],
+.file-tree-open[data-status="R"] {
+  color: var(--amber);
+}
+
+.file-tree-open[data-status="A"],
+.file-tree-open[data-status="U"] {
+  color: var(--green);
+}
+
+.file-tree-open[data-status="D"] {
+  color: var(--red);
+}
+
+.file-tree-change {
+  width: 22px;
+  height: 22px;
+}
+
+.file-tree-change-spacer {
+  width: 22px;
 }
 
 .file-tree-mention {

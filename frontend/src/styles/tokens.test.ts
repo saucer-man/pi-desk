@@ -2,12 +2,12 @@ import tokensFile from "./tokens.css?inline";
 import { describe, expect, it } from "vitest";
 
 async function tokensText(): Promise<string> {
-  if (tokensFile.includes("--bg-app")) return tokensFile;
+  if (tokensFile.includes("--bg-app")) return tokensFile.replace(/\r\n?/g, "\n");
   const moduleName = ["node", "fs/promises"].join(":");
   const { readFile } = await import(/* @vite-ignore */ moduleName) as {
     readFile(path: string, encoding: "utf8"): Promise<string>;
   };
-  return readFile("src/styles/tokens.css", "utf8");
+  return (await readFile("src/styles/tokens.css", "utf8")).replace(/\r\n?/g, "\n");
 }
 
 describe("teleported dialog theme inheritance", () => {

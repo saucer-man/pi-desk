@@ -2,12 +2,12 @@ import workbenchFile from "./workbench.css?inline";
 import { describe, expect, it } from "vitest";
 
 async function workbenchText(): Promise<string> {
-  if (workbenchFile.includes(".app-shell")) return workbenchFile;
+  if (workbenchFile.includes(".app-shell")) return workbenchFile.replace(/\r\n?/g, "\n");
   const moduleName = ["node", "fs/promises"].join(":");
   const { readFile } = await import(/* @vite-ignore */ moduleName) as {
     readFile(path: string, encoding: "utf8"): Promise<string>;
   };
-  return readFile("src/styles/workbench.css", "utf8");
+  return (await readFile("src/styles/workbench.css", "utf8")).replace(/\r\n?/g, "\n");
 }
 
 describe("responsive workbench layout", () => {

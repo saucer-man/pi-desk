@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ArrowLeft, AtSign, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, RefreshCw, Search } from "lucide-vue-next";
+import { ArrowLeft, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, RefreshCw, Search } from "lucide-vue-next";
 import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { buildRepositoryTree } from "../utils/fileMentions";
+import CodePreview from "./CodePreview.vue";
 import FileTreeNode from "./FileTreeNode.vue";
 import { tr } from "../i18n";
 
@@ -12,6 +13,7 @@ const appStore = useAppStore();
 const state = computed(() => appStore.activeSessionState);
 const stats = computed(() => appStore.sessionStatsByThread[appStore.activeThreadId]);
 const fileQuery = ref("");
+const fileScope = ref<"all" | "changed">("all");
 const branchQuery = ref("");
 const branchesOpen = ref(false);
 const repository = computed(() => appStore.activeRepository);
@@ -29,12 +31,27 @@ const filteredBranches = computed(() => {
 });
 const localBranches = computed(() => filteredBranches.value.filter((branch) => !branch.remote));
 const remoteBranches = computed(() => filteredBranches.value.filter((branch) => branch.remote));
-const filteredFiles = computed(() => {
+const normalizedChangedFiles = computed(() => changedFiles.value.map((file) => ({
+  ...file,
+  path: file.path.replaceAll("\\", "/"),
+})));
+const changeStatusByPath = computed<Record<string, string>>(() => Object.fromEntries(
+  normalizedChangedFiles.value.map((file) => [file.path, reviewChangeLabel(file)]),
+));
+const scopedFilePaths = computed(() => fileScope.value === "changed"
+  ? normalizedChangedFiles.value.map((file) => file.path)
+  : [...new Set([
+    ...repositoryFiles.value.map((file) => file.path.replaceAll("\\", "/")),
+    ...normalizedChangedFiles.value.map((file) => file.path),
+  ])]);
+const matchingFilePaths = computed(() => {
   const query = fileQuery.value.trim().toLocaleLowerCase();
-  const files = repositoryFiles.value;
-  return (query ? files.filter((file) => file.path.toLocaleLowerCase().includes(query)) : files).slice(0, 500);
+  return query ? scopedFilePaths.value.filter((path) => path.toLocaleLowerCase().includes(query)) : scopedFilePaths.value;
 });
-const fileTree = computed(() => buildRepositoryTree(filteredFiles.value.map((file) => file.path)));
+const filteredFiles = computed(() => matchingFilePaths.value.slice(0, 500));
+const fileListTruncated = computed(() => matchingFilePaths.value.length > filteredFiles.value.length
+  || (fileScope.value === "all" && Boolean(repository.value?.truncated)));
+const fileTree = computed(() => buildRepositoryTree(filteredFiles.value));
 
 function changeLabel(indexStatus: string, worktreeStatus: string): string {
   if (indexStatus === "?" || worktreeStatus === "?") return "U";
@@ -46,10 +63,6 @@ function changeLabel(indexStatus: string, worktreeStatus: string): string {
 
 function reviewChangeLabel(file: { indexStatus?: string; worktreeStatus?: string }): string {
   return changeLabel(file.indexStatus ?? "", file.worktreeStatus ?? "");
-}
-
-function changedFilePath(path: string, originalPath?: string): string {
-  return originalPath ? `${originalPath} -> ${path}` : path;
 }
 
 function diffLineClass(line: string): string {
@@ -75,6 +88,11 @@ function toggleBranches() {
   if (branchesOpen.value) void appStore.refreshActiveRepositoryBranches();
 }
 
+function openTreeFile(path: string) {
+  if (changeStatusByPath.value[path] === "D") void appStore.openRepositoryDiff(path);
+  else void appStore.openRepositoryFilePreview(path);
+}
+
 onMounted(() => {
   void appStore.refreshActiveRepository();
 });
@@ -98,7 +116,7 @@ watch(() => appStore.activeThreadId, () => {
         </div>
       </div>
       <div v-else class="inspector-tabs" role="tablist">
-        <button :class="{ 'is-active': appStore.inspectorTab === 'changes' }" type="button" role="tab" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.changes") }}</button>
+        <button :class="{ 'is-active': appStore.inspectorTab === 'changes' }" type="button" role="tab" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.files") }}</button>
         <button :class="{ 'is-active': appStore.inspectorTab === 'context' }" type="button" role="tab" @click="appStore.setInspectorTab('context')">{{ tr("inspector.context") }}</button>
         <button :class="{ 'is-active': appStore.inspectorTab === 'terminal' }" type="button" role="tab" @click="appStore.setInspectorTab('terminal')">{{ tr("inspector.terminal") }}</button>
       </div>
@@ -113,7 +131,7 @@ watch(() => appStore.activeThreadId, () => {
           <small>{{ formatFileSize(filePreview.size) }}</small>
         </div>
         <div v-if="filePreview.binary" class="repository-state"><Binary :size="18" /><span>{{ tr("files.binaryPreview") }}</span></div>
-        <pre v-else class="file-preview-content" :aria-label="tr('files.previewContent')"><code>{{ filePreview.content }}</code></pre>
+        <CodePreview v-else :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
         <div v-if="filePreview.truncated" class="diff-notice">{{ tr("files.previewTruncated") }}</div>
       </template>
     </div>
@@ -195,18 +213,36 @@ watch(() => appStore.activeThreadId, () => {
         </template>
       </div>
       <template v-else>
+        <div class="repository-file-controls">
+          <div class="repository-file-filters" role="group" :aria-label="tr('inspector.fileScope')">
+            <button :class="{ 'is-active': fileScope === 'all' }" type="button" :aria-pressed="fileScope === 'all'" @click="fileScope = 'all'">{{ tr("inspector.allFiles") }}</button>
+            <button :class="{ 'is-active': fileScope === 'changed' }" type="button" :aria-pressed="fileScope === 'changed'" @click="fileScope = 'changed'">{{ tr("inspector.changes") }}<span v-if="changedFiles.length">{{ changedFiles.length }}</span></button>
+          </div>
+          <label class="file-search">
+            <Search :size="13" />
+            <input v-model="fileQuery" type="search" :placeholder="tr('inspector.filterFiles')" :aria-label="tr('inspector.filterFiles')" />
+          </label>
+        </div>
         <div v-if="appStore.activeRepositoryStale && repository" class="diff-notice error-text">Repository data is stale. Refresh after reconnecting.</div>
         <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
         <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
-        <div v-else-if="!changedFiles.length" class="repository-state">
-          <FileDiff :size="18" /><span>No working tree changes</span>
-        </div>
-        <div v-else class="changed-file-list">
-          <div v-for="file in changedFiles" :key="`${file.path}-${file.indexStatus}-${file.worktreeStatus}`" class="changed-file-row">
-            <span class="change-status" :data-status="reviewChangeLabel(file)">{{ reviewChangeLabel(file) }}</span>
-            <button class="changed-file-open" type="button" :title="`View diff for ${file.path}`" @click="void appStore.openRepositoryDiff(file.path)">{{ changedFilePath(file.path, file.originalPath) }}</button>
-            <button type="button" title="Mention file" @click="appStore.insertFileMention(file.path)"><AtSign :size="13" /></button>
+        <template v-else-if="fileTree.length">
+          <div v-if="fileListTruncated" class="diff-notice">{{ tr("inspector.firstFiles", { count: filteredFiles.length }) }}</div>
+          <div class="file-tree">
+            <FileTreeNode
+              v-for="node in fileTree"
+              :key="`${node.directory}-${node.path}`"
+              :node="node"
+              :change-statuses="changeStatusByPath"
+              @open="openTreeFile"
+              @diff="appStore.openRepositoryDiff"
+              @mention="appStore.insertFileMention"
+            />
           </div>
+        </template>
+        <div v-else class="repository-state">
+          <FileDiff v-if="fileScope === 'changed'" :size="18" />
+          <span>{{ fileScope === "changed" ? tr("inspector.noChanges") : tr("inspector.noFiles") }}</span>
         </div>
       </template>
     </div>
@@ -224,20 +260,6 @@ watch(() => appStore.activeThreadId, () => {
         <div><dt>{{ tr("inspector.contextUsage") }}</dt><dd>{{ stats?.contextUsage?.percent != null ? `${stats.contextUsage.percent.toFixed(1)}%` : "-" }}</dd></div>
       </dl>
       <div v-else class="panel-empty"><span>{{ tr("inspector.selectTask") }}</span></div>
-      <section v-if="appStore.activeThread" class="workspace-files">
-        <div class="section-heading"><strong>{{ tr("inspector.workspaceFiles") }}</strong><span v-if="repository?.truncated || filteredFiles.length < repositoryFiles.length">{{ tr("inspector.firstFiles", { count: filteredFiles.length }) }}</span></div>
-        <label class="file-search">
-          <Search :size="13" />
-          <input v-model="fileQuery" type="search" :placeholder="tr('inspector.filterFiles')" :aria-label="tr('inspector.filterFiles')" />
-        </label>
-        <div v-if="appStore.activeRepositoryStale && repository" class="diff-notice error-text">Repository data is stale. Refresh after reconnecting.</div>
-        <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-        <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
-        <div v-else-if="fileTree.length" class="file-tree">
-          <FileTreeNode v-for="node in fileTree" :key="`${node.directory}-${node.path}`" :node="node" @mention="appStore.insertFileMention" />
-        </div>
-        <div v-else class="repository-state">{{ tr("inspector.noFiles") }}</div>
-      </section>
     </div>
 
     <TerminalPane v-else />

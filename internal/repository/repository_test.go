@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,7 +118,14 @@ func TestResolveFileRejectsSymlinkEscape(t *testing.T) {
 }
 
 func TestParseBranchesTracksCurrentAndOccupiedBranches(t *testing.T) {
-	worktrees, err := parseWorktreeBranches([]byte("worktree D:/repo\x00HEAD abc\x00branch refs/heads/main\x00\x00worktree D:/feature\x00HEAD def\x00branch refs/heads/feature\x00\x00"))
+	root := t.TempDir()
+	mainWorktree := filepath.Join(root, "repo")
+	featureWorktree := filepath.Join(root, "feature")
+	worktreeOutput := fmt.Sprintf(
+		"worktree %s\x00HEAD abc\x00branch refs/heads/main\x00\x00worktree %s\x00HEAD def\x00branch refs/heads/feature\x00\x00",
+		filepath.ToSlash(mainWorktree), filepath.ToSlash(featureWorktree),
+	)
+	worktrees, err := parseWorktreeBranches([]byte(worktreeOutput))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +140,7 @@ func TestParseBranchesTracksCurrentAndOccupiedBranches(t *testing.T) {
 	if len(branches) != 3 || branches[0].Name != "main" || !branches[0].Current || branches[1].Name != "feature" {
 		t.Fatalf("unexpected branches: %#v", branches)
 	}
-	if branches[1].WorktreePath != filepath.Clean("D:/feature") || !branches[2].Remote {
+	if branches[1].WorktreePath != filepath.Clean(featureWorktree) || !branches[2].Remote {
 		t.Fatalf("unexpected branch metadata: %#v", branches)
 	}
 }

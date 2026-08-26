@@ -51,10 +51,27 @@ describe("InspectorPanel", () => {
       { name: "feature/repo-view", fullName: "refs/heads/feature/repo-view", current: true, remote: false, upstream: "origin/feature/repo-view", commit: "abc123", worktreePath: "D:\\repo" },
       { name: "origin/main", fullName: "refs/remotes/origin/main", current: false, remote: true, upstream: "", commit: "def456", worktreePath: "" },
     ] });
+    repositoryMocks.previewFile.mockResolvedValue({
+      path: "README.md", absolutePath: "D:\\repo\\README.md", content: "# Repo", size: 6, binary: false, truncated: false,
+    });
     const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
 
+    expect(wrapper.findAll('[role="tab"]')[0].text()).toBe("Files");
     expect(wrapper.text()).toContain("feature/repo-view");
-    expect(wrapper.text()).toContain("src/main.go");
+    expect(wrapper.find('button[title="Preview src/main.go"]').exists()).toBe(true);
+    expect(wrapper.get('button[title="Preview src/main.go"]').classes()).toContain("is-changed");
+    expect(wrapper.get('button[title="Preview src/main.go"]').attributes("data-status")).toBe("M");
+    expect(wrapper.find('button[title="Preview README.md"]').exists()).toBe(true);
+
+    await wrapper.get('button[title="Preview README.md"]').trigger("click");
+    await flushPromises();
+    expect(repositoryMocks.previewFile).toHaveBeenCalledWith("D:\\repo", "README.md");
+    expect(wrapper.text()).toContain("# Repo");
+    await wrapper.get('button[title="Close file preview"]').trigger("click");
+
+    await wrapper.findAll(".repository-file-filters button")[1].trigger("click");
+    expect(wrapper.find('button[title="Preview README.md"]').exists()).toBe(false);
+    expect(wrapper.find('button[title="Preview src/main.go"]').exists()).toBe(true);
     await wrapper.get('button[title="Mention file"]').trigger("click");
     expect(store.activeDraft).toBe("@src/main.go ");
 
@@ -71,8 +88,8 @@ describe("InspectorPanel", () => {
     await wrapper.get('button[title="Back to changes"]').trigger("click");
 
     await wrapper.findAll('[role="tab"]')[1].trigger("click");
-    expect(wrapper.text()).toContain("Workspace files");
-    expect(wrapper.text()).toContain("README.md");
+    expect(wrapper.text()).toContain("D:\\repo");
+    expect(wrapper.text()).not.toContain("All files");
   });
 
   it("renders renamed, loading, error, and binary diff states", async () => {
@@ -97,12 +114,13 @@ describe("InspectorPanel", () => {
     store.refreshActiveRepository = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
 
-    expect(wrapper.text()).toContain("old.png -> new.png");
+    expect(wrapper.find('button[title="Preview new.png"]').exists()).toBe(true);
+    expect(wrapper.get('button[title="View diff for new.png"]').text()).toBe("R");
     store.repositoryStaleByWorkspace["d:/repo"] = true;
     store.repositoryErrorByWorkspace["d:/repo"] = "remote repository is disconnected or stale";
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain("Repository data is stale");
-    expect(wrapper.text()).toContain("old.png -> new.png");
+    expect(wrapper.get('button[title="View diff for new.png"]').text()).toBe("R");
 
     store.repositoryDiffPathByWorkspace["d:/repo"] = "new.png";
     store.repositoryDiffLoadingByWorkspace["d:/repo"] = true;

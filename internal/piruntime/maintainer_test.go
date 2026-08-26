@@ -34,17 +34,17 @@ func (runner *maintenanceRunner) CombinedOutput(_ context.Context, name string, 
 }
 
 func TestMaintainerUsesFixedPiUpdateArguments(t *testing.T) {
-	runner := &maintenanceRunner{paths: map[string]string{"pi.exe": "C:/tools/pi.exe"}, output: "updated\n"}
+	runner := &maintenanceRunner{paths: map[string]string{"pi": "test-pi", "pi.exe": "test-pi"}, output: "updated\n"}
 	maintainer := NewMaintainer(newLocator(runner))
 
 	invocation, output, err := maintainer.Run(context.Background(), domain.PiUpdateSelf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if invocation.PiPath != "C:/tools/pi.exe" || output != "updated" {
+	if invocation.PiPath != "test-pi" || output != "updated" {
 		t.Fatalf("unexpected result: %#v %q", invocation, output)
 	}
-	if len(runner.calls) != 2 || runner.calls[1].name != "C:/tools/pi.exe" {
+	if len(runner.calls) != 2 || runner.calls[1].name != "test-pi" {
 		t.Fatalf("unexpected calls: %#v", runner.calls)
 	}
 	if got := runner.calls[1].args; len(got) != 2 || got[0] != "update" || got[1] != "--self" {
@@ -53,7 +53,7 @@ func TestMaintainerUsesFixedPiUpdateArguments(t *testing.T) {
 }
 
 func TestMaintainerRejectsRemovedPackageAndCatalogActions(t *testing.T) {
-	runner := &maintenanceRunner{paths: map[string]string{"pi.exe": "C:/tools/pi.exe"}}
+	runner := &maintenanceRunner{paths: map[string]string{"pi": "test-pi", "pi.exe": "test-pi"}}
 	maintainer := NewMaintainer(newLocator(runner))
 	for _, action := range []domain.PiMaintenanceAction{"update-all", "update-extensions", "update-models"} {
 		if _, _, err := maintainer.Run(context.Background(), action); err == nil || !strings.Contains(err.Error(), "unsupported Pi maintenance action") {
@@ -68,7 +68,7 @@ func TestMaintainerRejectsRemovedPackageAndCatalogActions(t *testing.T) {
 }
 
 func TestMaintainerInstallsOnlyWhenPiIsMissing(t *testing.T) {
-	runner := &maintenanceRunner{paths: map[string]string{"npm.cmd": "C:/tools/npm.cmd"}}
+	runner := &maintenanceRunner{paths: map[string]string{"npm": "test-npm", "npm.cmd": "test-npm"}}
 	maintainer := NewMaintainer(newLocator(runner))
 	if _, _, err := maintainer.Run(context.Background(), domain.PiInstall); err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestMaintainerInstallsOnlyWhenPiIsMissing(t *testing.T) {
 		t.Fatalf("unexpected npm invocation: %#v", call)
 	}
 
-	runner = &maintenanceRunner{paths: map[string]string{"pi.exe": "C:/tools/pi.exe"}}
+	runner = &maintenanceRunner{paths: map[string]string{"pi": "test-pi", "pi.exe": "test-pi"}}
 	maintainer = NewMaintainer(newLocator(runner))
 	if _, _, err := maintainer.Run(context.Background(), domain.PiInstall); !errors.Is(err, ErrPiAlreadyInstalled) {
 		t.Fatalf("expected installed error, got %v", err)

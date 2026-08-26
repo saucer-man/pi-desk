@@ -201,6 +201,7 @@ const messages = {
     },
     inspector: {
       label: "Task inspector",
+      files: "Files",
       changes: "Changes",
       context: "Context",
       terminal: "Terminal",
@@ -216,10 +217,12 @@ const messages = {
       cost: "Cost",
       contextUsage: "Context",
       selectTask: "Select a task to inspect its context.",
-      workspaceFiles: "Workspace files",
+      fileScope: "File scope",
+      allFiles: "All files",
       firstFiles: "First {count}",
       filterFiles: "Filter files",
       noFiles: "No matching files",
+      noChanges: "No working tree changes",
     },
     settings: {
       title: "Settings",
@@ -864,6 +867,7 @@ const messages = {
     },
     inspector: {
       label: "任务检查器",
+      files: "文件",
       changes: "更改",
       context: "上下文",
       terminal: "终端",
@@ -879,10 +883,12 @@ const messages = {
       cost: "费用",
       contextUsage: "上下文",
       selectTask: "请选择任务以查看上下文。",
-      workspaceFiles: "工作区文件",
+      fileScope: "文件范围",
+      allFiles: "全部文件",
       firstFiles: "前 {count} 个",
       filterFiles: "筛选文件",
       noFiles: "没有匹配的文件",
+      noChanges: "工作区没有更改",
     },
     settings: {
       title: "设置",
