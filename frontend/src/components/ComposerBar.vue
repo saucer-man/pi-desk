@@ -225,20 +225,25 @@ function onDrop(event: DragEvent) {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return;
+
   if (mentionMenuOpen.value) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      event.stopPropagation();
       const direction = event.key === "ArrowDown" ? 1 : -1;
       mentionIndex.value = (mentionIndex.value + direction + matchingFiles.value.length) % matchingFiles.value.length;
       return;
     }
-    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.isComposing)) {
+    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
       event.preventDefault();
+      event.stopPropagation();
       chooseFileMention(matchingFiles.value[mentionIndex.value].path);
       return;
     }
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       mentionDismissed.value = true;
       return;
     }
@@ -246,24 +251,28 @@ function onKeydown(event: KeyboardEvent) {
   if (commandMenuOpen.value && matchingCommands.value.length) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      event.stopPropagation();
       const direction = event.key === "ArrowDown" ? 1 : -1;
       commandIndex.value = (commandIndex.value + direction + matchingCommands.value.length) % matchingCommands.value.length;
       return;
     }
-    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.isComposing)) {
+    if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
       event.preventDefault();
+      event.stopPropagation();
       chooseCommand(matchingCommands.value[commandIndex.value]);
       return;
     }
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       if (commandButtonOpen.value) commandButtonOpen.value = false;
       else commandDismissed.value = true;
       return;
     }
   }
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
+    event.stopPropagation();
     submit();
   }
 }
@@ -524,7 +533,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
         </div>
       </div>
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
-      <div class="composer-editor" @keydown="onKeydown" @paste="onPaste">
+      <div class="composer-editor" @keydown.capture="onKeydown" @paste="onPaste">
         <MarkdownEditor
           ref="markdownEditor"
           v-model="draft"

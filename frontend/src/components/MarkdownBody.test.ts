@@ -44,6 +44,14 @@ describe("MarkdownBody", () => {
     wrapper.unmount();
   });
 
+  it("renders the GFM table and strikethrough used by the composer", () => {
+    const { wrapper } = mountMarkdown("| Name | Done |\n| --- | --- |\n| Build | yes |\n\n~~obsolete~~");
+
+    expect(wrapper.get("table").text()).toContain("Build");
+    expect(wrapper.get("s").text()).toBe("obsolete");
+    wrapper.unmount();
+  });
+
   it("turns workspace file links into preview and context-menu targets while leaving web links external", async () => {
     const { store, wrapper } = mountMarkdown("[result](reports/tg_groups.csv) and [web](https://example.com/docs)");
     store.openRepositoryFilePreview = vi.fn().mockResolvedValue(undefined);

@@ -71,13 +71,16 @@ describe("ComposerBar", () => {
       "Delete queued message",
     ]);
 
-    const editor = wrapper.get(".composer-editor");
+    await flushPromises();
+    const editor = wrapper.get("[contenteditable='true']");
     for (let index = 0; index < 3; index += 1) await editor.trigger("keydown", { key: "ArrowDown" });
     await editor.trigger("keydown", { key: "Enter" });
+    expect(editor.element.textContent).toBe("/review ");
     expect(store.activeDraft).toBe("/review ");
     expect(store.sendActivePrompt).not.toHaveBeenCalled();
 
     store.updateDraft("Check @view");
+    await flushPromises();
     await editor.trigger("keydown", { key: "Enter" });
     expect(store.activeDraft).toBe("Check @src/view.ts ");
     expect(store.sendActivePrompt).not.toHaveBeenCalled();
@@ -439,6 +442,31 @@ describe("ComposerBar", () => {
 
     expect(store.sendActivePrompt).toHaveBeenCalledOnce();
     expect(wrapper.get(".send-button").attributes("title")).toBe("Queue message");
+  });
+
+  it("keeps Enter for Markdown editing and sends only with Ctrl or Command Enter", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-keyboard", title: "Keyboard", workspace: "repo", workspacePath: "D:\\repo", trust: "approve",
+        status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-keyboard",
+      draftsByThread: { "thread-keyboard": "Keep editing" },
+    });
+    store.sendActivePrompt = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+    const editor = wrapper.get(".composer-editor");
+
+    await editor.trigger("keydown", { key: "Enter" });
+    await editor.trigger("keydown", { key: "Enter", ctrlKey: true, keyCode: 229 });
+    expect(store.sendActivePrompt).not.toHaveBeenCalled();
+
+    await editor.trigger("keydown", { key: "Enter", ctrlKey: true });
+    await editor.trigger("keydown", { key: "Enter", metaKey: true });
+    expect(store.sendActivePrompt).toHaveBeenCalledTimes(2);
   });
 
   it("shows Pi startup progress in the lower-left composer toolbar", () => {
