@@ -1193,7 +1193,7 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  opacity: 0;
+  opacity: 1;
 }
 
 .message-actions {
@@ -1207,21 +1207,8 @@
   margin-left: 0;
 }
 
-.message-action--copy {
-  opacity: 1;
-}
-
-.message-actions:focus-within .message-action,
-.message-row:hover .message-actions .message-action {
-  opacity: 1;
-}
-
 .message-action:disabled {
   cursor: default;
-}
-
-.message-row:hover .message-action:disabled,
-.message-actions:focus-within .message-action:disabled {
   opacity: 0.28;
 }
 
@@ -1294,20 +1281,9 @@
   color: var(--red);
 }
 
-.message-row:hover .message-action,
-.message-action:focus-visible {
-  opacity: 1;
-}
-
 .message-action:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-@media (hover: none) {
-  .message-action {
-    opacity: 1;
-  }
 }
 
 .message-row[data-role="system"] {

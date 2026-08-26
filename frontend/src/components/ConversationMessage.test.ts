@@ -123,7 +123,9 @@ describe("ConversationMessage", () => {
     });
     const details = wrapper.get(".execution-process");
     expect(details.attributes("open")).toBeDefined();
-    expect(wrapper.find(".message-actions").exists()).toBe(false);
+    expect(wrapper.find(".message-actions").exists()).toBe(true);
+    expect(wrapper.findAll(".message-action")).toHaveLength(4);
+    expect(wrapper.get('button[title="Edit message"]').attributes("disabled")).toBeDefined();
 
     await details.get("summary").trigger("click");
     await wrapper.vm.$nextTick();
@@ -135,7 +137,7 @@ describe("ConversationMessage", () => {
     expect(wrapper.find(".message-actions").exists()).toBe(true);
   });
 
-  it("hides message actions while the active model run is unfinished", async () => {
+  it("keeps message actions visible while disabling persisted mutations during a model run", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -156,10 +158,14 @@ describe("ConversationMessage", () => {
       global: { plugins: [pinia] },
     });
 
-    expect(wrapper.find(".message-actions").exists()).toBe(false);
+    expect(wrapper.find(".message-actions").exists()).toBe(true);
+    expect(wrapper.get('button[title="Copy message"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get('button[title="Edit message"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('button[title="Delete message"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('button[title="Fork from this message"]').attributes("disabled")).toBeDefined();
     store.activeThread!.status = "idle";
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(".message-actions").exists()).toBe(true);
+    expect(wrapper.findAll(".message-action").every((button) => button.attributes("disabled") === undefined)).toBe(true);
   });
 
   it("places the user timestamp before the actions below the bubble", () => {
@@ -308,6 +314,38 @@ describe("ConversationMessage", () => {
 
     await wrapper.get('button[title="Fork from this message"]').trigger("click");
     expect(store.forkFromMessage).toHaveBeenCalledWith("assistant-1");
+  });
+
+  it("sends an edited latest user message instead of only saving it", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    const message = {
+      id: "user-latest", entryId: "entry-latest", role: "user" as const,
+      text: "Original request", thinking: "", timestamp: "10:06", streaming: false, tools: [],
+    };
+    store.$patch({
+      threads: [{
+        id: "thread-edit", title: "Edit", workspace: "repo", workspacePath: "D:\\repo",
+        sessionFile: "C:\\sessions\\edit.jsonl", trust: "approve", status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-edit",
+      messagesByThread: { "thread-edit": [message] },
+    });
+    store.editMessage = vi.fn().mockResolvedValue(true);
+    store.resendEditedMessage = vi.fn().mockResolvedValue(true);
+    const wrapper = mount(ConversationMessage, {
+      props: { message },
+      global: { plugins: [pinia] },
+    });
+
+    await wrapper.get('button[title="Edit message"]').trigger("click");
+    await wrapper.get("textarea").setValue("Updated request");
+    await wrapper.get('button[title="Send edited message"]').trigger("click");
+
+    expect(store.resendEditedMessage).toHaveBeenCalledWith("user-latest", "Updated request");
+    expect(store.editMessage).not.toHaveBeenCalled();
+    expect(wrapper.find("textarea").exists()).toBe(false);
   });
 
   it("renders retry, continued retry, recovery, and terminal failure on an assistant fragment", async () => {

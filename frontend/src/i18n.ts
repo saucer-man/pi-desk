@@ -24,7 +24,7 @@ const messages = {
       openSearch: "Open task search",
       searchTasks: "Search tasks",
       closeSearch: "Close search",
-      searchHelp: "Searches task title, first message, workspace, path, and branch.",
+      searchHelp: "Searches task titles, message content, workspaces, and paths.",
       review: "Review changes",
       workspaces: "Workspaces",
       syncSessions: "Sync local sessions",
@@ -98,6 +98,7 @@ const messages = {
       edit: "Edit message",
       delete: "Delete message",
       save: "Save message",
+      sendEdit: "Send edited message",
       deleteConfirm: "Delete this message from the Pi session? Later messages will be preserved.",
     },
     composer: {
@@ -686,7 +687,7 @@ const messages = {
       openSearch: "打开任务搜索",
       searchTasks: "搜索任务",
       closeSearch: "关闭搜索",
-      searchHelp: "搜索任务标题、首条消息、工作区、路径和分支。",
+      searchHelp: "搜索任务标题、会话正文、工作区和路径。",
       review: "审查更改",
       workspaces: "工作区",
       syncSessions: "同步本地会话",
@@ -760,6 +761,7 @@ const messages = {
       edit: "修改消息",
       delete: "删除消息",
       save: "保存消息",
+      sendEdit: "发送修改后的消息",
       deleteConfirm: "从 Pi 会话中删除这条消息？后续消息会保留。",
     },
     composer: {

@@ -21,7 +21,7 @@ import {
   Unplug,
   X,
 } from "lucide-vue-next";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import RuntimeBadge from "./RuntimeBadge.vue";
 import { useAppStore } from "../stores/app";
 import { tr } from "../i18n";
@@ -62,6 +62,10 @@ const workspaceGroups = computed(() => appStore.workspaces.map((workspace) => {
     : comparablePath(thread.workspacePath) === comparablePath(workspace.path));
   return { workspace, threads, threadCount: threads.length };
 }).filter((group) => !appStore.searchQuery.trim() || group.threadCount > 0));
+
+watch(() => appStore.searchQuery, (query) => {
+  if (query.trim()) void appStore.loadSessionSearchBodies();
+});
 
 function isWorkspaceCollapsed(workspaceID: string): boolean {
   return collapsedWorkspaceIDs.value[workspaceID] === true;

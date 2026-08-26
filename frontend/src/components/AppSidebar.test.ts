@@ -323,16 +323,20 @@ describe("AppSidebar", () => {
       workspaces: [{ id: "workspace-1", name: "pi-desk", path: "D:\\repo", trust: "deny" }],
       threads: [{
         id: "thread-1", title: "Runtime audit", workspace: "pi-desk", workspacePath: "D:\\repo", trust: "deny",
-        status: "idle", started: false, generation: 0,
+        status: "idle", started: false, generation: 0, sessionFile: "one.jsonl",
       }],
+    });
+    store.loadSessionSearchBodies = vi.fn(async () => {
+      store.searchBodyTextByThread["thread-1"] = "The hidden answer is in the session body.";
     });
     const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
 
     await wrapper.get('button[aria-pressed="false"]').trigger("click");
     const search = wrapper.get('input[type="search"]');
     await search.setValue("missing");
+    await vi.waitFor(() => expect(store.loadSessionSearchBodies).toHaveBeenCalled());
     expect(wrapper.text()).toContain("No matching tasks");
-    await search.setValue("runtime");
+    await search.setValue("hidden answer");
     expect(wrapper.text()).toContain("Runtime audit");
   });
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
+import { ArrowUp, BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 import type { ExecutionStep, TimelineMessage } from "../stores/app";
 import { useAppStore } from "../stores/app";
@@ -32,10 +32,14 @@ const sessionBusy = computed(() => (
   || appStore.activeThread?.status === "starting"
   || Boolean(appStore.activeSessionOperation)
 ));
-const showActions = computed(() => actionable.value && !sessionBusy.value);
+const showActions = computed(() => actionable.value);
 const persistedActionsDisabled = computed(() => (
   !props.message.entryId
   || sessionBusy.value
+));
+const latestUserMessage = computed(() => (
+  props.message.role === "user"
+  && appStore.activeMessages.findLast((message) => message.role === "user")?.id === props.message.id
 ));
 const showMessageMeta = computed(() => (
   Boolean(props.message.delivery)
@@ -142,6 +146,16 @@ async function saveEdit() {
   if (await appStore.editMessage(props.message.id, text)) editing.value = false;
 }
 
+async function submitEdit() {
+  if (!latestUserMessage.value) {
+    await saveEdit();
+    return;
+  }
+  if (!editText.value.trim()) return;
+  const text = replaceSkillInvocationUserMessage(props.message.text, editText.value);
+  if (await appStore.resendEditedMessage(props.message.id, text)) editing.value = false;
+}
+
 async function deleteMessage() {
   if (await appStore.deleteMessage(props.message.id)) confirmingDelete.value = false;
 }
@@ -225,10 +239,13 @@ function stepThinking(step: ExecutionStep): string {
         <code>/skill:{{ skillInvocation.name }}</code>
       </div>
       <div v-if="editing" class="message-edit">
-        <textarea ref="editBox" v-model="editText" rows="3" @keydown.ctrl.enter.prevent="void saveEdit()" @keydown.escape.prevent="editing = false" />
+        <textarea ref="editBox" v-model="editText" rows="3" @keydown.ctrl.enter.prevent="void submitEdit()" @keydown.meta.enter.prevent="void submitEdit()" @keydown.escape.prevent="editing = false" />
         <div class="message-edit-actions">
           <button class="message-edit-button" type="button" :title="tr('common.cancel')" @click="editing = false"><X :size="14" /></button>
-          <button class="message-edit-button message-edit-button--primary" type="button" :title="tr('conversation.save')" :disabled="!editText.trim() || Boolean(appStore.activeSessionOperation)" @click="void saveEdit()"><Save :size="14" /></button>
+          <button class="message-edit-button message-edit-button--primary" type="button" :title="tr(latestUserMessage ? 'conversation.sendEdit' : 'conversation.save')" :disabled="!editText.trim() || persistedActionsDisabled" @click="void submitEdit()">
+            <ArrowUp v-if="latestUserMessage" :size="14" />
+            <Save v-else :size="14" />
+          </button>
         </div>
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>

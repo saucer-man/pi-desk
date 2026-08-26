@@ -242,6 +242,34 @@ describe("app store", () => {
     expect(store.inspectorOpen).toBe(false);
   });
 
+  it("searches unopened session bodies and caches their text", async () => {
+    const store = useAppStore();
+    store.$patch({
+      searchQuery: "hidden semaphore",
+      threads: [{
+        id: "thread-1", title: "Runtime audit", workspace: "pi-desk", workspacePath: "D:\\repo", trust: "deny",
+        status: "idle", started: false, generation: 0, sessionFile: "C:\\sessions\\one.jsonl",
+        modifiedAt: "2026-08-10T09:00:00Z",
+      }],
+    });
+    mocks.getSessionSnapshot.mockResolvedValueOnce({
+      messageCount: 2,
+      messages: [
+        { role: "user", content: "Inspect the worker" },
+        { role: "assistant", content: [{ type: "text", text: "The hidden semaphore is released here." }] },
+      ],
+    });
+
+    expect(store.filteredThreads).toEqual([]);
+    await store.loadSessionSearchBodies();
+
+    expect(mocks.getSessionSnapshot).toHaveBeenCalledWith("C:\\sessions\\one.jsonl");
+    expect(store.filteredThreads.map((thread) => thread.id)).toEqual(["thread-1"]);
+
+    await store.loadSessionSearchBodies();
+    expect(mocks.getSessionSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it("does not mark loaded sessions unavailable when desktop state persistence fails", async () => {
     mocks.listWorkspaces.mockResolvedValueOnce([{
       id: "workspace-1", name: "repo", path: "D:\\work\\repo", trust: "deny",
@@ -2901,6 +2929,36 @@ describe("app store", () => {
     });
     expect(store.activeThread?.sessionFile).toBe("C:\\sessions\\fork.jsonl");
     expect(store.activeDraft).toBe("Inspect runtime");
+  });
+
+  it("forks before the latest user message and immediately sends its edited text", async () => {
+    mocks.listSessions.mockResolvedValueOnce([{
+      id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
+      firstMessage: "Inspect runtime", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z", messageCount: 2,
+    }]);
+    mocks.getSessionSnapshot
+      .mockResolvedValueOnce({ messages: [
+        { role: "user", content: "Inspect runtime", piDeskEntryId: "entry-1" },
+        { role: "assistant", content: "Old response", piDeskEntryId: "entry-2" },
+      ] })
+      .mockResolvedValueOnce({ messages: [] });
+    mocks.forkSessionAt.mockResolvedValueOnce({ cancelled: false, text: "Inspect runtime" });
+    mocks.getState.mockResolvedValueOnce({ sessionId: "session-2", sessionFile: "C:\\sessions\\fork.jsonl", isStreaming: false });
+    const store = useAppStore();
+    await store.initialize();
+    await store.loadThreadTranscript(store.activeThreadId);
+    const userMessage = store.activeMessages[0];
+
+    expect(await store.resendEditedMessage(userMessage.id, "Inspect the updated runtime")).toBe(true);
+
+    expect(mocks.forkSessionAt).toHaveBeenCalledWith({
+      threadId: "session-session-1", path: "C:\\sessions\\one.jsonl", entryId: "entry-1", before: true,
+    });
+    expect(mocks.sendPrompt).toHaveBeenCalledWith({
+      threadId: "session-session-1", message: "Inspect the updated runtime", streamingBehavior: undefined,
+    });
+    expect(store.activeMessages.at(-1)?.text).toBe("Inspect the updated runtime");
+    expect(store.activeDraft).toBe("");
   });
 
   it("forks after an assistant entry and keeps the composer empty", async () => {

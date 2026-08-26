@@ -482,6 +482,34 @@ function contentThinking(content: unknown): string {
     .join("");
 }
 
+function snapshotSearchText(source: Array<Record<string, unknown>>): string {
+  return source.map((value) => {
+    const role = String(value.role ?? "");
+    if (role === "piDeskCompaction") return typeof value.summary === "string" ? value.summary : "";
+    if (role === "bashExecution") {
+      return [value.command, value.output].filter((item): item is string => typeof item === "string").join("\n");
+    }
+    return [contentText(value.content), contentThinking(value.content)].filter(Boolean).join("\n");
+  }).filter(Boolean).join("\n");
+}
+
+function timelineSearchText(messages: TimelineMessage[]): string {
+  return messages.map((message) => [
+    message.text,
+    message.thinking,
+    message.compaction?.summary ?? "",
+    ...message.tools.map((tool) => tool.output),
+    ...(message.executionSteps ?? []).flatMap((step) => [
+      step.text ?? "",
+      ...(step.tools ?? []).map((tool) => tool.output),
+    ]),
+  ].filter(Boolean).join("\n")).filter(Boolean).join("\n");
+}
+
+function sessionSearchVersion(thread: ThreadSummary): string {
+  return `${thread.sessionFile ?? ""}\n${thread.messageCount ?? ""}\n${thread.modifiedAt ?? ""}`;
+}
+
 function contentImages(content: unknown): PreparedImage[] {
   if (!Array.isArray(content)) return [];
   return content.flatMap((part, index) => {
@@ -721,6 +749,9 @@ export const useAppStore = defineStore("app", {
     threads: [] as ThreadSummary[],
     activeThreadId: "",
     messagesByThread: {} as Record<string, TimelineMessage[]>,
+    searchBodyTextByThread: {} as Record<string, string>,
+    searchBodyVersionByThread: {} as Record<string, string>,
+    searchBodyLoading: false,
     transcriptEntriesByThread: {} as Record<string, Array<Record<string, unknown>>>,
     transcriptReloadGenerationByThread: {} as Record<string, number>,
     draftsByThread: {} as Record<string, string>,
@@ -950,9 +981,14 @@ export const useAppStore = defineStore("app", {
     },
     filteredThreads(state): ThreadSummary[] {
       const query = state.searchQuery.trim().toLocaleLowerCase();
-      const threads = query ? state.threads.filter((thread) =>
-        `${thread.title} ${thread.firstMessage ?? ""} ${thread.workspace} ${thread.workspacePath}`.toLocaleLowerCase().includes(query),
-      ) : state.threads;
+      const threads = query ? state.threads.filter((thread) => [
+        thread.title,
+        thread.firstMessage ?? "",
+        thread.workspace,
+        thread.workspacePath,
+        state.searchBodyTextByThread[thread.id] ?? "",
+        timelineSearchText(state.messagesByThread[thread.id] ?? []),
+      ].join("\n").toLocaleLowerCase().includes(query)) : state.threads;
       return [...threads].sort((left, right) => {
         const leftTime = Date.parse(left.modifiedAt || left.createdAt || "");
         const rightTime = Date.parse(right.modifiedAt || right.createdAt || "");
@@ -1054,6 +1090,27 @@ export const useAppStore = defineStore("app", {
     toggleSearch() {
       this.searchOpen = !this.searchOpen;
       if (!this.searchOpen) this.searchQuery = "";
+    },
+    async loadSessionSearchBodies() {
+      if (this.searchBodyLoading || !this.searchQuery.trim()) return;
+      this.searchBodyLoading = true;
+      // ponytail: Move this cache to the host only if very large catalogs make first body search measurably slow.
+      try {
+        for (const thread of this.threads) {
+          if (!thread.sessionFile || this.searchBodyVersionByThread[thread.id] === sessionSearchVersion(thread)) continue;
+          try {
+            const snapshot = await catalogService.getSessionSnapshot(thread.sessionFile);
+            const messages = (snapshot.messages as Array<Record<string, unknown>> | null) ?? [];
+            this.searchBodyTextByThread[thread.id] = snapshotSearchText(messages);
+            if (Number.isInteger(snapshot.messageCount) && snapshot.messageCount >= 0) thread.messageCount = snapshot.messageCount;
+            this.searchBodyVersionByThread[thread.id] = sessionSearchVersion(thread);
+          } catch {
+            // One unreadable session must not prevent the remaining sessions from being searched.
+          }
+        }
+      } finally {
+        this.searchBodyLoading = false;
+      }
     },
     selectThread(threadId: string) {
       if (this.threads.some((thread) => thread.id === threadId)) {
@@ -1323,6 +1380,8 @@ export const useAppStore = defineStore("app", {
       }
       this.messagesByThread[thread.id] = [...historical, ...liveMessages];
       if (Number.isInteger(snapshot.messageCount) && snapshot.messageCount >= 0) thread.messageCount = snapshot.messageCount;
+      this.searchBodyTextByThread[thread.id] = snapshotSearchText(entries);
+      this.searchBodyVersionByThread[thread.id] = sessionSearchVersion(thread);
       if (snapshot.model && !this.pendingModelByThread[thread.id] && !thread.started) {
         this.sessionStateByThread[thread.id] = {
           ...(this.sessionStateByThread[thread.id] ?? {}),
@@ -1979,7 +2038,8 @@ export const useAppStore = defineStore("app", {
       const index = this.threads.findIndex((candidate) => candidate.id === threadId);
       if (index >= 0) this.threads.splice(index, 1);
       for (const collection of [
-        this.messagesByThread, this.transcriptEntriesByThread, this.transcriptReloadGenerationByThread,
+        this.messagesByThread, this.searchBodyTextByThread, this.searchBodyVersionByThread,
+        this.transcriptEntriesByThread, this.transcriptReloadGenerationByThread,
         this.draftsByThread, this.attachmentsByThread, this.activeAssistantByThread,
         this.waitingForOutputByThread, this.sessionStateByThread,
         this.sessionStatsByThread, this.sessionStatsRefreshGenerationByThread,
@@ -2016,10 +2076,10 @@ export const useAppStore = defineStore("app", {
         this.sessionOperationByThread[thread.id] = undefined;
       }
     },
-    async forkFromMessage(messageId: string) {
+    async forkFromMessage(messageId: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
-      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return;
+      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Forking";
       try {
         const previous = { ...thread };
@@ -2029,14 +2089,34 @@ export const useAppStore = defineStore("app", {
           entryId: message.entryId!,
           before: message.role === "user",
         }));
-        if (!result?.cancelled) await this.completeSessionReplacement(thread, previous, "fork", message.role === "user" ? result?.text || message.text : "");
+        if (result?.cancelled) return false;
+        await this.completeSessionReplacement(thread, previous, "fork", message.role === "user" ? result?.text || message.text : "");
+        return true;
       } catch (error) {
         thread.status = "attention";
         thread.error = errorMessage(error);
         this.appendSystem(thread.id, `Unable to fork task: ${errorMessage(error)}`, errorMessage(error));
+        return false;
       } finally {
         this.sessionOperationByThread[thread.id] = undefined;
       }
+    },
+    async resendEditedMessage(messageId: string, text: string): Promise<boolean> {
+      const threadId = this.activeThreadId;
+      const message = this.activeMessages.find((item) => item.id === messageId && item.role === "user");
+      const latestUserMessage = this.activeMessages.findLast((item) => item.role === "user");
+      if (!message || latestUserMessage?.id !== messageId || !text.trim()) return false;
+      const images = message.images?.map((image) => ({ ...image })) ?? [];
+      if (!await this.forkFromMessage(messageId)) return false;
+      if (this.activeThreadId !== threadId) {
+        this.draftsByThread[threadId] = text;
+        this.attachmentsByThread[threadId] = images;
+        return false;
+      }
+      this.updateDraft(text);
+      this.attachmentsByThread[this.activeThreadId] = images;
+      await this.sendActivePrompt();
+      return true;
     },
     async editMessage(messageId: string, text: string): Promise<boolean> {
       const thread = this.activeThread;
