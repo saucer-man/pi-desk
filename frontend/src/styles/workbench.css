@@ -675,6 +675,10 @@
     padding-right: 0;
   }
 
+  .app-shell.is-inspector-open .conversation-outline {
+    right: min(var(--inspector-width), calc(100% - 58px));
+  }
+
   .inspector {
     top: var(--topbar-height);
     right: 0;

@@ -40,11 +40,7 @@ jobs:
 
       - name: Test and vet Go
         shell: pwsh
-        run: |
-          go test ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet ./...
-          exit $LASTEXITCODE
+        run: ./.github/scripts/verify-go.ps1
 
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
@@ -89,9 +85,8 @@ jobs:
         run: npm run check
 
       - name: Test and vet Go
-        run: |
-          go test ./...
-          go vet ./...
+        shell: pwsh
+        run: ./.github/scripts/verify-go.ps1
 
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
@@ -144,9 +139,8 @@ jobs:
         run: npm run check
 
       - name: Test and vet Go
-        run: |
-          go test ./...
-          go vet ./...
+        shell: pwsh
+        run: ./.github/scripts/verify-go.ps1
 
       - name: Race remote protocol and helper
         env:

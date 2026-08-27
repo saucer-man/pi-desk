@@ -899,8 +899,9 @@
   position: absolute;
   z-index: 11;
   top: 18px;
+  right: 0;
   bottom: 74px;
-  left: 0;
+  left: auto;
   width: 58px;
   pointer-events: none;
 }
@@ -916,6 +917,8 @@
 
 .conversation-outline-scroll::-webkit-scrollbar {
   display: none;
+  width: 0;
+  height: 0;
 }
 
 .conversation-outline-list {
@@ -965,7 +968,8 @@
 
 .conversation-outline-preview {
   position: absolute;
-  left: 42px;
+  right: 42px;
+  left: auto;
   display: block;
   width: min(680px, calc(100vw - 96px));
   padding: 16px 20px 17px;

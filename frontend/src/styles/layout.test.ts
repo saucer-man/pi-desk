@@ -49,12 +49,18 @@ describe("application rail alignment", () => {
 describe("conversation outline spacing", () => {
   it("uses fixed rows instead of distributing gaps across the rail", async () => {
     const layout = await layoutText();
-    const outline = firstRuleBody(layout, ".conversation-outline-list");
-    expect(outline).toMatch(/display:\s*grid/);
-    expect(outline).toMatch(/grid-auto-rows:\s*10px/);
-    expect(outline).toMatch(/row-gap:\s*0/);
-      expect(outline).toMatch(/align-content:\s*safe center/);
-    expect(outline).not.toMatch(/space-around/);
+    const outline = firstRuleBody(layout, ".conversation-outline");
+    expect(outline).toMatch(/right:\s*0/);
+    expect(outline).toMatch(/left:\s*auto/);
+    const outlineList = firstRuleBody(layout, ".conversation-outline-list");
+    expect(outlineList).toMatch(/display:\s*grid/);
+    expect(outlineList).toMatch(/grid-auto-rows:\s*10px/);
+    expect(outlineList).toMatch(/row-gap:\s*0/);
+    expect(outlineList).toMatch(/align-content:\s*safe center/);
+    expect(outlineList).not.toMatch(/space-around/);
+    const preview = firstRuleBody(layout, ".conversation-outline-preview");
+    expect(preview).toMatch(/right:\s*42px/);
+    expect(preview).toMatch(/left:\s*auto/);
   });
 });
 

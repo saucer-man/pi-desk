@@ -37,6 +37,7 @@ describe("responsive workbench layout", () => {
   it("defines inspector drawer and compact sidebar breakpoints", async () => {
     const css = await workbenchText();
     expect(css).toContain("@media (max-width: 1279px)");
+    expect(css).toMatch(/@media \(max-width: 1279px\)[\s\S]*\.app-shell\.is-inspector-open \.conversation-outline\s*{[^}]*right:\s*min\(var\(--inspector-width\), calc\(100% - 58px\)\)/);
     expect(css).toContain("@media (max-width: 760px)");
     expect(css).toContain("@media (max-width: 520px)");
     expect(css).toMatch(/@media \(max-width: 520px\)[\s\S]*--composer-stack-total-inset:\s*12px/);
