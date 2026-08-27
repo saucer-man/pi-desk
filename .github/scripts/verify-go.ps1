@@ -11,7 +11,7 @@ function Invoke-GoCheck {
     }
 
     $title = "go $($CommandArgs[0]) failed"
-    $output | ForEach-Object {
+    $output | Select-Object -Last 10 | ForEach-Object {
         $message = "$($_)".Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
         Write-Output "::error title=$title::$message"
     }
