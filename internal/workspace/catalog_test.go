@@ -24,7 +24,11 @@ func TestCatalogPersistsCanonicalWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "project" || created.Trust != "deny" || created.Path != workspacePath {
+	canonicalPath, err := CanonicalDirectory(workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != "project" || created.Trust != "deny" || created.Path != canonicalPath {
 		t.Fatalf("unexpected record: %#v", created)
 	}
 
