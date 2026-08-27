@@ -32,7 +32,7 @@ const sessionBusy = computed(() => (
   || appStore.activeThread?.status === "starting"
   || Boolean(appStore.activeSessionOperation)
 ));
-const showActions = computed(() => actionable.value);
+const showActions = computed(() => actionable.value && !props.message.streaming);
 const persistedActionsDisabled = computed(() => (
   !props.message.entryId
   || sessionBusy.value

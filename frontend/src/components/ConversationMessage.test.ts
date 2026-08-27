@@ -123,9 +123,7 @@ describe("ConversationMessage", () => {
     });
     const details = wrapper.get(".execution-process");
     expect(details.attributes("open")).toBeDefined();
-    expect(wrapper.find(".message-actions").exists()).toBe(true);
-    expect(wrapper.findAll(".message-action")).toHaveLength(4);
-    expect(wrapper.get('button[title="Edit message"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".message-actions").exists()).toBe(false);
 
     await details.get("summary").trigger("click");
     await wrapper.vm.$nextTick();
@@ -135,6 +133,7 @@ describe("ConversationMessage", () => {
     await wrapper.vm.$nextTick();
     expect(details.attributes("open")).toBeUndefined();
     expect(wrapper.find(".message-actions").exists()).toBe(true);
+    expect(wrapper.findAll(".message-action")).toHaveLength(4);
   });
 
   it("keeps message actions visible while disabling persisted mutations during a model run", async () => {
