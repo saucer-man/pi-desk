@@ -227,14 +227,15 @@ func TestRepositoryServiceOnlyOperatesOnResolvedWorkspaceFiles(t *testing.T) {
 	if err := service.OpenFileWith(request); err != nil {
 		t.Fatal(err)
 	}
-	if opened != path || openedWith != path {
-		t.Fatalf("opened %q and %q, want %q", opened, openedWith, path)
+	canonicalPath := canonicalTestPath(t, path)
+	if opened != canonicalPath || openedWith != canonicalPath {
+		t.Fatalf("opened %q and %q, want %q", opened, openedWith, canonicalPath)
 	}
 	preview, err := service.PreviewFile(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.AbsolutePath != path || preview.Content != "package main" || preview.Size != int64(len("package main")) || preview.Binary {
+	if preview.AbsolutePath != canonicalPath || preview.Content != "package main" || preview.Size != int64(len("package main")) || preview.Binary {
 		t.Fatalf("unexpected preview: %#v", preview)
 	}
 	outputPath := filepath.Join(t.TempDir(), "saved.go")

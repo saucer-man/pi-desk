@@ -80,7 +80,11 @@ func TestValidateWorkspaceCanonicalizesAndRejectsFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateWorkspace returned an error: %v", err)
 	}
-	if resolved != filepath.Clean(workspace) {
+	canonical, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != filepath.Clean(canonical) {
 		t.Fatalf("unexpected canonical workspace: %q", resolved)
 	}
 

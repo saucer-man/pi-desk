@@ -143,7 +143,7 @@ func TestAgentServiceEditsPersistedMessageAndReloadsPi(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"content":"After"`) || runtime.command["type"] != "switch_session" || runtime.command["sessionPath"] != path {
+	if !strings.Contains(string(data), `"content":"After"`) || runtime.command["type"] != "switch_session" || runtime.command["sessionPath"] != canonicalTestPath(t, path) {
 		t.Fatalf("session=%s command=%#v", data, runtime.command)
 	}
 }

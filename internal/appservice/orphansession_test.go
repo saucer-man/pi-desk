@@ -38,13 +38,14 @@ func TestOrphanSessionServiceStaysLocalAndRevalidatesEveryOperation(t *testing.T
 
 	catalog := workspace.NewCatalog(statePath)
 	index := sessionindex.NewWithAnchorRoot(sessionsRoot, anchorRoot)
+	canonicalSessionPath := canonicalTestPath(t, sessionPath)
 	exported := false
 	service := newOrphanSessionService(catalog, index, trashSessionFile, func(_ context.Context, input, output string) error {
-		exported = input == sessionPath && strings.HasSuffix(output, "orphan.html")
+		exported = input == canonicalSessionPath && strings.HasSuffix(output, "orphan.html")
 		return nil
 	})
 	listed, err := service.ListOrphanSessions()
-	if err != nil || len(listed) != 1 || listed[0].AnchorWorkspaceID != workspaceID || listed[0].Path != sessionPath {
+	if err != nil || len(listed) != 1 || listed[0].AnchorWorkspaceID != workspaceID || listed[0].Path != canonicalSessionPath {
 		t.Fatalf("orphans = %#v, %v", listed, err)
 	}
 	snapshot, err := service.GetOrphanSessionSnapshot(domain.SessionSnapshotRequest{Path: sessionPath})

@@ -66,11 +66,15 @@ func TestServerBashStreamsOnlyWithCreditAndHasOneTerminal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Bash stream did not resume after credit")
 	}
-	if data.Envelope.Kind != remoteprotocol.KindEvent || data.Envelope.Method != remoteprotocol.MethodStreamData || string(data.Blob) != "outerr" {
-		t.Fatalf("stream=%#v blob=%q", data.Envelope, data.Blob)
+	var output []byte
+	for data.Envelope.Kind == remoteprotocol.KindEvent && data.Envelope.Method == remoteprotocol.MethodStreamData {
+		output = append(output, data.Blob...)
+		data = harness.read(t)
 	}
-	sendBashCredit(t, harness, generation, "bash-1", uint32(len(data.Blob)))
-	terminal := harness.read(t)
+	if string(output) != "outerr" {
+		t.Fatalf("stream output=%q", output)
+	}
+	terminal := data
 	var response BashRunResponse
 	if terminal.Envelope.Kind != remoteprotocol.KindResponse || remoteprotocol.DecodePayload(terminal.Envelope.Payload, &response) != nil || response.ExitCode != 0 || response.OutputBytes != 6 {
 		t.Fatalf("terminal=%#v response=%#v", terminal.Envelope, response)

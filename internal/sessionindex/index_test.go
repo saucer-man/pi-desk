@@ -16,6 +16,15 @@ import (
 	"pi-desk/internal/workspace"
 )
 
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(canonical)
+}
+
 func TestIndexListsAndFiltersPiSessions(t *testing.T) {
 	root := t.TempDir()
 	workspaceA := filepath.Join(root, "workspace-a")
@@ -25,6 +34,8 @@ func TestIndexListsAndFiltersPiSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	workspaceA = canonicalTestPath(t, workspaceA)
+	workspaceB = canonicalTestPath(t, workspaceB)
 	writeSession(t, filepath.Join(root, "sessions", "a", "one.jsonl"), strings.Join([]string{
 		`{"type":"session","version":3,"id":"session-a","timestamp":"2026-08-10T08:00:00Z","cwd":` + quote(workspaceA) + `,"parentSession":"parent.jsonl"}`,
 		`{"type":"message","id":"m1","timestamp":"2026-08-10T08:01:00Z","message":{"role":"user","content":[{"type":"text","text":"  Inspect   the repository  "}],"timestamp":1786348860000}}`,
@@ -254,6 +265,8 @@ func TestIndexAggregatesPersistedUsageFromActiveBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	workspaceA = canonicalTestPath(t, workspaceA)
+	workspaceB = canonicalTestPath(t, workspaceB)
 	writeSession(t, filepath.Join(root, "sessions", "a", "one.jsonl"), strings.Join([]string{
 		`{"type":"session","version":3,"id":"one","timestamp":"2026-08-10T08:00:00Z","cwd":` + quote(workspaceA) + `}`,
 		`{"type":"message","id":"user","parentId":null,"message":{"role":"user","content":"Inspect"}}`,
@@ -298,6 +311,7 @@ func TestIndexUsageKeepsPreCompactionProviderCost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	workspacePath = canonicalTestPath(t, workspacePath)
 	writeSession(t, filepath.Join(directory, "compacted.jsonl"), strings.Join([]string{
 		`{"type":"session","version":3,"id":"compacted","timestamp":"2026-08-10T08:00:00Z","cwd":` + quote(workspacePath) + `}`,
 		`{"type":"message","id":"old","parentId":null,"message":{"role":"assistant","provider":"openai","model":"gpt-5","content":"Old","usage":{"input":80,"output":20,"totalTokens":100,"cost":{"total":0.1}}}}`,
@@ -342,7 +356,7 @@ func TestIndexValidatesAndResolvesSessionPathsWithinRoot(t *testing.T) {
 	index := New(root)
 
 	validated, err := index.ValidatePath(path)
-	if err != nil || validated != path {
+	if err != nil || validated != canonicalTestPath(t, path) {
 		t.Fatalf("validated path = %q, %v", validated, err)
 	}
 	summary, err := index.Resolve(path)
@@ -731,7 +745,7 @@ func TestIndexForkBeforeCreatesPersistedEmptyBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Count(text, "\n") != 1 || strings.Contains(text, `"id":"root"`) || !strings.Contains(text, `"parentSession":`+quote(path)) {
+	if strings.Count(text, "\n") != 1 || strings.Contains(text, `"id":"root"`) || !strings.Contains(text, `"parentSession":`+quote(canonicalTestPath(t, path))) {
 		t.Fatalf("empty fork = %s", text)
 	}
 	if _, err := New(root).Snapshot(result.Path); err != nil {
@@ -793,7 +807,7 @@ func TestIndexForkAtCreatesBranchThroughAssistantEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, `"parentSession":`+quote(path)) || !strings.Contains(text, `"id":"assistant"`) || strings.Contains(text, `"id":"later"`) {
+	if !strings.Contains(text, `"parentSession":`+quote(canonicalTestPath(t, path))) || !strings.Contains(text, `"id":"assistant"`) || strings.Contains(text, `"id":"later"`) {
 		t.Fatalf("forked session = %s", text)
 	}
 }

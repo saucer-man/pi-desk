@@ -21,6 +21,15 @@ type fakeWorkspaceApplicationManager struct {
 	err          error
 }
 
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(canonical)
+}
+
 func (manager *fakeWorkspaceApplicationManager) List() []workspaceapp.Application {
 	return manager.applications
 }
@@ -32,12 +41,12 @@ func (manager *fakeWorkspaceApplicationManager) Open(applicationID, workspacePat
 }
 
 type fakeSessionLister struct {
-	workspace      string
-	sessions       []sessionindex.Summary
-	messages       []json.RawMessage
-	model          *sessionindex.Model
-	usage          sessionindex.UsageSummary
-	err            error
+	workspace string
+	sessions  []sessionindex.Summary
+	messages  []json.RawMessage
+	model     *sessionindex.Model
+	usage     sessionindex.UsageSummary
+	err       error
 }
 
 func (index *fakeSessionLister) List(_ context.Context, workspace string) ([]sessionindex.Summary, error) {
@@ -68,8 +77,8 @@ func (index *fakeSessionLister) Header(path string) (sessionindex.Summary, error
 
 func (index *fakeSessionLister) Snapshot(_ string) (sessionindex.Snapshot, error) {
 	return sessionindex.Snapshot{
-		Messages: index.messages,
-		Model:    index.model,
+		Messages:     index.messages,
+		Model:        index.model,
 		MessageCount: len(index.messages),
 	}, index.err
 }
@@ -128,8 +137,9 @@ func TestCatalogServiceOpensOnlyRegisteredWorkspace(t *testing.T) {
 	if err := service.OpenWorkspace(domain.WorkspaceRequest{ID: created.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if opened != project {
-		t.Fatalf("opened %q, want %q", opened, project)
+	canonicalProject := canonicalTestPath(t, project)
+	if opened != canonicalProject {
+		t.Fatalf("opened %q, want %q", opened, canonicalProject)
 	}
 	if err := service.OpenWorkspace(domain.WorkspaceRequest{ID: "unknown"}); err == nil {
 		t.Fatal("expected an unknown workspace to be rejected")
@@ -168,7 +178,7 @@ func TestCatalogServiceListsApplicationsAndOpensOnlyTrustedWorkspace(t *testing.
 	if err := service.OpenWorkspaceWith(domain.OpenWorkspaceWithRequest{WorkspaceID: approved.ID, ApplicationID: workspaceapp.VSCodeID}); err != nil {
 		t.Fatal(err)
 	}
-	if manager.application != workspaceapp.VSCodeID || manager.workspace != project {
+	if manager.application != workspaceapp.VSCodeID || manager.workspace != canonicalTestPath(t, project) {
 		t.Fatalf("open request = %q, %q", manager.application, manager.workspace)
 	}
 

@@ -171,7 +171,11 @@ func TestScannerListsLinkedWorktreeBranches(t *testing.T) {
 	if !byName[currentTestBranch(t, root)].Current {
 		t.Fatalf("current branch not marked: %#v", inventory.Branches)
 	}
-	if filepath.Clean(byName["feature"].WorktreePath) != filepath.Clean(linked) {
+	canonicalLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(byName["feature"].WorktreePath) != filepath.Clean(canonicalLinked) {
 		t.Fatalf("linked worktree not reported: %#v", byName["feature"])
 	}
 }
