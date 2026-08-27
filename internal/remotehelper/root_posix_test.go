@@ -76,7 +76,10 @@ func TestRootManagerReadOnlyFileOperationsStayWithinRoot(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(repository, "pipe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repository, string([]byte{'b', 'a', 'd', 0xff})), []byte("x"), 0o600); err != nil {
+	expectedSkippedPaths := 1
+	if err := os.WriteFile(filepath.Join(repository, string([]byte{'b', 'a', 'd', 0xff})), []byte("x"), 0o600); err == nil {
+		expectedSkippedPaths++
+	} else if !errors.Is(err, syscall.EILSEQ) {
 		t.Fatal(err)
 	}
 
@@ -95,7 +98,7 @@ func TestRootManagerReadOnlyFileOperationsStayWithinRoot(t *testing.T) {
 		t.Fatalf("link stat=%#v err=%v", link, err)
 	}
 	listing, err := manager.List(context.Background(), opened.Handle, ".")
-	if err != nil || listing.Path != "." || listing.SkippedUnsupportedPaths != 2 {
+	if err != nil || listing.Path != "." || listing.SkippedUnsupportedPaths != expectedSkippedPaths {
 		t.Fatalf("listing=%#v err=%v", listing, err)
 	}
 	for _, entry := range listing.Entries {
