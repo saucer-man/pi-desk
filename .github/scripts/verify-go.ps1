@@ -11,7 +11,7 @@ function Invoke-GoCheck {
     }
 
     $title = "go $($CommandArgs[0]) failed"
-    $relevant = $output | Where-Object { "$($_)" -notmatch '^(go: downloading|ok\s|\?\s)' }
+    $relevant = $output | Where-Object { "$($_)" -notmatch '^(go: downloading|ok\s|\?\s|# .*\.test$|ld: warning:)' }
     if (-not $relevant) {
         $relevant = $output | Select-Object -Last 10
     }
