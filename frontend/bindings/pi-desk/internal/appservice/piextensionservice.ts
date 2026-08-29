@@ -9,6 +9,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as domain$0 from "../domain/models.js";
 
+export function InstallPackage(request: domain$0.PiPackageRequest): $CancellablePromise<domain$0.PiPackageCommandResult> {
+    return $Call.ByID(3266037779, request);
+}
+
 export function InstallPiDeskTodo(): $CancellablePromise<domain$0.PiDeskTodoInstallResult> {
     return $Call.ByID(412651075);
 }
@@ -17,6 +21,22 @@ export function ListExtensions(): $CancellablePromise<domain$0.PiExtensionSnapsh
     return $Call.ByID(41749424);
 }
 
+export function ListPackages(request: domain$0.ListPiPackagesRequest): $CancellablePromise<domain$0.PiPackageSnapshot> {
+    return $Call.ByID(4179973051, request);
+}
+
+export function RemovePackage(request: domain$0.PiPackageRequest): $CancellablePromise<domain$0.PiPackageCommandResult> {
+    return $Call.ByID(3426128442, request);
+}
+
 export function RemovePiDeskTodo(): $CancellablePromise<void> {
     return $Call.ByID(1327243640);
+}
+
+export function SetPackageEnabled(request: domain$0.SetPiPackageEnabledRequest): $CancellablePromise<void> {
+    return $Call.ByID(3622591355, request);
+}
+
+export function UpdatePackage(request: domain$0.PiPackageRequest): $CancellablePromise<domain$0.PiPackageCommandResult> {
+    return $Call.ByID(3785917669, request);
 }

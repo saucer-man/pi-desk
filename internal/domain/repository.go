@@ -58,6 +58,8 @@ type RepositoryFilePreview struct {
 	Path         string `json:"path"`
 	AbsolutePath string `json:"absolutePath"`
 	Content      string `json:"content,omitempty"`
+	MediaType    string `json:"mediaType,omitempty"`
+	DataURL      string `json:"dataUrl,omitempty"`
 	Size         int64  `json:"size"`
 	Binary       bool   `json:"binary,omitempty"`
 	Truncated    bool   `json:"truncated,omitempty"`

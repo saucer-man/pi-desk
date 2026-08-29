@@ -2,6 +2,8 @@
 
 Pi Desk 是 Pi coding agent 的 Wails v3 桌面客户端。Pi 继续负责 agent runtime，Pi Desk 提供桌面 UI、workspace/session 管理、Repository、Terminal，以及受信任的远程 SSH workspace。
 
+Repository 支持模糊文件检索和只读多标签预览（文本、Markdown、常见图片/音频与 PDF）；Extensions 可通过 Pi 官方 CLI 管理全局及受信任本地 workspace 的 package，包括安装、更新、移除和资源启停。
+
 ## 运行模型
 
 ```text

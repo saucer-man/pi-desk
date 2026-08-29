@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -18,10 +19,11 @@ import (
 )
 
 const (
-	maxFiles     = 5000
-	maxDepth     = 32
-	maxDiffBytes = 1 << 20
-	maxFileBytes = 1 << 20
+	maxFiles      = 5000
+	maxDepth      = 32
+	maxDiffBytes  = 1 << 20
+	maxFileBytes  = 1 << 20
+	maxMediaBytes = 10 << 20
 )
 
 var ErrOutputTooLarge = gitexec.ErrOutputTooLarge
@@ -465,6 +467,8 @@ func ResolveFile(root, path string) (string, error) {
 type FilePreview struct {
 	Path      string
 	Content   string
+	MediaType string
+	DataURL   string
 	Size      int64
 	Binary    bool
 	Truncated bool
@@ -484,20 +488,85 @@ func PreviewFile(root, path string) (FilePreview, error) {
 	if err != nil {
 		return FilePreview{}, fmt.Errorf("inspect workspace file: %w", err)
 	}
-	content, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	limit := int64(maxFileBytes)
+	if mediaTypeForExtension(resolved) != "" {
+		limit = maxMediaBytes
+	}
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return FilePreview{}, fmt.Errorf("read workspace file: %w", err)
 	}
-	truncated := len(content) > maxFileBytes
+	truncated := int64(len(content)) > limit
 	if truncated {
-		content = content[:maxFileBytes]
+		content = content[:limit]
 	}
 	binary := bytes.IndexByte(content, 0) >= 0 || !utf8.Valid(content)
 	preview := FilePreview{Path: resolved, Size: info.Size(), Binary: binary, Truncated: truncated}
-	if !binary {
+	mediaType := mediaTypeForContent(resolved, content)
+	if mediaType != "" && !truncated {
+		preview.MediaType = mediaType
+		preview.DataURL = "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(content)
+	} else if !binary {
 		preview.Content = string(content)
+		if isMarkdownPath(resolved) {
+			preview.MediaType = "text/markdown"
+		}
 	}
 	return preview, nil
+}
+
+func isMarkdownPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return true
+	default:
+		return false
+	}
+}
+
+func mediaTypeForExtension(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return "image"
+	case ".mp3", ".wav", ".ogg":
+		return "audio"
+	case ".pdf":
+		return "application/pdf"
+	default:
+		return ""
+	}
+}
+
+func mediaTypeForContent(path string, content []byte) string {
+	switch mediaTypeForExtension(path) {
+	case "image":
+		switch {
+		case len(content) >= 8 && string(content[:8]) == "\x89PNG\r\n\x1a\n":
+			return "image/png"
+		case len(content) >= 3 && content[0] == 0xff && content[1] == 0xd8 && content[2] == 0xff:
+			return "image/jpeg"
+		case len(content) >= 6 && (string(content[:6]) == "GIF87a" || string(content[:6]) == "GIF89a"):
+			return "image/gif"
+		case len(content) >= 12 && string(content[:4]) == "RIFF" && string(content[8:12]) == "WEBP":
+			return "image/webp"
+		case len(content) >= 2 && string(content[:2]) == "BM":
+			return "image/bmp"
+		}
+	case "audio":
+		switch {
+		case len(content) >= 3 && string(content[:3]) == "ID3", len(content) >= 2 && content[0] == 0xff && content[1]&0xe0 == 0xe0:
+			return "audio/mpeg"
+		case len(content) >= 12 && string(content[:4]) == "RIFF" && string(content[8:12]) == "WAVE":
+			return "audio/wav"
+		case len(content) >= 4 && string(content[:4]) == "OggS":
+			return "audio/ogg"
+		}
+	case "application/pdf":
+		if len(content) >= 5 && string(content[:5]) == "%PDF-" {
+			return "application/pdf"
+		}
+	}
+	return ""
 }
 
 func readWorkspaceFile(root, path string) (string, bool, bool, error) {

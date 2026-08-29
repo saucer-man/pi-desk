@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ArrowLeft, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, RefreshCw, Search } from "lucide-vue-next";
-import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
+import { ArrowLeft, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, RefreshCw, Search, X } from "lucide-vue-next";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { buildRepositoryTree } from "../utils/fileMentions";
+import { rankFuzzy } from "../utils/fuzzySearch";
 import CodePreview from "./CodePreview.vue";
 import FileTreeNode from "./FileTreeNode.vue";
+import MarkdownBody from "./MarkdownBody.vue";
 import { tr } from "../i18n";
 
 const TerminalPane = defineAsyncComponent(() => import("./TerminalPane.vue"));
@@ -23,7 +25,9 @@ const activeDiff = computed(() => appStore.activeRepositoryDiff);
 const remoteWorkspace = computed(() => appStore.activeThread ? appStore.remoteWorkspaceForThread(appStore.activeThread) : undefined);
 const workspaceLabel = computed(() => remoteWorkspace.value?.remoteRoot || appStore.activeThread?.workspacePath || "");
 const filePreview = computed(() => appStore.activeRepositoryFilePreview);
+const previewTabs = computed(() => appStore.activeRepositoryFileTabs);
 const filePreviewName = computed(() => appStore.activeRepositoryFilePreviewPath.split(/[\\/]/).pop() || appStore.activeRepositoryFilePreviewPath);
+const markdownRendered = ref(true);
 const filteredBranches = computed(() => {
   const query = branchQuery.value.trim().toLocaleLowerCase();
   const branches = appStore.activeRepositoryBranches?.branches ?? [];
@@ -45,8 +49,7 @@ const scopedFilePaths = computed(() => fileScope.value === "changed"
     ...normalizedChangedFiles.value.map((file) => file.path),
   ])]);
 const matchingFilePaths = computed(() => {
-  const query = fileQuery.value.trim().toLocaleLowerCase();
-  return query ? scopedFilePaths.value.filter((path) => path.toLocaleLowerCase().includes(query)) : scopedFilePaths.value;
+  return rankFuzzy(scopedFilePaths.value, fileQuery.value, (path) => [path.split("/").pop() ?? path, path]);
 });
 const filteredFiles = computed(() => matchingFilePaths.value.slice(0, 500));
 const fileListTruncated = computed(() => matchingFilePaths.value.length > filteredFiles.value.length
@@ -93,13 +96,31 @@ function openTreeFile(path: string) {
   else void appStore.openRepositoryFilePreview(path);
 }
 
+function refreshPreview() {
+  const path = appStore.activeRepositoryFilePreviewPath;
+  if (path && !appStore.activeRepositoryFilePreviewLoading) {
+    void appStore.openRepositoryFilePreview(path, appStore.activeRepositoryFilePreviewLine);
+  }
+}
+
+function refreshPreviewWhenVisible() {
+  if (document.visibilityState === "visible") refreshPreview();
+}
+
 onMounted(() => {
   void appStore.refreshActiveRepository();
+  window.addEventListener("focus", refreshPreview);
+  document.addEventListener("visibilitychange", refreshPreviewWhenVisible);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", refreshPreview);
+  document.removeEventListener("visibilitychange", refreshPreviewWhenVisible);
 });
 watch(() => appStore.activeThreadId, () => {
   branchesOpen.value = false;
   void appStore.refreshActiveRepository();
 });
+watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.value = true; });
 </script>
 
 <template>
@@ -110,6 +131,7 @@ watch(() => appStore.activeThreadId, () => {
         <FileCode2 :size="14" aria-hidden="true" />
         <strong :title="filePreview?.absolutePath || appStore.activeRepositoryFilePreviewPath">{{ filePreviewName }}</strong>
         <span v-if="appStore.activeRepositoryFilePreviewLine" class="file-preview-line">:{{ appStore.activeRepositoryFilePreviewLine }}</span>
+        <button class="icon-button" type="button" :title="tr('files.refreshPreview')" :disabled="appStore.activeRepositoryFilePreviewLoading" @click="refreshPreview"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryFilePreviewLoading }" /></button>
         <div v-if="!remoteWorkspace" class="inspector-file-actions">
           <button class="icon-button" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
           <button class="icon-button" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
@@ -123,6 +145,18 @@ watch(() => appStore.activeThreadId, () => {
     </div>
 
     <div v-if="appStore.activeRepositoryFilePreviewPath" class="inspector-content file-preview-panel">
+      <div v-if="previewTabs.length" class="file-preview-tabs" role="tablist" :aria-label="tr('files.openFiles')">
+        <div
+          v-for="path in previewTabs"
+          :key="path"
+          class="file-preview-tab"
+          :class="{ 'is-active': path === appStore.activeRepositoryFilePreviewPath }"
+          :title="path"
+        >
+          <button type="button" role="tab" :aria-selected="path === appStore.activeRepositoryFilePreviewPath" @click="void appStore.openRepositoryFilePreview(path)"><span>{{ path.split(/[\\/]/).pop() }}</span></button>
+          <button class="file-preview-tab-close" type="button" :aria-label="`${tr('files.closeFile')}: ${path}`" @click="appStore.closeRepositoryFilePreview(path)"><X :size="12" /></button>
+        </div>
+      </div>
       <div v-if="appStore.activeRepositoryFilePreviewLoading" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
       <div v-else-if="appStore.activeRepositoryFilePreviewError" class="repository-state error-text">{{ appStore.activeRepositoryFilePreviewError }}</div>
       <template v-else-if="filePreview">
@@ -130,7 +164,18 @@ watch(() => appStore.activeThreadId, () => {
           <span :title="filePreview.absolutePath">{{ filePreview.absolutePath }}</span>
           <small>{{ formatFileSize(filePreview.size) }}</small>
         </div>
-        <div v-if="filePreview.binary" class="repository-state"><Binary :size="18" /><span>{{ tr("files.binaryPreview") }}</span></div>
+        <img v-if="filePreview.mediaType?.startsWith('image/') && filePreview.dataUrl" class="file-media-preview" :src="filePreview.dataUrl" :alt="filePreviewName" />
+        <audio v-else-if="filePreview.mediaType?.startsWith('audio/') && filePreview.dataUrl" class="file-audio-preview" :src="filePreview.dataUrl" controls />
+        <object v-else-if="filePreview.mediaType === 'application/pdf' && filePreview.dataUrl" class="file-pdf-preview" :data="filePreview.dataUrl" type="application/pdf"><span>{{ tr("files.pdfUnavailable") }}</span></object>
+        <template v-else-if="filePreview.mediaType === 'text/markdown'">
+          <div class="markdown-preview-toggle" role="group" :aria-label="tr('files.markdownMode')">
+            <button type="button" :class="{ 'is-active': markdownRendered }" @click="markdownRendered = true">{{ tr("files.rendered") }}</button>
+            <button type="button" :class="{ 'is-active': !markdownRendered }" @click="markdownRendered = false">{{ tr("files.source") }}</button>
+          </div>
+          <MarkdownBody v-if="markdownRendered" class="file-markdown-preview" :text="filePreview.content ?? ''" />
+          <CodePreview v-else :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
+        </template>
+        <div v-else-if="filePreview.binary" class="repository-state"><Binary :size="18" /><span>{{ tr("files.binaryPreview") }}</span></div>
         <CodePreview v-else :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
         <div v-if="filePreview.truncated" class="diff-notice">{{ tr("files.previewTruncated") }}</div>
       </template>

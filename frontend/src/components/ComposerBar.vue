@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useAppStore, type PiModel, type SettingsSection, type SlashCommand } from "../stores/app";
 import { MAX_ATTACHED_IMAGES, MAX_IMAGE_BASE64_CHARS, prepareImage, type PreparedImage } from "../utils/imageAttachments";
 import { formatFileMention } from "../utils/fileMentions";
+import { rankFuzzy } from "../utils/fuzzySearch";
 import { parsePiDeskTodoWidget, PI_DESK_TODO_WIDGET_KEY } from "../utils/todoWidget";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
@@ -49,14 +50,13 @@ const draft = computed({
   get: () => appStore.activeDraft,
   set: (value: string) => appStore.updateDraft(value),
 });
-const commandMenuOpen = computed(() => !modelMenuOpen.value && !accessMenuOpen.value && (commandButtonOpen.value || (!commandDismissed.value && draft.value.startsWith("/") && !draft.value.slice(1).includes(" "))));
+const commandMatch = computed(() => /(^|\s)\/([^\s]*)$/.exec(draft.value));
+const commandMenuOpen = computed(() => !modelMenuOpen.value && !accessMenuOpen.value && (commandButtonOpen.value || (!commandDismissed.value && Boolean(commandMatch.value))));
 const mentionMatch = computed(() => /(^|\s)@([^\s"]*)\s*$/.exec(draft.value));
 const matchingFiles = computed(() => {
-  const query = mentionMatch.value?.[2].toLocaleLowerCase();
+  const query = mentionMatch.value?.[2] ?? "";
   if (query === undefined) return [];
-  return (appStore.activeRepository?.files ?? [])
-    .filter((file) => !query || `${file.name} ${file.path}`.toLocaleLowerCase().includes(query))
-    .slice(0, 8);
+  return rankFuzzy(appStore.activeRepository?.files ?? [], query, (file) => [file.name, file.path]).slice(0, 8);
 });
 const mentionMenuOpen = computed(() => !commandButtonOpen.value && !modelMenuOpen.value && !accessMenuOpen.value && !mentionDismissed.value && Boolean(mentionMatch.value) && matchingFiles.value.length > 0);
 const currentModel = computed(() => appStore.activeSessionState?.model);
@@ -106,7 +106,7 @@ const desktopCommands = computed<DesktopSlashCommand[]>(() => [
 ]);
 const hiddenRpcCommandNames = new Set(["todo", "llama"]);
 const matchingCommands = computed<ComposerSlashCommand[]>(() => {
-  const query = commandButtonOpen.value ? "" : draft.value.slice(1).toLocaleLowerCase();
+  const query = commandButtonOpen.value ? "" : commandMatch.value?.[2].toLocaleLowerCase() ?? "";
   return [...desktopCommands.value, ...appStore.activeCommands]
     .filter((command) => !hiddenRpcCommandNames.has(command.name.toLocaleLowerCase()))
     .filter((command) => command.name.toLocaleLowerCase().includes(query));
@@ -139,7 +139,7 @@ watch(draft, (value, previousValue) => {
   mentionIndex.value = 0;
   commandDismissed.value = false;
   mentionDismissed.value = false;
-  if (value.startsWith("/") && !previousValue.startsWith("/")) void refreshSlashCommands();
+  if (/(^|\s)\/[^\s]*$/.test(value) && !/(^|\s)\/[^\s]*$/.test(previousValue)) void refreshSlashCommands();
 });
 
 watch(matchingCommands, (commands) => {
@@ -304,11 +304,13 @@ function toggleCommandMenu() {
   markdownEditor.value?.focus();
 }
 
-function commandArguments(value: string): string {
+function addCommand(value: string, name: string): string {
   const trimmed = value.trim();
-  if (!trimmed.startsWith("/")) return trimmed;
-  const separator = trimmed.search(/\s/);
-  return separator < 0 ? "" : trimmed.slice(separator).trim();
+  if (!trimmed) return `/${name} `;
+  const commands = /^(?:\/\S+(?:\s+|$))+/.exec(trimmed)?.[0];
+  if (!commands) return `/${name} ${trimmed}`;
+  const argumentsText = trimmed.slice(commands.length);
+  return `${commands.trimEnd()} /${name}${argumentsText ? ` ${argumentsText}` : " "}`;
 }
 
 function chooseCommand(command: ComposerSlashCommand) {
@@ -316,16 +318,19 @@ function chooseCommand(command: ComposerSlashCommand) {
   commandButtonOpen.value = false;
   commandDismissed.value = true;
   if (command.source === "desktop") {
-    if (!openedFromButton) updateEditorMarkdown("");
+    if (!openedFromButton && commandMatch.value) {
+      updateEditorMarkdown(`${draft.value.slice(0, commandMatch.value.index)}${commandMatch.value[1]}`.trimEnd());
+    }
     appStore.openSettings(command.settingsSection);
     return;
   }
   if (openedFromButton) {
-    const argumentsText = commandArguments(draft.value);
-    updateEditorMarkdown(argumentsText ? `/${command.name} ${argumentsText}` : `/${command.name} `);
-  } else {
-    updateEditorMarkdown(`/${command.name} `);
+    updateEditorMarkdown(addCommand(draft.value, command.name));
+    return;
   }
+  const match = commandMatch.value;
+  if (!match) return;
+  updateEditorMarkdown(`${draft.value.slice(0, match.index)}${match[1]}/${command.name} `);
 }
 
 function beginQueueEdit(promptId: string, text: string, images: PreparedImage[]) {

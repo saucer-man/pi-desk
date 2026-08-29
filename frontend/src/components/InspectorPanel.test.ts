@@ -189,4 +189,30 @@ describe("InspectorPanel", () => {
     await wrapper.get('button[title="Close file preview"]').trigger("click");
     expect(store.activeRepositoryFilePreviewPath).toBe("");
   });
+
+  it("renders media previews and switches among open file tabs", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{ id: "thread-media", title: "Media", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: false, generation: 0 }],
+      activeThreadId: "thread-media",
+      repositoryFileTabsByThread: { "thread-media": ["README.md", "image.png"] },
+      repositoryFilePreviewPathByThread: { "thread-media": "image.png" },
+      repositoryFilePreviewByThread: { "thread-media": {
+        path: "image.png", absolutePath: "D:\\repo\\image.png", mediaType: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=", size: 8, binary: true, truncated: false,
+      } },
+    });
+    store.refreshActiveRepository = vi.fn().mockResolvedValue(undefined);
+    repositoryMocks.previewFile.mockResolvedValue({ path: "README.md", absolutePath: "D:\\repo\\README.md", mediaType: "text/markdown", content: "# Repo", size: 6 });
+    const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
+
+    expect(wrapper.get("img.file-media-preview").attributes("src")).toContain("data:image/png");
+    await wrapper.findAll('.file-preview-tabs [role="tab"]')[0].trigger("click");
+    await flushPromises();
+    expect(repositoryMocks.previewFile).toHaveBeenCalledWith("D:\\repo", "README.md");
+    expect(wrapper.text()).toContain("Repo");
+    await wrapper.findAll(".markdown-preview-toggle button")[1].trigger("click");
+    expect(wrapper.get('[aria-label="File preview content"]').text()).toContain("# Repo");
+  });
 });

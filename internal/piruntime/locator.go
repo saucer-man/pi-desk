@@ -23,6 +23,10 @@ type commandRunner interface {
 	CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
+type directoryCommandRunner interface {
+	CombinedOutputInDirectory(ctx context.Context, directory, name string, args ...string) ([]byte, error)
+}
+
 type osCommandRunner struct{}
 
 func (osCommandRunner) LookPath(file string) (string, error) {
@@ -30,7 +34,12 @@ func (osCommandRunner) LookPath(file string) (string, error) {
 }
 
 func (osCommandRunner) CombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return osCommandRunner{}.CombinedOutputInDirectory(ctx, "", name, args...)
+}
+
+func (osCommandRunner) CombinedOutputInDirectory(ctx context.Context, directory, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
+	command.Dir = directory
 	configureProcess(command)
 	output := &boundedOutput{limit: maxCommandOutputBytes}
 	command.Stdout = output
@@ -68,6 +77,7 @@ type Invocation struct {
 	Executable string
 	Args       []string
 	PiPath     string
+	Directory  string
 }
 
 func NewLocator() *Locator {
@@ -122,6 +132,13 @@ func (locator *Locator) NPMInvocation(args ...string) (Invocation, error) {
 }
 
 func (locator *Locator) Run(ctx context.Context, invocation Invocation) ([]byte, error) {
+	if invocation.Directory != "" {
+		runner, ok := locator.runner.(directoryCommandRunner)
+		if !ok {
+			return nil, errors.New("command runner does not support a working directory")
+		}
+		return runner.CombinedOutputInDirectory(ctx, invocation.Directory, invocation.Executable, invocation.Args...)
+	}
 	return locator.runner.CombinedOutput(ctx, invocation.Executable, invocation.Args...)
 }
 

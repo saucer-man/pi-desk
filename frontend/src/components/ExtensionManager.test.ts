@@ -1,9 +1,13 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { PiExtensionOrigin } from "../../bindings/pi-desk/internal/domain";
+import { createPinia } from "pinia";
+import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import ExtensionManager from "./ExtensionManager.vue";
 
-const extensionMocks = vi.hoisted(() => ({ list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn() }));
+const extensionMocks = vi.hoisted(() => ({
+  list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), listPackages: vi.fn(),
+  installPackage: vi.fn(), updatePackage: vi.fn(), removePackage: vi.fn(), setPackageEnabled: vi.fn(),
+}));
 vi.mock("../services/extensions", () => ({ piExtensionService: extensionMocks }));
 
 const baseSnapshot = {
@@ -21,10 +25,17 @@ const baseSnapshot = {
     legacyInstalled: true,
   },
 };
+const packageSnapshot = {
+  globalSettingsPath: "C:\\Users\\dev\\.pi\\agent\\settings.json",
+  projectEnabled: false,
+  projectNotice: "select a workspace to manage project packages",
+  packages: [{ source: "npm:context-mode", scope: PiPackageScope.PiPackageScopeGlobal, enabled: true }],
+};
 
 describe("ExtensionManager", () => {
   beforeEach(() => {
     Object.values(extensionMocks).forEach((mock) => mock.mockReset());
+    extensionMocks.listPackages.mockResolvedValue(packageSnapshot);
   });
 
   it("lists Pi extension sources and migrates the legacy Todo extension", async () => {
@@ -43,7 +54,7 @@ describe("ExtensionManager", () => {
       replacedLegacy: true,
     });
 
-    const wrapper = mount(ExtensionManager);
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
     await flushPromises();
 
     expect(wrapper.text()).toContain("Pi Desk Todo");
@@ -67,7 +78,7 @@ describe("ExtensionManager", () => {
       todo: { ...baseSnapshot.todo, installed: true, legacyInstalled: false },
     });
     extensionMocks.removeTodo.mockResolvedValue(undefined);
-    const wrapper = mount(ExtensionManager);
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
     await flushPromises();
 
     const remove = wrapper.get('[data-testid="remove-todo-extension"]');
@@ -78,5 +89,33 @@ describe("ExtensionManager", () => {
     await remove.trigger("click");
     await flushPromises();
     expect(extensionMocks.removeTodo).toHaveBeenCalledOnce();
+  });
+
+  it("installs, toggles, updates, and removes Pi packages", async () => {
+    extensionMocks.list.mockResolvedValue(baseSnapshot);
+    extensionMocks.listPackages.mockResolvedValue(packageSnapshot);
+    extensionMocks.installPackage.mockResolvedValue({ output: "installed" });
+    extensionMocks.setPackageEnabled.mockResolvedValue(undefined);
+    extensionMocks.updatePackage.mockResolvedValue({ output: "updated" });
+    extensionMocks.removePackage.mockResolvedValue({ output: "removed" });
+    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    await wrapper.get('input[placeholder="npm:package, git URL, or local path"]').setValue("npm:new-package");
+    await wrapper.get(".extension-package-install button").trigger("click");
+    await flushPromises();
+    expect(extensionMocks.installPackage).toHaveBeenCalledWith(expect.objectContaining({ source: "npm:new-package", scope: PiPackageScope.PiPackageScopeGlobal }));
+
+    const rowButtons = wrapper.findAll(".package-row button");
+    await rowButtons[0].trigger("click");
+    await flushPromises();
+    expect(extensionMocks.setPackageEnabled).toHaveBeenCalledWith(expect.objectContaining({ source: "npm:context-mode", enabled: false }));
+    await rowButtons[1].trigger("click");
+    await flushPromises();
+    expect(extensionMocks.updatePackage).toHaveBeenCalled();
+    await rowButtons[2].trigger("click");
+    await flushPromises();
+    expect(extensionMocks.removePackage).toHaveBeenCalled();
   });
 });

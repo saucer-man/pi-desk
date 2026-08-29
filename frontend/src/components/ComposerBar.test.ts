@@ -213,7 +213,7 @@ describe("ComposerBar", () => {
     expect(store.sendActivePrompt).not.toHaveBeenCalled();
   });
 
-  it("opens the command button without changing the draft and prefixes or replaces runtime commands", async () => {
+  it("opens the command button without changing the draft and adds multiple runtime commands", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -250,8 +250,40 @@ describe("ComposerBar", () => {
     const compact = wrapper.findAll('.completion-menu[aria-label="Commands"] button').find((button) => button.text().includes("/compact"));
     if (!compact) throw new Error("compact command was not rendered");
     await compact.trigger("click");
-    expect(store.activeDraft).toBe("/compact keep these arguments");
-    expect(store.refreshCommands).toHaveBeenCalledTimes(3);
+    expect(store.activeDraft).toBe("/review /compact keep these arguments");
+    expect(store.refreshCommands).toHaveBeenCalledTimes(2);
+  });
+
+  it("completes multiple slash commands without changing the surrounding draft", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-multiple-commands", title: "Commands", workspace: "repo", workspacePath: "D:\\repo", trust: "approve",
+        status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-multiple-commands",
+      draftsByThread: { "thread-multiple-commands": "/review /ski" },
+      commandsByThread: { "thread-multiple-commands": [
+        { name: "review", description: "Review changes", source: "prompt" },
+        { name: "skill:grill", description: "Stress-test a plan", source: "skill" },
+        { name: "compact", description: "Compact context", source: "extension" },
+      ] },
+    });
+    const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+
+    const skill = wrapper.findAll('.completion-menu[aria-label="Commands"] button').find((button) => button.text().includes("/skill:grill"));
+    if (!skill) throw new Error("skill command was not rendered");
+    await skill.trigger("click");
+    expect(store.activeDraft).toBe("/review /skill:grill ");
+
+    store.updateDraft("/review /skill:grill Keep the request /com");
+    await flushPromises();
+    const compact = wrapper.findAll('.completion-menu[aria-label="Commands"] button').find((button) => button.text().includes("/compact"));
+    if (!compact) throw new Error("compact command was not rendered");
+    await compact.trigger("click");
+    expect(store.activeDraft).toBe("/review /skill:grill Keep the request /compact ");
   });
 
   it("preserves a normal draft when the command button opens Pi Desk management", async () => {

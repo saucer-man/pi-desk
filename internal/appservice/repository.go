@@ -247,7 +247,8 @@ func (service *RepositoryService) PreviewFile(request domain.RepositoryFileReque
 	}
 	return domain.RepositoryFilePreview{
 		Path: filepath.ToSlash(strings.TrimSpace(request.Path)), AbsolutePath: absolutePath,
-		Content: preview.Content, Size: preview.Size, Binary: preview.Binary, Truncated: preview.Truncated,
+		Content: preview.Content, MediaType: preview.MediaType, DataURL: preview.DataURL,
+		Size: preview.Size, Binary: preview.Binary, Truncated: preview.Truncated,
 	}, nil
 }
 

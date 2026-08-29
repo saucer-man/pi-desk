@@ -37,6 +37,9 @@ func (runtime *fakeRemoteRepositoryRuntime) StatFile(context.Context, *remotessh
 func (runtime *fakeRemoteRepositoryRuntime) ReadFile(context.Context, *remotessh.RuntimeLease, string, int, int) (remotessh.RuntimeFileRead, error) {
 	return runtime.read, runtime.readErr
 }
+func (runtime *fakeRemoteRepositoryRuntime) ReadImage(context.Context, *remotessh.RuntimeLease, string) (remotessh.RuntimeFileImage, error) {
+	return remotessh.RuntimeFileImage{}, remotessh.ErrRuntimeFileUnsupported
+}
 
 func remoteGitResult(operation string, parts ...struct {
 	name  string

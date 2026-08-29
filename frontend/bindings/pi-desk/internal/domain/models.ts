@@ -197,6 +197,10 @@ export interface ListMcpServersRequest {
     "workspacePath"?: string;
 }
 
+export interface ListPiPackagesRequest {
+    "workspacePath"?: string;
+}
+
 export interface ListPromptTemplatesRequest {
     "workspacePath"?: string;
 }
@@ -449,6 +453,40 @@ export interface PiMaintenanceResult {
     "runtime": PiRuntimeStatus;
 }
 
+export interface PiPackageCommandResult {
+    "output"?: string;
+}
+
+export interface PiPackageRequest {
+    "source": string;
+    "scope": PiPackageScope;
+    "workspacePath"?: string;
+}
+
+export enum PiPackageScope {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    PiPackageScopeGlobal = "global",
+    PiPackageScopeProject = "project",
+};
+
+export interface PiPackageSnapshot {
+    "globalSettingsPath": string;
+    "projectSettingsPath"?: string;
+    "projectEnabled": boolean;
+    "projectNotice"?: string;
+    "packages": PiPackageSummary[] | null;
+}
+
+export interface PiPackageSummary {
+    "source": string;
+    "scope": PiPackageScope;
+    "enabled": boolean;
+}
+
 export interface PiRuntimeStatus {
     "state": RuntimeState;
     "command"?: string;
@@ -572,6 +610,8 @@ export interface RepositoryFilePreview {
     "path": string;
     "absolutePath": string;
     "content"?: string;
+    "mediaType"?: string;
+    "dataUrl"?: string;
     "size": number;
     "binary"?: boolean;
     "truncated"?: boolean;
@@ -721,6 +761,13 @@ export interface SessionUsageSummary {
     "tokens": SessionTokenUsage;
     "cost": number;
     "models": SessionModelUsage[] | null;
+}
+
+export interface SetPiPackageEnabledRequest {
+    "source": string;
+    "scope": PiPackageScope;
+    "workspacePath"?: string;
+    "enabled": boolean;
 }
 
 export enum SkillScope {

@@ -117,6 +117,25 @@ func TestResolveFileRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestPreviewFileReturnsMarkdownAndSafeMediaData(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("\x89PNG\r\n\x1a\ncontent")
+	if err := os.WriteFile(filepath.Join(root, "image.png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	markdown, err := PreviewFile(root, "README.md")
+	if err != nil || markdown.MediaType != "text/markdown" || markdown.Content != "# Hello" {
+		t.Fatalf("unexpected markdown preview %#v, %v", markdown, err)
+	}
+	image, err := PreviewFile(root, "image.png")
+	if err != nil || image.MediaType != "image/png" || !strings.HasPrefix(image.DataURL, "data:image/png;base64,") || !image.Binary {
+		t.Fatalf("unexpected image preview %#v, %v", image, err)
+	}
+}
+
 func TestParseBranchesTracksCurrentAndOccupiedBranches(t *testing.T) {
 	root := t.TempDir()
 	mainWorktree := filepath.Join(root, "repo")

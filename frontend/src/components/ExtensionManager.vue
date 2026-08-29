@@ -1,18 +1,26 @@
 <script setup lang="ts">
 import { AlertTriangle, CheckCircle2, Download, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
-import { PiExtensionOrigin } from "../../bindings/pi-desk/internal/domain";
+import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
-import { piExtensionService, type PiExtensionSnapshot } from "../services/extensions";
+import { piExtensionService, type PiExtensionSnapshot, type PiPackageSnapshot, type PiPackageSummary } from "../services/extensions";
+import { useAppStore } from "../stores/app";
 
+const appStore = useAppStore();
 const snapshot = ref<PiExtensionSnapshot>();
+const packageSnapshot = ref<PiPackageSnapshot>();
 const loading = ref(true);
 const changing = ref(false);
 const loadError = ref("");
 const notice = ref("");
 const removeArmed = ref(false);
+const packageSource = ref("");
+const packageScope = ref(PiPackageScope.PiPackageScopeGlobal);
+const packageBusy = ref("");
 
-const extensions = computed(() => snapshot.value?.extensions ?? []);
+const extensions = computed(() => (snapshot.value?.extensions ?? []).filter((extension) => extension.origin !== PiExtensionOrigin.PiExtensionOriginPackage));
+const packages = computed(() => packageSnapshot.value?.packages ?? []);
+const workspacePath = computed(() => appStore.activeThread?.workspacePath ?? "");
 
 function originLabel(origin: string) {
   if (origin === PiExtensionOrigin.PiExtensionOriginGlobal) return tr("settings.extensionOriginGlobal");
@@ -24,11 +32,85 @@ async function loadExtensions() {
   loading.value = true;
   loadError.value = "";
   try {
-    snapshot.value = await piExtensionService.list();
+    [snapshot.value, packageSnapshot.value] = await Promise.all([
+      piExtensionService.list(),
+      piExtensionService.listPackages(workspacePath.value),
+    ]);
   } catch (cause) {
     loadError.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
     loading.value = false;
+  }
+}
+
+function packageRequest(pkg?: PiPackageSummary) {
+  return {
+    source: pkg?.source ?? packageSource.value.trim(),
+    scope: pkg?.scope ?? packageScope.value,
+    workspacePath: workspacePath.value,
+  };
+}
+
+async function installPackage() {
+  const request = packageRequest();
+  if (!request.source || packageBusy.value) return;
+  packageBusy.value = `install:${request.scope}:${request.source}`;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installPackage(request);
+    packageSource.value = "";
+    notice.value = tr("settings.packageInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
+  }
+}
+
+async function updatePackage(pkg: PiPackageSummary) {
+  if (packageBusy.value) return;
+  packageBusy.value = `update:${pkg.scope}:${pkg.source}`;
+  loadError.value = "";
+  try {
+    await piExtensionService.updatePackage(packageRequest(pkg));
+    notice.value = tr("settings.packageUpdated");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
+  }
+}
+
+async function removePackage(pkg: PiPackageSummary) {
+  if (packageBusy.value || !window.confirm(tr("settings.confirmRemovePackage", { source: pkg.source }))) return;
+  packageBusy.value = `remove:${pkg.scope}:${pkg.source}`;
+  loadError.value = "";
+  try {
+    await piExtensionService.removePackage(packageRequest(pkg));
+    notice.value = tr("settings.packageRemoved");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
+  }
+}
+
+async function setPackageEnabled(pkg: PiPackageSummary) {
+  if (packageBusy.value) return;
+  packageBusy.value = `toggle:${pkg.scope}:${pkg.source}`;
+  loadError.value = "";
+  try {
+    await piExtensionService.setPackageEnabled({ ...packageRequest(pkg), enabled: !pkg.enabled });
+    notice.value = pkg.enabled ? tr("settings.packageDisabled") : tr("settings.packageEnabled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
   }
 }
 
@@ -127,6 +209,34 @@ onMounted(() => { void loadExtensions(); });
 
     <p v-if="notice" class="setting-status is-success">{{ notice }}</p>
     <p v-if="loadError" class="form-error">{{ loadError }}</p>
+
+    <section class="installed-extensions" aria-labelledby="pi-packages-title">
+      <header>
+        <strong id="pi-packages-title">{{ tr("settings.piPackages") }}</strong>
+        <span>{{ packages.length }}</span>
+      </header>
+      <div class="extension-package-install">
+        <input v-model="packageSource" type="text" spellcheck="false" :placeholder="tr('settings.packageSource')" @keydown.enter.prevent="void installPackage()" />
+        <select v-model="packageScope" :aria-label="tr('settings.packageScope')">
+          <option :value="PiPackageScope.PiPackageScopeGlobal">{{ tr("settings.packageScopeGlobal") }}</option>
+          <option :value="PiPackageScope.PiPackageScopeProject" :disabled="!packageSnapshot?.projectEnabled">{{ tr("settings.packageScopeProject") }}</option>
+        </select>
+        <button class="text-button primary" type="button" :disabled="!packageSource.trim() || Boolean(packageBusy)" @click="void installPackage()"><Download :size="14" />{{ tr("settings.installPackage") }}</button>
+      </div>
+      <p v-if="packageSnapshot?.projectNotice" class="setting-status">{{ packageSnapshot.projectNotice }}</p>
+      <div v-if="packages.length" class="extension-list">
+        <div v-for="pkg in packages" :key="`${pkg.scope}-${pkg.source}`" class="resource-row package-row">
+          <Package :size="15" />
+          <span><strong>{{ pkg.source }}</strong><small>{{ pkg.scope === PiPackageScope.PiPackageScopeProject ? tr("settings.packageScopeProject") : tr("settings.packageScopeGlobal") }}</small></span>
+          <div class="extension-feature-actions">
+            <button class="text-button" type="button" :disabled="Boolean(packageBusy)" @click="void setPackageEnabled(pkg)">{{ pkg.enabled ? tr("settings.disablePackage") : tr("settings.enablePackage") }}</button>
+            <button class="text-button" type="button" :disabled="Boolean(packageBusy)" @click="void updatePackage(pkg)">{{ tr("settings.updateExtension") }}</button>
+            <button class="icon-button danger" type="button" :title="tr('settings.removePackage')" :disabled="Boolean(packageBusy)" @click="void removePackage(pkg)"><Trash2 :size="14" /></button>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="!loading" class="settings-empty compact"><Package :size="17" /><span>{{ tr("settings.noPackages") }}</span></div>
+    </section>
 
     <section class="installed-extensions" aria-labelledby="installed-extensions-title">
       <header>

@@ -793,6 +793,7 @@ export const useAppStore = defineStore("app", {
     repositoryDiffGenerationByWorkspace: {} as Record<string, number>,
     repositoryDiffErrorByWorkspace: {} as Record<string, string>,
     repositoryFilePreviewByThread: {} as Record<string, RepositoryFilePreview | undefined>,
+    repositoryFileTabsByThread: {} as Record<string, string[]>,
     repositoryFilePreviewPathByThread: {} as Record<string, string>,
     repositoryFilePreviewLineByThread: {} as Record<string, number | undefined>,
     repositoryFilePreviewLoadingByThread: {} as Record<string, boolean>,
@@ -942,6 +943,9 @@ export const useAppStore = defineStore("app", {
     },
     activeRepositoryFilePreview(state): RepositoryFilePreview | undefined {
       return state.repositoryFilePreviewByThread[state.activeThreadId];
+    },
+    activeRepositoryFileTabs(state): string[] {
+      return state.repositoryFileTabsByThread[state.activeThreadId] ?? [];
     },
     activeRepositoryFilePreviewPath(state): string {
       return state.repositoryFilePreviewPathByThread[state.activeThreadId] ?? "";
@@ -1483,6 +1487,11 @@ export const useAppStore = defineStore("app", {
       this.inspectorOpen = true;
       this.scheduleDesktopStateSave();
       this.repositoryFilePreviewPathByThread[threadId] = path;
+      const tabs = this.repositoryFileTabsByThread[threadId] ?? (this.repositoryFileTabsByThread[threadId] = []);
+      if (!tabs.includes(path)) {
+        tabs.push(path);
+        if (tabs.length > 20) tabs.shift();
+      }
       this.repositoryFilePreviewLineByThread[threadId] = line;
       this.repositoryFilePreviewByThread[threadId] = undefined;
       this.repositoryFilePreviewLoadingByThread[threadId] = true;
@@ -1498,15 +1507,23 @@ export const useAppStore = defineStore("app", {
         if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) this.repositoryFilePreviewLoadingByThread[threadId] = false;
       }
     },
-    closeRepositoryFilePreview() {
+    closeRepositoryFilePreview(path?: string) {
       const threadId = this.activeThreadId;
       if (!threadId) return;
+      const activePath = this.repositoryFilePreviewPathByThread[threadId] ?? "";
+      const closingPath = path ?? activePath;
+      const tabs = this.repositoryFileTabsByThread[threadId] ?? [];
+      const index = tabs.indexOf(closingPath);
+      if (index >= 0) tabs.splice(index, 1);
+      if (closingPath !== activePath) return;
       this.repositoryFilePreviewGenerationByThread[threadId] = (this.repositoryFilePreviewGenerationByThread[threadId] ?? 0) + 1;
       this.repositoryFilePreviewPathByThread[threadId] = "";
       this.repositoryFilePreviewLineByThread[threadId] = undefined;
       this.repositoryFilePreviewByThread[threadId] = undefined;
       this.repositoryFilePreviewLoadingByThread[threadId] = false;
       this.repositoryFilePreviewErrorByThread[threadId] = "";
+      const next = tabs[Math.min(index, tabs.length - 1)];
+      if (next) void this.openRepositoryFilePreview(next);
     },
     async openPreviewedRepositoryFile(reveal = false) {
       const thread = this.activeThread;

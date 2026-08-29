@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path"
@@ -25,6 +26,7 @@ type remoteRuntime interface {
 	ReadGit(context.Context, *remotessh.RuntimeLease, remotessh.RuntimeGitReadRequest) (remotessh.RuntimeGitReadResult, error)
 	StatFile(context.Context, *remotessh.RuntimeLease, string) (remotessh.RuntimeFileInfo, error)
 	ReadFile(context.Context, *remotessh.RuntimeLease, string, int, int) (remotessh.RuntimeFileRead, error)
+	ReadImage(context.Context, *remotessh.RuntimeLease, string) (remotessh.RuntimeFileImage, error)
 }
 
 // RemoteBackend projects Repository data through one host-minted root
@@ -179,6 +181,18 @@ func (backend *RemoteBackend) previewWithLease(ctx context.Context, lease *remot
 	if info.Kind != "file" {
 		return FilePreview{}, errors.New("remote repository path is not a regular file")
 	}
+	if mediaTypeForExtension(logicalPath) == "image" {
+		image, imageErr := backend.runtime.ReadImage(ctx, lease, logicalPath)
+		if imageErr == nil {
+			return FilePreview{
+				Path: logicalPath, Size: image.Size, Binary: true, MediaType: image.MIME,
+				DataURL: "data:" + image.MIME + ";base64," + base64.StdEncoding.EncodeToString(image.Content),
+			}, nil
+		}
+		if !errors.Is(imageErr, remotessh.ErrRuntimeFileUnsupported) {
+			return FilePreview{}, imageErr
+		}
+	}
 	read, err := backend.runtime.ReadFile(ctx, lease, logicalPath, 1, 2000)
 	if errors.Is(err, remotessh.ErrRuntimeFileUnsupported) {
 		return FilePreview{Path: logicalPath, Size: info.Size, Binary: true}, nil
@@ -186,10 +200,14 @@ func (backend *RemoteBackend) previewWithLease(ctx context.Context, lease *remot
 	if err != nil {
 		return FilePreview{}, err
 	}
-	return FilePreview{
+	preview := FilePreview{
 		Path: logicalPath, Content: read.Content, Size: info.Size,
 		Truncated: read.Truncated || read.LineTruncated || read.NextLine > 0,
-	}, nil
+	}
+	if isMarkdownPath(logicalPath) {
+		preview.MediaType = "text/markdown"
+	}
+	return preview, nil
 }
 
 func (backend *RemoteBackend) acquire(ctx context.Context) (*remotessh.RuntimeLease, error) {

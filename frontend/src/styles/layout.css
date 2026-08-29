@@ -2991,7 +2991,7 @@
   display: grid;
   width: 100%;
   min-width: 0;
-  grid-template-columns: 30px 16px minmax(0, 1fr) auto auto;
+  grid-template-columns: 30px 16px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 5px;
 }
@@ -3023,6 +3023,59 @@
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+}
+
+.file-preview-tabs {
+  display: flex;
+  min-height: 30px;
+  flex: 0 0 auto;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-app);
+}
+
+.file-preview-tab {
+  display: flex;
+  min-width: 92px;
+  max-width: 180px;
+  align-items: center;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.file-preview-tab.is-active {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.file-preview-tab > button:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 4px 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.file-preview-tab button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-tab-close {
+  display: grid;
+  width: 24px;
+  align-self: stretch;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  place-items: center;
 }
 
 .file-preview-meta {
@@ -3072,6 +3125,61 @@
 
 .file-preview-content code {
   font: inherit;
+}
+
+.file-media-preview,
+.file-pdf-preview,
+.file-markdown-preview {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.file-media-preview {
+  object-fit: contain;
+  padding: 12px;
+  background: var(--bg-code);
+}
+
+.file-audio-preview {
+  width: calc(100% - 24px);
+  margin: 24px 12px;
+}
+
+.file-pdf-preview {
+  width: 100%;
+  border: 0;
+  background: white;
+}
+
+.file-markdown-preview {
+  padding: 14px;
+  overflow: auto;
+}
+
+.markdown-preview-toggle {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-preview-toggle button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.markdown-preview-toggle button + button {
+  border-left: 0;
+}
+
+.markdown-preview-toggle button.is-active {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .file-preview-content .tok-keyword,
@@ -6100,6 +6208,35 @@
 .installed-extensions > header span {
   color: var(--text-muted);
   font-size: 10px;
+}
+
+.extension-package-install {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  gap: 7px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.extension-package-install input,
+.extension-package-install select {
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--bg-app);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.package-row {
+  align-items: center;
+}
+
+.package-row .extension-feature-actions {
+  gap: 4px;
 }
 
 .extension-list {

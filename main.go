@@ -171,7 +171,7 @@ func main() {
 	modelConfigService := appservice.NewModelConfigService()
 	promptTemplateService := appservice.NewPromptTemplateService(catalog)
 	managedSkillService := appservice.NewManagedSkillService(catalog)
-	piExtensionService := appservice.NewPiExtensionService()
+	piExtensionService := appservice.NewPiExtensionService(catalog, locator)
 	mcpConfigService := appservice.NewMcpConfigService(catalog)
 	orphanSessionService, err := appservice.NewOrphanSessionService(catalog, sessionIndex, locator)
 	if err != nil {
