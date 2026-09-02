@@ -52,6 +52,25 @@ describe("MarkdownBody", () => {
     wrapper.unmount();
   });
 
+  it("renders legacy browser break tags as line breaks instead of text", () => {
+    const { wrapper } = mountMarkdown("first</br>second<br>third<br/>fourth");
+
+    expect(wrapper.text()).toBe("first\nsecond\nthird\nfourth");
+    expect(wrapper.findAll("br")).toHaveLength(3);
+    expect(wrapper.text()).not.toContain("</br>");
+    wrapper.unmount();
+  });
+
+  it("preserves break-tag examples inside inline and fenced code", () => {
+    const { wrapper } = mountMarkdown("`</br>`\n\n```html\n<br>\n```");
+
+    expect(wrapper.findAll("code")).toHaveLength(2);
+    expect(wrapper.text()).toContain("</br>");
+    expect(wrapper.text()).toContain("<br>");
+    expect(wrapper.findAll("br")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
   it("turns workspace file links into preview and context-menu targets while leaving web links external", async () => {
     const { store, wrapper } = mountMarkdown("[result](reports/tg_groups.csv) and [web](https://example.com/docs)");
     store.openRepositoryFilePreview = vi.fn().mockResolvedValue(undefined);

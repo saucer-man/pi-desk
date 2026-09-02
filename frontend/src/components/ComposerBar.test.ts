@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../stores/app";
+import { prepareImage } from "../utils/imageAttachments";
 import ComposerBar from "./ComposerBar.vue";
 
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
@@ -20,6 +21,14 @@ vi.mock("../utils/imageAttachments", () => ({
     previewUrl: `data:${file.type};base64,aW1hZ2U=`,
   })),
 }));
+
+function elementRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left, y: top, left, top, width, height,
+    right: left + width, bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 describe("ComposerBar", () => {
   beforeEach(() => {
@@ -476,7 +485,7 @@ describe("ComposerBar", () => {
     expect(wrapper.get(".send-button").attributes("title")).toBe("Queue message");
   });
 
-  it("keeps Enter for Markdown editing and sends only with Ctrl or Command Enter", async () => {
+  it("sends with Enter, keeps Shift Enter for editing, and ignores composition and repeats", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -490,15 +499,17 @@ describe("ComposerBar", () => {
     });
     store.sendActivePrompt = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
-    const editor = wrapper.get(".composer-editor");
+    await flushPromises();
+    const editor = wrapper.get("[contenteditable='true']");
 
     await editor.trigger("keydown", { key: "Enter" });
-    await editor.trigger("keydown", { key: "Enter", ctrlKey: true, keyCode: 229 });
-    expect(store.sendActivePrompt).not.toHaveBeenCalled();
+    expect(store.sendActivePrompt).toHaveBeenCalledOnce();
 
-    await editor.trigger("keydown", { key: "Enter", ctrlKey: true });
-    await editor.trigger("keydown", { key: "Enter", metaKey: true });
-    expect(store.sendActivePrompt).toHaveBeenCalledTimes(2);
+    await editor.trigger("keydown", { key: "Enter", shiftKey: true });
+    await editor.trigger("keydown", { key: "Enter", keyCode: 229 });
+    await editor.trigger("keydown", { key: "Enter", isComposing: true });
+    await editor.trigger("keydown", { key: "Enter", repeat: true });
+    expect(store.sendActivePrompt).toHaveBeenCalledOnce();
   });
 
   it("shows Pi startup progress in the lower-left composer toolbar", () => {
@@ -547,6 +558,32 @@ describe("ComposerBar", () => {
     expect(wrapper.get(".attachment-preview img").attributes("alt")).toBe("clipboard.png");
   });
 
+  it("shows a readable error when pasted image preparation rejects with a browser event", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-1", title: "Audit", workspace: "repo", workspacePath: "D:\\repo", trust: "deny",
+        status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-1",
+    });
+    vi.mocked(prepareImage).mockRejectedValueOnce(new Event("error"));
+    const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+    const image = new File(["image"], "clipboard.png", { type: "image/png" });
+
+    await wrapper.get(".composer-editor").trigger("paste", {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.get(".attachment-error").text()).toBe("Unable to prepare clipboard.png");
+    expect(wrapper.text()).not.toContain("[object Event]");
+  });
+
   it("keeps the combined menu open and replaces efforts after selecting a model", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -573,9 +610,15 @@ describe("ComposerBar", () => {
       };
     }));
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+    vi.spyOn(wrapper.get(".composer").element, "getBoundingClientRect").mockReturnValue(elementRect(100, 500, 820, 108));
+    vi.spyOn(wrapper.get(".model-button").element.parentElement as HTMLElement, "getBoundingClientRect").mockReturnValue(elementRect(300, 570, 180, 32));
 
     await wrapper.get(".model-button").trigger("click");
     await flushPromises();
+    const modelMenu = wrapper.get<HTMLElement>(".model-menu");
+    expect(modelMenu.classes()).toContain("!fixed");
+    expect(modelMenu.element.style.bottom).toBe(`${window.innerHeight - 500 + 8}px`);
+    expect(window.innerHeight - Number.parseFloat(modelMenu.element.style.bottom)).toBeLessThan(500);
     expect(store.refreshConfiguredModels).toHaveBeenCalledOnce();
     expect(wrapper.get(".model-button").text()).toContain("xhigh");
     expect(wrapper.findAll(".thinking-level-grid button").map((button) => button.text())).toContain("xhigh");
@@ -666,9 +709,16 @@ describe("ComposerBar", () => {
     });
     store.setActiveWorkspaceTrust = vi.fn().mockResolvedValue(true);
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+    vi.spyOn(wrapper.get(".composer").element, "getBoundingClientRect").mockReturnValue(elementRect(100, 500, 820, 108));
+    vi.spyOn(wrapper.get(".access-button").element.parentElement as HTMLElement, "getBoundingClientRect").mockReturnValue(elementRect(140, 570, 170, 32));
 
     expect(wrapper.get(".access-button").text()).toContain("Trust project resources");
     await wrapper.get(".access-button").trigger("click");
+    await flushPromises();
+    const accessMenu = wrapper.get<HTMLElement>(".access-menu");
+    expect(accessMenu.classes()).toEqual(expect.arrayContaining(["!fixed", "!overflow-y-auto"]));
+    expect(accessMenu.element.style.bottom).toBe(`${window.innerHeight - 500 + 8}px`);
+    expect(window.innerHeight - Number.parseFloat(accessMenu.element.style.bottom)).toBeLessThan(500);
     expect(wrapper.get(".access-menu").text()).toContain("Applies to every task in this workspace");
     expect(wrapper.get(".access-menu").text()).toContain("Pi's normal tools can still modify the workspace");
     const restricted = wrapper.findAll('.access-menu [role="menuitemradio"]').find((item) => item.text().includes("Ignore project resources"));

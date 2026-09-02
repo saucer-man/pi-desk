@@ -6,6 +6,7 @@ import { gfm } from "@milkdown/preset-gfm";
 import { Milkdown, useEditor } from "@milkdown/vue";
 import { replaceAll } from "@milkdown/utils";
 import { nextTick, onMounted, ref, watch } from "vue";
+import { normalizeMarkdownBreakTags } from "../utils/markdown";
 
 const props = defineProps<{
   modelValue: string;
@@ -44,7 +45,9 @@ const { loading, get } = useEditor((editorRoot) => Editor.make()
         view.updateState(state);
         if (!transaction.docChanged || replacingMarkdown) return;
 
-        const markdown = ctx.get(serializerCtx)(state.doc).replace(/\n$/, "");
+        const serialized = normalizeMarkdownBreakTags(ctx.get(serializerCtx)(state.doc));
+        const trailingNode = state.doc.lastChild?.lastChild;
+        const markdown = trailingNode?.type.name === "hardbreak" ? serialized : serialized.replace(/\n$/, "");
         lastMarkdown = markdown;
         if (markdown !== props.modelValue) emit("update:modelValue", markdown);
       },

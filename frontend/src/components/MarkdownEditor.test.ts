@@ -1,6 +1,9 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { editorViewCtx, type Editor } from "@milkdown/core";
+import { TextSelection } from "@milkdown/prose/state";
 import { describe, expect, it } from "vitest";
 import MarkdownEditor from "./MarkdownEditor.vue";
+import MarkdownEditorCore from "./MarkdownEditorCore.vue";
 
 describe("MarkdownEditor", () => {
   it("uses one editable Markdown surface and syncs its serialized value", async () => {
@@ -28,28 +31,69 @@ describe("MarkdownEditor", () => {
     wrapper.unmount();
   });
 
-  it("continues a list on Enter and emits the new Markdown synchronously", async () => {
+  it("inserts and preserves a Markdown hard break on Shift Enter", async () => {
     const wrapper = mount(MarkdownEditor, {
-      props: { modelValue: "- first", placeholder: "Write", ariaLabel: "Prompt" },
+      props: { modelValue: "first", placeholder: "Write", ariaLabel: "Prompt" },
     });
     await flushPromises();
 
     const editor = wrapper.get<HTMLElement>("[contenteditable='true']");
-    const text = editor.get("li p").element.firstChild;
-    if (!text) throw new Error("list item text was not rendered");
-    editor.element.focus();
-    const range = document.createRange();
-    range.setStart(text, text.textContent?.length ?? 0);
-    range.collapse(true);
-    window.getSelection()?.removeAllRanges();
-    window.getSelection()?.addRange(range);
+    const core = wrapper.findComponent(MarkdownEditorCore);
+    const setup = core.vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const milkdown = setup.setupState.get();
+    milkdown?.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+    });
 
-    await editor.trigger("keydown", { key: "Enter", code: "Enter" });
+    await editor.trigger("keydown", { key: "Enter", code: "Enter", shiftKey: true });
 
-    expect(editor.findAll("li")).toHaveLength(2);
+    expect(editor.find("br").exists()).toBe(true);
     const emitted = String(wrapper.emitted("update:modelValue")?.at(-1)?.[0]);
-    expect(emitted).toContain("first");
-    expect(emitted.match(/^\* /gm)).toHaveLength(2);
+    expect(emitted).toBe("first\n");
+    wrapper.unmount();
+  });
+
+  it("serializes consecutive Shift Enter line breaks as Markdown text", async () => {
+    const wrapper = mount(MarkdownEditor, {
+      props: { modelValue: "first", placeholder: "Write", ariaLabel: "Prompt" },
+    });
+    await flushPromises();
+
+    const editor = wrapper.get<HTMLElement>("[contenteditable='true']");
+    const core = wrapper.findComponent(MarkdownEditorCore);
+    const setup = core.vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const milkdown = setup.setupState.get();
+    const view = milkdown?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("Milkdown editor did not start");
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+
+    await editor.trigger("keydown", { key: "Enter", code: "Enter", shiftKey: true });
+    await editor.trigger("keydown", { key: "Enter", code: "Enter", shiftKey: true });
+    view.dispatch(view.state.tr.insertText("second"));
+
+    const emitted = String(wrapper.emitted("update:modelValue")?.at(-1)?.[0]);
+    expect(emitted).toBe("first\n\nsecond");
+    expect(emitted).not.toMatch(/<\/?br\s*\/?>/i);
+    wrapper.unmount();
+  });
+
+  it("normalizes browser break tags before updating the draft", async () => {
+    const wrapper = mount(MarkdownEditor, {
+      props: { modelValue: "first</br>second", placeholder: "Write", ariaLabel: "Prompt" },
+    });
+    await flushPromises();
+
+    const core = wrapper.findComponent(MarkdownEditorCore);
+    const setup = core.vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const milkdown = setup.setupState.get();
+    const view = milkdown?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("Milkdown editor did not start");
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)).insertText("!"));
+
+    const emitted = String(wrapper.emitted("update:modelValue")?.at(-1)?.[0]);
+    expect(emitted).toBe("first\nsecond!");
+    expect(emitted).not.toContain("</br>");
     wrapper.unmount();
   });
 

@@ -4,6 +4,7 @@ import MarkdownIt from "markdown-it";
 import { computed, ref } from "vue";
 import { useAppStore } from "../stores/app";
 import { resolveWorkspaceFileLink, type WorkspaceFileLink } from "../utils/fileLinks";
+import { normalizeMarkdownBreakTags } from "../utils/markdown";
 import FileLinkContextMenu from "./FileLinkContextMenu.vue";
 
 const props = defineProps<{
@@ -85,7 +86,7 @@ function highlightRenderedHtml(html: string, query: string, active: boolean): st
 
 const rendered = computed(() => {
   if (!renderMarkdown.value) return "";
-  const html = markdown.render(props.text, { workspacePath: workspacePath.value });
+  const html = markdown.render(normalizeMarkdownBreakTags(props.text), { workspacePath: workspacePath.value });
   return highlightRenderedHtml(html, props.searchQuery ?? "", props.searchActive ?? false);
 });
 

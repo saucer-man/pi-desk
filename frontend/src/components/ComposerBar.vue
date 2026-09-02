@@ -16,12 +16,15 @@ const appStore = useAppStore();
 const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void }>();
 const commandMenu = ref<HTMLElement>();
 const commandButton = ref<HTMLElement>();
+const composer = ref<HTMLElement>();
 const modelMenu = ref<HTMLElement>();
 const modelMenuOpen = ref(false);
 const modelChanging = ref(false);
 const modelCatalogRefreshing = ref(false);
 const accessMenuOpen = ref(false);
 const accessMenu = ref<HTMLElement>();
+const modelMenuStyle = ref<Record<string, string>>({});
+const accessMenuStyle = ref<Record<string, string>>({});
 const commandIndex = ref(0);
 const commandButtonOpen = ref(false);
 const commandRefreshing = ref(false);
@@ -190,7 +193,7 @@ async function prepareImageFiles(source: FileList | File[], existing: PreparedIm
       encodedChars += image.data.length;
       prepared.push(image);
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      setError(error instanceof Error && error.message ? error.message : `Unable to prepare ${file.name || "image"}`);
     }
   }
   return prepared;
@@ -271,10 +274,10 @@ function onKeydown(event: KeyboardEvent) {
       return;
     }
   }
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+  if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     event.stopPropagation();
-    submit();
+    if (!event.repeat) submit();
   }
 }
 
@@ -423,12 +426,38 @@ function exactTokens(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? Math.round(value).toLocaleString() : "—";
 }
 
+function floatingMenuStyle(anchor: HTMLElement | undefined, preferredWidth: number): Record<string, string> {
+  const composerRect = composer.value?.getBoundingClientRect();
+  const anchorRect = anchor?.getBoundingClientRect();
+  if (!composerRect || !anchorRect) return {};
+  const viewportGap = 16;
+  const menuGap = 8;
+  const width = Math.min(preferredWidth, window.innerWidth - viewportGap * 2);
+  const left = Math.min(
+    Math.max(viewportGap, anchorRect.left),
+    window.innerWidth - width - viewportGap,
+  );
+  return {
+    left: `${left}px`,
+    bottom: `${window.innerHeight - composerRect.top + menuGap}px`,
+    width: `${width}px`,
+    maxHeight: `${Math.max(80, composerRect.top - viewportGap - menuGap)}px`,
+  };
+}
+
+function positionOpenMenus() {
+  if (modelMenuOpen.value) modelMenuStyle.value = floatingMenuStyle(modelMenu.value, 270);
+  if (accessMenuOpen.value) accessMenuStyle.value = floatingMenuStyle(accessMenu.value, 390);
+}
+
 async function toggleModelMenu() {
   if (modelMenuOpen.value) {
     modelMenuOpen.value = false;
     return;
   }
   modelMenuOpen.value = true;
+  await nextTick();
+  positionOpenMenus();
   modelCatalogRefreshing.value = true;
   try {
     await appStore.refreshConfiguredModels();
@@ -448,6 +477,7 @@ async function chooseModel(model: PiModel) {
 
 function toggleAccessMenu() {
   accessMenuOpen.value = !accessMenuOpen.value;
+  if (accessMenuOpen.value) void nextTick(positionOpenMenus);
 }
 
 function chooseAccess(trust: "approve" | "deny") {
@@ -467,8 +497,14 @@ function closeMenus(event: PointerEvent) {
   if (!commandMenu.value?.contains(target) && !commandButton.value?.contains(target)) commandButtonOpen.value = false;
 }
 
-onMounted(() => document.addEventListener("pointerdown", closeMenus));
-onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
+onMounted(() => {
+  document.addEventListener("pointerdown", closeMenus);
+  window.addEventListener("resize", positionOpenMenus);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", closeMenus);
+  window.removeEventListener("resize", positionOpenMenus);
+});
 </script>
 
 <template>
@@ -523,6 +559,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
       </div>
     </div>
     <div
+      ref="composer"
       class="composer"
       :class="[ui.panel, { 'has-draft': draft.trim().length > 0 || appStore.activeAttachments.length > 0, 'drag-active': dragActive }]"
       @dragenter.prevent="dragActive = true"
@@ -600,7 +637,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
               <span>{{ modelButtonLabel }}</span>
               <ChevronDown :size="13" />
             </button>
-            <div v-if="modelMenuOpen" class="model-menu" :class="ui.menuSurface" role="menu" @pointerdown.stop>
+            <div v-if="modelMenuOpen" class="model-menu !fixed" :class="ui.menuSurface" :style="modelMenuStyle" role="menu" @pointerdown.stop>
               <div class="menu-section-label">
                 {{ tr("composer.model") }}
                 <LoaderCircle v-if="modelCatalogRefreshing" :size="11" class="is-spinning" />
@@ -656,7 +693,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
               <span>{{ appStore.activeThread?.trust === "approve" ? tr("composer.fullAccess") : tr("composer.restrictedAccess") }}</span>
               <ChevronDown :size="12" />
             </button>
-            <div v-if="accessMenuOpen" class="access-menu" :class="ui.menuSurface" role="menu" :aria-label="tr('composer.accessMode')">
+            <div v-if="accessMenuOpen" class="access-menu !fixed !overflow-y-auto" :class="ui.menuSurface" :style="accessMenuStyle" role="menu" :aria-label="tr('composer.accessMode')">
               <div class="access-menu-heading">
                 <strong>{{ tr("composer.accessMode") }}</strong>
                 <small>{{ tr("composer.accessScope") }}</small>
