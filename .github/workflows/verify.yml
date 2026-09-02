@@ -36,10 +36,23 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
 
       - name: Build Windows desktop executable
         run: wails3 build
+
+      - name: Smoke test packaged Windows application
+        shell: pwsh
+        run: ./test/smoke/windows-app.ps1
+
+      - name: Upload Windows smoke screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-screenshot
+          path: bin/pi-desk-smoke.png
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Archive Windows executable
         shell: pwsh
@@ -78,7 +91,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
 
       - name: Build macOS application bundle
         run: wails3 task darwin:package
@@ -104,7 +117,7 @@ jobs:
       - name: Install Linux desktop dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libgtk-4-dev libwebkitgtk-6.0-dev
+          sudo apt-get install --no-install-recommends -y gcc libgtk-4-dev libwebkitgtk-6.0-dev
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -144,7 +157,7 @@ jobs:
           go test ./internal/remotessh -run '^$' -fuzz '^FuzzParseHostKeyEvidence$' -fuzztime=10s
 
       - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
 
       - name: Build Linux desktop executable
         run: wails3 build
@@ -160,9 +173,35 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  ssh-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gcc libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      - name: Run isolated SSH acceptance matrix
+        run: sh test/sshfixture/verify.sh
+
   release:
     if: github.ref_type == 'tag'
-    needs: [windows, macos, linux]
+    needs: [windows, macos, linux, ssh-live]
     runs-on: ubuntu-latest
     permissions:
       contents: write

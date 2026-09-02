@@ -159,7 +159,7 @@ describe("app store", () => {
     mocks.getBootstrapState.mockResolvedValue({
       productName: "Pi Desk",
       appVersion: "0.1.0",
-      wailsVersion: "v3.0.0-beta.6",
+      wailsVersion: "v3.0.0-beta.16",
       workingDirectory: "D:\\work\\repo",
       runtime: { state: "checking", message: "Pi runtime check is pending" },
     });
@@ -311,7 +311,7 @@ describe("app store", () => {
   it("does not replace a live runtime with a stale failed probe", async () => {
     const store = useAppStore();
     store.bootstrap = {
-      productName: "Pi Desk", appVersion: "0.1.0", wailsVersion: "v3.0.0-beta.6",
+      productName: "Pi Desk", appVersion: "0.1.0", wailsVersion: "v3.0.0-beta.16",
       workingDirectory: "D:\\work\\repo", runtime: { state: RuntimeState.RuntimeReady, version: "0.83.0", command: "pi.cmd" },
       window: { x: 0, y: 0, width: 0, height: 0, maximized: false, valid: false },
     };

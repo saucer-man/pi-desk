@@ -35,3 +35,15 @@ go vet ./...
 ```
 
 涉及 Wails 启动或打包时再运行 `wails3 build`。
+
+真实运行验收使用以下显式任务：
+
+```powershell
+# 构建后启动 Windows EXE，捕获实际窗口并拒绝黑屏/空白渲染
+wails3 task verify:windows-smoke
+
+# 使用本机已安装的 Pi CLI 验证 RPC、runtime、terminal 和 session
+wails3 task verify:pi-live
+```
+
+Linux/macOS 且 Docker 可用时，运行 `wails3 task verify:ssh-live`。该任务会创建隔离密钥、`known_hosts`、SSH 配置和容器拓扑，覆盖认证拒绝、ProxyJump、helper 安装、只读目录、断线、lease/generation 撤销与 `outcome-unknown`。CI 会强制执行 SSH live matrix；Windows CI 会在打包后执行真实窗口渲染验收并保留失败截图。

@@ -24,7 +24,7 @@ describe("AboutDialog", () => {
       bootstrap: {
         productName: "Pi Desk",
         appVersion: "0.1.0",
-        wailsVersion: "v3.0.0-beta.6",
+        wailsVersion: "v3.0.0-beta.16",
         workingDirectory: "D:\\repo",
         runtime: { state: RuntimeState.RuntimeReady, version: "0.83.0", command: "pi.cmd" },
         window: { x: 0, y: 0, width: 1000, height: 700, maximized: false, valid: true },
@@ -36,7 +36,7 @@ describe("AboutDialog", () => {
     expect(wrapper.text()).toContain("A desktop interface for Pi");
     expect(wrapper.text()).toContain("0.1.0");
     expect(wrapper.text()).toContain("0.83.0");
-    expect(wrapper.text()).toContain("v3.0.0-beta.6");
+    expect(wrapper.text()).toContain("v3.0.0-beta.16");
 
     await wrapper.get("button[autofocus]").trigger("click");
     expect(store.aboutOpen).toBe(false);

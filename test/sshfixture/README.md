@@ -5,6 +5,8 @@ helper cache, and workspace separate from real SSH targets.
 
 ## Prerequisites
 
+- Automated Linux/macOS runs require the repository Go toolchain, Node.js 22
+  with npm, OpenSSH client tools, and a running Docker daemon.
 - WSL2 Ubuntu 24.04 with a running Docker daemon.
 - Docker access through root (`wsl.exe -d Ubuntu-24.04 -u root -- ...`) or a
   user in the WSL `docker` group.
@@ -57,6 +59,16 @@ three `pi-desk-ssh-*` volumes explicitly only when resetting host identity,
 cache, and workspace is intended.
 
 ## Live tests
+
+Linux/macOS 或 CI 中可直接运行完整隔离验收：
+
+```sh
+sh test/sshfixture/verify.sh
+```
+
+脚本会生成一次性密钥、`HOME`、OpenSSH 配置和 `known_hosts`，启动并最终清理容器，构建对应 remote helper，并在一次性 npm 目录安装兼容的真实 Pi CLI，然后执行 SSH、Repository/Terminal、RemoteWorkspaceService 和 remote Pi lifecycle 的 live tests。无需接触用户真实 SSH/Pi 配置或凭据，也不会修改全局 npm 安装。
+
+以下手动步骤保留给 Windows/WSL 故障注入调试。
 
 Create an isolated OpenSSH config containing:
 

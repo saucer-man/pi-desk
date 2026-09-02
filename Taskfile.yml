@@ -37,6 +37,38 @@ tasks:
     cmds:
       - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
 
+  verify:pi-live:
+    summary: Runs live tests against the installed Pi CLI and local runtime
+    env:
+      PI_DESK_LIVE_TEST: "1"
+    preconditions:
+      - sh: pi --version
+        msg: "Pi CLI is required for live verification"
+    cmds:
+      - go test ./internal/piruntime -run '^(TestExecStarterWithInstalledPi|TestInstalledPiSessionCommands)$' -count=1 -v
+      - go test ./internal/remotessh -run '^(TestDiscoverInstalledSSHConfig|TestLocatorWithInstalledOpenSSH|TestLocatorWithPathOpenSSH)$' -count=1 -v
+      - go test ./internal/terminal -run '^TestManagerRunsInstalledInteractiveShell$' -count=1 -v
+      - go test ./internal/sessionindex -run '^TestLivePiSessionIndex$' -count=1 -v
+
+  verify:ssh-live:
+    summary: Runs the isolated Docker SSH/helper/lease acceptance matrix
+    platforms: [linux, darwin]
+    preconditions:
+      - sh: docker info >/dev/null 2>&1
+        msg: "Docker is required for SSH live verification"
+      - sh: npm --version >/dev/null 2>&1
+        msg: "Node.js and npm are required for the isolated Pi runtime"
+      - sh: ssh -V >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1 && command -v ssh-keyscan >/dev/null 2>&1
+        msg: "OpenSSH client tools are required for SSH live verification"
+    cmds:
+      - sh test/sshfixture/verify.sh
+
+  verify:windows-smoke:
+    summary: Starts the packaged Windows app and rejects a missing or blank window
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File test/smoke/windows-app.ps1
+
   setup:docker:
     summary: Builds Docker image for cross-compilation (~1GB image)
     cmds:
