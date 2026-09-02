@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { ArrowDownToLine, ArrowUp, ArrowUpFromLine, BrainCircuit, Check, ChevronDown, CornerDownRight, Database, File, Forward, Gauge, ImagePlus, LoaderCircle, Pencil, ShieldAlert, ShieldCheck, Slash, SlidersHorizontal, Square, Trash2, X } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore, type PiModel, type SettingsSection, type SlashCommand } from "../stores/app";
@@ -471,9 +472,9 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
 </script>
 
 <template>
-  <div class="composer-wrap">
-    <div v-for="widget in widgetsAbove" :key="widget.key" class="extension-widget" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
-    <div v-if="appStore.activeRetry" class="retry-banner" role="status">
+  <div class="composer-wrap" :class="ui.root">
+    <div v-for="widget in widgetsAbove" :key="widget.key" class="extension-widget" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
+    <div v-if="appStore.activeRetry" class="retry-banner" :class="ui.status" role="status">
       <LoaderCircle :size="14" class="is-spinning" />
       <span>Retry {{ appStore.activeRetry.attempt }} of {{ appStore.activeRetry.maxAttempts }}</span>
       <small v-if="appStore.activeRetry.errorMessage">{{ appStore.activeRetry.errorMessage }}</small>
@@ -481,9 +482,9 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
     </div>
     <div class="composer-input-stack" :class="{ 'has-todo': Boolean(piDeskTodo), 'has-queue': queuedMessages.length > 0 }">
       <PiDeskTodoPanel v-if="piDeskTodo" :key="piDeskTodoKey" :todo="piDeskTodo" />
-      <div v-if="queuedMessages.length" class="queue-panel composer-stack-panel" aria-live="polite">
+      <div v-if="queuedMessages.length" class="queue-panel composer-stack-panel" :class="ui.panel" aria-live="polite">
       <div class="queue-list">
-        <div v-for="item in queuedMessages" :key="item.id" class="queue-row">
+        <div v-for="item in queuedMessages" :key="item.id" class="queue-row" :class="ui.listItem">
           <CornerDownRight :size="15" />
           <div
             v-if="editingPromptId === item.id"
@@ -498,7 +499,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
               </div>
             </div>
             <div class="queue-editor-controls">
-              <input v-model="editingPromptText" :aria-label="tr('composer.editQueued')" @paste="onQueueEditPaste" @keydown.enter.prevent="saveQueueEdit(item.id)" @keydown.esc="cancelQueueEdit" />
+              <input :class="ui.input" v-model="editingPromptText" :aria-label="tr('composer.editQueued')" @paste="onQueueEditPaste" @keydown.enter.prevent="saveQueueEdit(item.id)" @keydown.esc="cancelQueueEdit" />
               <input class="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple tabindex="-1" @change="onQueueImageInput" />
               <button type="button" :title="tr('composer.addQueuedImages')" :disabled="editingPromptProcessing || editingPromptImages.length >= MAX_ATTACHED_IMAGES" @click="openQueueImagePicker"><ImagePlus :size="15" /></button>
               <button type="button" :title="tr('composer.sendQueuedToEditor')" :disabled="editingPromptProcessing || (!editingPromptText.trim() && editingPromptImages.length === 0)" @click="void moveQueueEditToComposer(item.id)"><ArrowDownToLine :size="15" /></button>
@@ -523,7 +524,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
     </div>
     <div
       class="composer"
-      :class="{ 'has-draft': draft.trim().length > 0 || appStore.activeAttachments.length > 0, 'drag-active': dragActive }"
+      :class="[ui.panel, { 'has-draft': draft.trim().length > 0 || appStore.activeAttachments.length > 0, 'drag-active': dragActive }]"
       @dragenter.prevent="dragActive = true"
       @dragover.prevent="dragActive = true"
       @dragleave.self="dragActive = false"
@@ -546,7 +547,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
           :ariaLabel="tr('composer.promptLabel')"
         />
       </div>
-      <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu" role="listbox" :aria-label="tr('composer.commands')">
+      <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu" :class="ui.menuSurface" role="listbox" :aria-label="tr('composer.commands')">
         <button
           v-for="(command, index) in matchingCommands"
           :key="`${command.source}:${command.name}`"
@@ -561,7 +562,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
           <span><small>{{ commandSourceLabel(command.source) }}</small>{{ command.description || command.source }}</span>
         </button>
       </div>
-      <div v-if="mentionMenuOpen" class="completion-menu file-completion-menu" role="listbox" :aria-label="tr('composer.files')">
+      <div v-if="mentionMenuOpen" class="completion-menu file-completion-menu" :class="ui.menuSurface" role="listbox" :aria-label="tr('composer.files')">
         <button
           v-for="(file, index) in matchingFiles"
           :key="file.path"
@@ -599,7 +600,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
               <span>{{ modelButtonLabel }}</span>
               <ChevronDown :size="13" />
             </button>
-            <div v-if="modelMenuOpen" class="model-menu" role="menu" @pointerdown.stop>
+            <div v-if="modelMenuOpen" class="model-menu" :class="ui.menuSurface" role="menu" @pointerdown.stop>
               <div class="menu-section-label">
                 {{ tr("composer.model") }}
                 <LoaderCircle v-if="modelCatalogRefreshing" :size="11" class="is-spinning" />
@@ -655,7 +656,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
               <span>{{ appStore.activeThread?.trust === "approve" ? tr("composer.fullAccess") : tr("composer.restrictedAccess") }}</span>
               <ChevronDown :size="12" />
             </button>
-            <div v-if="accessMenuOpen" class="access-menu" role="menu" :aria-label="tr('composer.accessMode')">
+            <div v-if="accessMenuOpen" class="access-menu" :class="ui.menuSurface" role="menu" :aria-label="tr('composer.accessMode')">
               <div class="access-menu-heading">
                 <strong>{{ tr("composer.accessMode") }}</strong>
                 <small>{{ tr("composer.accessScope") }}</small>
@@ -738,7 +739,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closeMenus));
     <div v-if="appStore.activeExtensionStatuses.length" class="extension-status-list" aria-live="polite">
       <span v-for="status in appStore.activeExtensionStatuses" :key="status.key" :title="status.key">{{ status.text }}</span>
     </div>
-    <div v-for="widget in widgetsBelow" :key="widget.key" class="extension-widget" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
+    <div v-for="widget in widgetsBelow" :key="widget.key" class="extension-widget" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
     <ImagePreviewDialog v-if="previewImage" :image="previewImage" @close="previewImage = undefined" />
   </div>
 </template>

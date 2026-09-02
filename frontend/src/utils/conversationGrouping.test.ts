@@ -19,6 +19,29 @@ describe("groupConversationTurns", () => {
     expect(grouped[1].executionSteps?.map((step) => step.kind)).toEqual(["thinking", "tools", "thinking"]);
   });
 
+  it("marks only the currently streaming reasoning step active", () => {
+    const grouped = groupConversationTurns([
+      message({ id: "user", role: "user", text: "Inspect", timestampMs: 1000 }),
+      message({ id: "thinking", role: "assistant", thinking: "Reading", streaming: true, activeExecution: "thinking" }),
+    ]);
+
+    expect(grouped[1].executionSteps).toEqual([{
+      id: "thinking-thinking", kind: "thinking", text: "Reading", active: true,
+    }]);
+  });
+
+  it("drops a recovered retry that produced no standalone content", () => {
+    const grouped = groupConversationTurns([
+      message({ id: "user", role: "user", text: "Retry", timestampMs: 1000 }),
+      message({
+        id: "recovered", role: "assistant", error: "Rate exceeded",
+        runNotice: { status: "recovered", error: "Rate exceeded" },
+      }),
+    ]);
+
+    expect(grouped.map((item) => item.id)).toEqual(["user"]);
+  });
+
   it("keeps compaction markers in place and separates assistant runs", () => {
     const grouped = groupConversationTurns([
       message({ id: "user", role: "user", timestampMs: 1000 }),
@@ -34,25 +57,20 @@ describe("groupConversationTurns", () => {
     expect(grouped[2].compaction).toEqual({ summary: "Condensed context", tokensBefore: 120000 });
   });
 
-  it("keeps a recovered provider failure before the later successful response", () => {
+  it("removes a recovered provider failure from the rendered conversation", () => {
     const grouped = groupConversationTurns([
       message({ id: "user", role: "user", text: "Upload it", timestampMs: 1000 }),
       message({ id: "failed", role: "assistant", error: "OpenAI API error (520)", timestampMs: 2000 }),
       message({ id: "success", role: "assistant", text: "Upload complete", timestampMs: 4000 }),
     ]);
 
-    expect(grouped).toHaveLength(3);
-    expect(grouped[1]).toMatchObject({
-      id: "failed",
-      error: "OpenAI API error (520)",
-      runNotice: { status: "recovered", error: "OpenAI API error (520)" },
-    });
-    expect(grouped[2]).toMatchObject({ id: "success", text: "Upload complete" });
-    expect(grouped[2].runNotice).toBeUndefined();
-    expect(grouped[2].error).toBeUndefined();
+    expect(grouped).toHaveLength(2);
+    expect(grouped[1]).toMatchObject({ id: "success", text: "Upload complete" });
+    expect(grouped[1].runNotice).toBeUndefined();
+    expect(grouped[1].error).toBeUndefined();
   });
 
-  it("keeps consecutive failed attempts in order before the recovered response", () => {
+  it("removes consecutive failed attempts after the response recovers", () => {
     const grouped = groupConversationTurns([
       message({ id: "user", role: "user", text: "Upload it", timestampMs: 1000 }),
       message({ id: "failed-1", role: "assistant", error: "Request timed out.", timestampMs: 2000 }),
@@ -60,10 +78,8 @@ describe("groupConversationTurns", () => {
       message({ id: "success", role: "assistant", text: "Upload complete", timestampMs: 4000 }),
     ]);
 
-    expect(grouped.map((item) => item.id)).toEqual(["user", "failed-1", "failed-2", "success"]);
-    expect(grouped[1].runNotice).toEqual({ status: "retried", error: "Request timed out." });
-    expect(grouped[2].runNotice).toEqual({ status: "recovered", error: "OpenAI API error (520)" });
-    expect(grouped[3].runNotice).toBeUndefined();
+    expect(grouped.map((item) => item.id)).toEqual(["user", "success"]);
+    expect(grouped[1].runNotice).toBeUndefined();
   });
 
   it("keeps the latest unresolved provider failure at the bottom of the assistant run", () => {

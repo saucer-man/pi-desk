@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { CheckCircle2, Copy, FilePlus2, RefreshCw, Save, ScrollText, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref } from "vue";
 import { SkillScope, type ManagedSkillSummary } from "../../bindings/pi-desk/internal/domain";
@@ -199,58 +200,58 @@ onMounted(() => { void loadSkills(); });
 </script>
 
 <template>
-  <div class="settings-content skill-config-content">
-    <div class="settings-content-header prompt-config-header">
+  <div class="settings-content skill-config-content" :class="ui.settingsContent">
+    <div class="settings-content-header prompt-config-header" :class="ui.settingsHeader">
       <div>
         <h3>{{ tr("settings.skillManagement") }}</h3>
         <button v-if="snapshot?.globalDirectory" class="model-config-path" type="button" :title="(snapshot?.globalDirectories ?? []).join('\n')" @click="void copyDirectory()"><ScrollText :size="12" /><span>{{ (snapshot?.globalDirectories ?? [snapshot?.globalDirectory]).join(' + ') }}</span><Copy :size="12" /></button>
       </div>
       <div class="settings-actions">
-        <button class="icon-button" type="button" :title="tr('common.refresh')" :disabled="loading || saving" @click="void loadSkills()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-        <button class="text-button" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" />{{ tr("settings.addSkill") }}</button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading || saving" @click="void loadSkills()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
+        <button class="text-button" :class="ui.button" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" />{{ tr("settings.addSkill") }}</button>
       </div>
     </div>
     <p v-if="copied" class="setting-status">{{ tr("settings.copied") }}</p>
-    <div v-if="loading" class="settings-empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingSkills") }}</span></div>
-    <div v-else-if="loadError" class="settings-empty is-error"><XCircle :size="18" /><span>{{ loadError }}</span></div>
-    <div v-else class="prompt-manager-layout">
-      <aside class="prompt-config-list" :aria-label="tr('settings.skills')">
-        <button class="model-config-add-row" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" /><span>{{ tr("settings.addSkill") }}</span></button>
-        <section class="prompt-config-scope">
+    <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingSkills") }}</span></div>
+    <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
+    <div v-else class="prompt-manager-layout" :class="ui.managerLayout">
+      <aside class="prompt-config-list" :class="ui.managerList" :aria-label="tr('settings.skills')">
+        <button class="model-config-add-row" :class="ui.listItem" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" /><span>{{ tr("settings.addSkill") }}</span></button>
+        <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.globalSkills") }}</strong><span>{{ globalSkills.length }}</span></header>
           <button v-for="skill in globalSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span><CheckCircle2 v-if="selectedKey === keyOf(skill)" :size="13" /></button>
         </section>
-        <section class="prompt-config-scope">
+        <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.projectSkills") }}</strong><span>{{ projectSkills.length }}</span></header>
           <p v-if="!snapshot?.projectEnabled" class="settings-inline-note">{{ snapshot?.projectNotice || tr("settings.projectSkillsUnavailable") }}</p>
           <button v-for="skill in projectSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span><CheckCircle2 v-if="selectedKey === keyOf(skill)" :size="13" /></button>
         </section>
-        <section class="prompt-config-scope runtime-resource-scope">
+        <section class="prompt-config-scope runtime-resource-scope" :class="ui.group">
           <header><strong>{{ tr("settings.runtimeLoadedReadonly") }}</strong><span>{{ runtimeSkills.length }}</span></header>
-          <div v-for="skill in runtimeSkills" :key="`${skill.name}-${skill.path}`" class="runtime-resource-item" :title="skill.path">
+          <div v-for="skill in runtimeSkills" :key="`${skill.name}-${skill.path}`" class="runtime-resource-item" :class="ui.listItem" :title="skill.path">
             <span><strong>/{{ skill.name }}</strong><small>{{ skill.description || skill.path || tr("settings.skillNoDescription") }}</small></span>
           </div>
           <p v-if="!appStore.activeThread?.started" class="prompt-config-notice">{{ tr("settings.startForRuntimeResources") }}</p>
         </section>
       </aside>
-      <form v-if="isExisting" class="prompt-editor" @submit.prevent="void saveSkill()">
+      <form v-if="isExisting" class="prompt-editor" :class="ui.managerEditor" @submit.prevent="void saveSkill()">
         <div class="model-editor-title"><div><strong>{{ editor.name }}</strong><small>{{ (snapshot?.skills ?? []).find((skill) => keyOf(skill) === selectedKey)?.rootDirectory }}</small></div><span v-if="dirty" class="model-dirty">{{ tr("settings.unsaved") }}</span></div>
         <p class="skill-directory"><strong>{{ tr("settings.skillDirectory") }}</strong><code>{{ editor.relativePath }}</code></p>
-        <label class="model-field"><span>{{ tr("settings.skillContent") }}</span><textarea v-model="editor.content" spellcheck="false" /><small>{{ tr("settings.skillContentHelp") }}</small></label>
+        <label class="model-field" :class="ui.field"><span>{{ tr("settings.skillContent") }}</span><textarea :class="ui.textarea" v-model="editor.content" spellcheck="false" /><small>{{ tr("settings.skillContentHelp") }}</small></label>
         <p v-if="formError" class="form-error">{{ formError }}</p>
         <p v-if="notice" class="setting-status">{{ notice }}</p>
-        <footer class="model-editor-footer"><button class="text-button danger" type="button" :disabled="saving" @click="void deleteSkill()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteSkill") : tr("settings.deleteSkill") }}</button><span /><button class="text-button primary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingSkill") : tr("settings.saveSkill") }}</button></footer>
+        <footer class="model-editor-footer"><button class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteSkill()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteSkill") : tr("settings.deleteSkill") }}</button><span /><button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingSkill") : tr("settings.saveSkill") }}</button></footer>
       </form>
-      <div v-else class="settings-empty"><ScrollText :size="18" /><span>{{ tr("settings.noManagedSkills") }}</span></div>
+      <div v-else class="settings-empty" :class="ui.empty"><ScrollText :size="18" /><span>{{ tr("settings.noManagedSkills") }}</span></div>
     </div>
-    <div v-if="createDialog" class="resource-create-backdrop" @mousedown.self="createDialog = false">
-      <form class="resource-create-dialog" @submit.prevent="void createSkill()">
-        <header><strong>{{ tr("settings.newSkill") }}</strong><button class="icon-button" type="button" :title="tr('common.close')" @click="createDialog = false"><XCircle :size="15" /></button></header>
-        <label class="model-field"><span>{{ tr("settings.skillScope") }}</span><select v-model="createForm.scope"><option :value="SkillScope.SkillScopeGlobal">{{ tr("settings.globalSkills") }}</option><option :value="SkillScope.SkillScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectSkills") }}</option></select></label>
-        <label class="model-field"><span>{{ tr("settings.skillName") }}</span><input v-model="createForm.name" spellcheck="false" placeholder="code-review" /><small>{{ tr("settings.skillNameHelp") }}</small></label>
-        <label class="model-field"><span>{{ tr("settings.skillDescription") }}</span><textarea v-model="createForm.description" /><small>{{ tr("settings.skillDescriptionHelp") }}</small></label>
+    <div v-if="createDialog" class="resource-create-backdrop" :class="ui.dialogBackdrop" @mousedown.self="createDialog = false">
+      <form class="resource-create-dialog" :class="[ui.panel, 'grid w-[min(560px,calc(100%_-_32px))] gap-4 p-5 max-[520px]:h-dvh max-[520px]:w-full max-[520px]:overflow-y-auto max-[520px]:rounded-none']" @submit.prevent="void createSkill()">
+        <header :class="ui.dialogHeader"><strong>{{ tr("settings.newSkill") }}</strong><button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" @click="createDialog = false"><XCircle :size="15" /></button></header>
+        <label class="model-field" :class="ui.field"><span>{{ tr("settings.skillScope") }}</span><select :class="ui.select" v-model="createForm.scope"><option :value="SkillScope.SkillScopeGlobal">{{ tr("settings.globalSkills") }}</option><option :value="SkillScope.SkillScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectSkills") }}</option></select></label>
+        <label class="model-field" :class="ui.field"><span>{{ tr("settings.skillName") }}</span><input :class="ui.input" v-model="createForm.name" spellcheck="false" placeholder="code-review" /><small>{{ tr("settings.skillNameHelp") }}</small></label>
+        <label class="model-field" :class="ui.field"><span>{{ tr("settings.skillDescription") }}</span><textarea :class="ui.textarea" v-model="createForm.description" /><small>{{ tr("settings.skillDescriptionHelp") }}</small></label>
         <p v-if="createError" class="form-error">{{ createError }}</p>
-        <footer><button class="text-button" type="button" :disabled="creating" @click="createDialog = false">{{ tr("common.cancel") }}</button><button class="text-button primary" type="submit" :disabled="creating"><FilePlus2 :size="14" />{{ creating ? tr("settings.creatingSkill") : tr("settings.createSkill") }}</button></footer>
+        <footer :class="ui.dialogFooter"><button class="text-button" :class="ui.button" type="button" :disabled="creating" @click="createDialog = false">{{ tr("common.cancel") }}</button><button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="creating"><FilePlus2 :size="14" />{{ creating ? tr("settings.creatingSkill") : tr("settings.createSkill") }}</button></footer>
       </form>
     </div>
   </div>

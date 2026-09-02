@@ -31,6 +31,16 @@ describe("ToolCallPanel", () => {
     expect(wrapper.text()).toContain("Truncated in view");
   });
 
+  it("expands while running and collapses when the call finishes", async () => {
+    const wrapper = mount(ToolCallPanel, {
+      props: { tool: { id: "tool-live", name: "read", output: "partial", status: "running" } },
+    });
+
+    expect(wrapper.get("details").attributes("open")).toBeDefined();
+    await wrapper.setProps({ tool: { id: "tool-live", name: "read", output: "done", status: "complete" } });
+    expect(wrapper.get("details").attributes("open")).toBeUndefined();
+  });
+
   it("contains clipboard permission failures", async () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

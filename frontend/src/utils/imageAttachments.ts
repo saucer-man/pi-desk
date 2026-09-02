@@ -1,5 +1,3 @@
-import imageCompression from "browser-image-compression";
-
 export const MAX_ATTACHED_IMAGES = 10;
 export const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_BASE64_CHARS = 6 * 1024 * 1024;
@@ -39,7 +37,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
 
   const processed = file.type === "image/gif"
     ? file
-    : await imageCompression(file, {
+    : await (await import("browser-image-compression")).default(file, {
         maxSizeMB: 4,
         maxWidthOrHeight: 2000,
         initialQuality: 0.86,

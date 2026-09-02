@@ -110,6 +110,7 @@ export interface ExecutionStep {
   kind: "thinking" | "tools" | "message";
   text?: string;
   tools?: ToolExecution[];
+  active?: boolean;
 }
 
 export interface TimelineCompaction {
@@ -137,6 +138,7 @@ export interface TimelineMessage {
   durationMs?: number;
   thinkingCount?: number;
   executionSteps?: ExecutionStep[];
+  activeExecution?: "thinking" | "tool" | "text";
   streaming: boolean;
   error?: string;
   delivery?: StreamingBehavior;
@@ -2802,7 +2804,10 @@ export const useAppStore = defineStore("app", {
           const text = contentText(message.content);
           const thinking = contentThinking(message.content);
           this.activeAssistantByThread[thread.id] = id;
-          messages.push({ id, role: "assistant", text, thinking, timestamp: nowLabel(), timestampMs: Date.now(), streaming: true, tools: [] });
+          messages.push({
+            id, role: "assistant", text, thinking, timestamp: nowLabel(), timestampMs: Date.now(), streaming: true, tools: [],
+            activeExecution: thinking ? "thinking" : text ? "text" : undefined,
+          });
           if (text || thinking) this.waitingForOutputByThread[thread.id] = false;
           break;
         }
@@ -2812,10 +2817,12 @@ export const useAppStore = defineStore("app", {
           if (!update || !assistant) break;
           if (update.type === "text_delta" && typeof update.delta === "string") {
             assistant.text += update.delta;
+            assistant.activeExecution = "text";
             if (update.delta) this.waitingForOutputByThread[thread.id] = false;
           }
           if (update.type === "thinking_delta" && typeof update.delta === "string") {
             assistant.thinking += update.delta;
+            assistant.activeExecution = "thinking";
             if (update.delta) this.waitingForOutputByThread[thread.id] = false;
           }
           break;
@@ -2828,6 +2835,7 @@ export const useAppStore = defineStore("app", {
             const finalThinking = contentThinking(message.content);
             if (finalText) assistant.text = finalText;
             if (finalThinking) assistant.thinking = finalThinking;
+            assistant.activeExecution = undefined;
             const finalError = runtimeErrorText(message.errorMessage);
             if (finalText || finalThinking || finalError) this.waitingForOutputByThread[thread.id] = false;
             if (finalError) {
@@ -2854,6 +2862,7 @@ export const useAppStore = defineStore("app", {
             startedAt: Date.now(),
             diff: buildToolDiff(String(payload.toolName ?? "tool"), payload.args),
           });
+          assistant.activeExecution = "tool";
           if (REMOTE_MUTATING_TOOLS.has(String(payload.toolName ?? ""))) this.markRemoteRepositoryStale(thread.id);
           break;
         }
@@ -2867,6 +2876,7 @@ export const useAppStore = defineStore("app", {
             tool = { id: toolID || createID("tool"), name: String(payload.toolName ?? "tool"), output: "", status: "running" };
             assistant.tools.push(tool);
           }
+          assistant.activeExecution = sessionEvent.event.type === "tool_execution_end" ? undefined : "tool";
           const output = resultText(payload.partialResult ?? payload.result);
           if (output) {
             const bounded = boundedToolOutput(output);
@@ -3057,6 +3067,7 @@ export const useAppStore = defineStore("app", {
         const message = messages[index];
         if (message.role !== "assistant") break;
         message.streaming = false;
+        message.activeExecution = undefined;
       }
       delete this.activeAssistantByThread[threadId];
     },

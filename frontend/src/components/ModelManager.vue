@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import {
   CheckCircle2,
   CircleDollarSign,
@@ -616,8 +617,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="settings-content model-config-content">
-    <div class="settings-content-header model-config-header">
+  <div class="settings-content model-config-content" :class="ui.settingsContent">
+    <div class="settings-content-header model-config-header" :class="ui.settingsHeader">
       <div>
         <h3>{{ tr("settings.modelManagement") }}</h3>
         <button v-if="snapshot?.path" class="model-config-path" type="button" :title="snapshot.path" @click="void copyPath()">
@@ -625,16 +626,16 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="settings-actions">
-        <button class="icon-button" type="button" :title="tr('common.refresh')" :disabled="loading" @click="void loadConfig()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-        <button class="text-button" type="button" @click="startNewModel"><Plus :size="14" />{{ tr("settings.addModel") }}</button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading" @click="void loadConfig()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
+        <button class="text-button" :class="ui.button" type="button" @click="startNewModel"><Plus :size="14" />{{ tr("settings.addModel") }}</button>
       </div>
     </div>
     <p v-if="copied" class="setting-status">{{ tr("settings.copied") }}</p>
-    <div v-if="loading" class="settings-empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingModelsConfig") }}</span></div>
-    <div v-else-if="loadError" class="settings-empty is-error"><XCircle :size="18" /><span>{{ loadError }}</span></div>
-    <div v-else class="model-manager-layout">
-      <aside class="model-config-list" :aria-label="tr('settings.configuredModels')">
-        <button class="model-config-add-row" type="button" :class="{ 'is-active': selectedKey === 'new' }" @click="startNewModel">
+    <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingModelsConfig") }}</span></div>
+    <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
+    <div v-else class="model-manager-layout" :class="ui.managerLayout">
+      <aside class="model-config-list" :class="ui.managerList" :aria-label="tr('settings.configuredModels')">
+        <button class="model-config-add-row" type="button" :class="[ui.listItem, { 'is-active': selectedKey === 'new' }]" @click="startNewModel">
           <Plus :size="14" /><span>{{ tr("settings.addModel") }}</span>
         </button>
         <section v-for="provider in providers" :key="provider.id" class="model-config-provider">
@@ -655,6 +656,7 @@ onBeforeUnmount(() => {
       <div
         v-if="providerMenu.open"
         class="provider-context-menu"
+        :class="ui.menuSurface"
         :style="{ left: `${providerMenu.x}px`, top: `${providerMenu.y}px` }"
         role="menu"
         @click.stop
@@ -669,41 +671,41 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
-      <form v-if="hasSelection" class="model-editor" @submit.prevent="void saveModel()">
+      <form v-if="hasSelection" class="model-editor" :class="ui.managerEditor" @submit.prevent="void saveModel()">
         <div class="model-editor-title">
           <div><strong>{{ isExisting ? (editor.modelName || editor.modelId) : tr("settings.newModel") }}</strong><small>{{ tr("settings.modelConfigScope") }}</small></div>
           <span v-if="dirty" class="model-dirty">{{ tr("settings.unsaved") }}</span>
         </div>
 
-        <div class="model-form-grid">
-          <label v-if="!isExisting" class="model-field">
+        <div class="model-form-grid" :class="ui.formGrid">
+          <label v-if="!isExisting" class="model-field" :class="ui.field">
             <span>{{ tr("settings.provider") }}</span>
-            <select v-model="editor.providerChoice" @change="chooseProvider">
+            <select :class="ui.select" v-model="editor.providerChoice" @change="chooseProvider">
               <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.id }}</option>
               <option :value="newProviderValue">{{ tr("settings.newProvider") }}</option>
             </select>
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.providerName") }}</span>
-            <input v-model="editor.providerId" data-testid="provider-id" spellcheck="false" placeholder="openai-custom" />
+            <input :class="ui.input" v-model="editor.providerId" data-testid="provider-id" spellcheck="false" placeholder="openai-custom" />
             <small v-if="usesBuiltInOpenAIProvider" class="is-warning" role="status">{{ tr("settings.openAIProviderMergeWarning") }}</small>
             <small v-if="isExisting">{{ tr("settings.providerRenameHelp") }}</small>
           </label>
-          <label class="model-field model-field-wide">
+          <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.baseURL") }}</span>
-            <input v-model="editor.baseUrl" type="url" spellcheck="false" placeholder="https://api.example.com/v1" />
+            <input :class="ui.input" v-model="editor.baseUrl" type="url" spellcheck="false" placeholder="https://api.example.com/v1" />
             <small>{{ tr("settings.baseURLHelp") }}</small>
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.apiType") }}</span>
-            <select v-model="editor.api">
+            <select :class="ui.select" v-model="editor.api">
               <option value="">{{ tr("settings.inheritProvider") }}</option>
               <option v-for="api in apiOptions" :key="api" :value="api">{{ api }}</option>
             </select>
           </label>
-          <label class="model-field model-field-wide">
+          <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.apiKey") }}</span>
-            <input v-model="editor.apiKey" type="text" spellcheck="false" autocomplete="off" placeholder="sk-... / $API_KEY" />
+            <input :class="ui.input" v-model="editor.apiKey" type="text" spellcheck="false" autocomplete="off" placeholder="sk-... / $API_KEY" />
             <small>{{ tr("settings.apiKeyHelp") }}</small>
           </label>
         </div>
@@ -721,7 +723,7 @@ onBeforeUnmount(() => {
           </header>
           <div v-if="editor.headers.length" class="provider-header-list">
             <div v-for="header in editor.headers" :key="header.id" class="provider-header-row" data-testid="provider-header-row">
-              <input
+              <input :class="ui.input"
                 v-model="header.name"
                 data-testid="provider-header-name"
                 spellcheck="false"
@@ -736,7 +738,7 @@ onBeforeUnmount(() => {
                 :aria-label="tr('settings.providerHeaderValue')"
                 :placeholder="tr('settings.providerHeaderValuePlaceholder')"
               />
-              <button class="icon-button" type="button" :title="tr('settings.removeProviderHeader')" @click="removeProviderHeader(header.id)">
+              <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('settings.removeProviderHeader')" @click="removeProviderHeader(header.id)">
                 <Trash2 :size="14" />
               </button>
             </div>
@@ -745,8 +747,8 @@ onBeforeUnmount(() => {
         </section>
 
         <div class="model-form-separator"><span>{{ tr("settings.modelDetails") }}</span></div>
-        <div class="model-form-grid">
-          <label class="model-field">
+        <div class="model-form-grid" :class="ui.formGrid">
+          <label class="model-field" :class="ui.field">
             <span class="model-field-heading">
               <span>{{ tr("settings.modelID") }}</span>
               <span class="model-field-heading-actions">
@@ -770,8 +772,8 @@ onBeforeUnmount(() => {
                 </button>
               </span>
             </span>
-            <input v-model="editor.modelId" spellcheck="false" placeholder="gpt-5" />
-            <select v-if="discoveredModels.length" :value="editor.modelId" @change="chooseDiscoveredModel">
+            <input :class="ui.input" v-model="editor.modelId" spellcheck="false" placeholder="gpt-5" />
+            <select :class="ui.select" v-if="discoveredModels.length" :value="editor.modelId" @change="chooseDiscoveredModel">
               <option value="">{{ tr("settings.chooseFetchedModel", { count: discoveredModels.length }) }}</option>
               <option v-for="model in discoveredModels" :key="model.id" :value="model.id">{{ model.name ? `${model.name} (${model.id})` : model.id }}</option>
             </select>
@@ -785,17 +787,17 @@ onBeforeUnmount(() => {
             <small v-if="modelDefaults">{{ modelDefaults.source === "provider" ? tr("settings.modelDefaultsFromProvider") : tr("settings.modelDefaultsAvailable") }}</small>
             <small v-if="discoveryError" class="is-error">{{ discoveryError }}</small>
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.displayName") }}</span>
-            <input v-model="editor.modelName" placeholder="GPT 5" />
+            <input :class="ui.input" v-model="editor.modelName" placeholder="GPT 5" />
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.contextWindow") }}</span>
-            <input v-model.number="editor.contextWindow" type="number" min="1" max="10000000" step="1" />
+            <input :class="ui.input" v-model.number="editor.contextWindow" type="number" min="1" max="10000000" step="1" />
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.maxTokens") }}</span>
-            <input v-model.number="editor.maxTokens" type="number" min="1" max="10000000" step="1" />
+            <input :class="ui.input" v-model.number="editor.maxTokens" type="number" min="1" max="10000000" step="1" />
           </label>
           <label class="model-check-row">
             <span><strong>{{ tr("settings.supportsReasoning") }}</strong><small>{{ tr("settings.supportsReasoningHelp") }}</small></span>
@@ -805,9 +807,9 @@ onBeforeUnmount(() => {
             <span><strong>{{ tr("settings.supportsImages") }}</strong><small>{{ tr("settings.supportsImagesHelp") }}</small></span>
             <input v-model="editor.imageInput" type="checkbox" />
           </label>
-          <label class="model-field model-field-wide">
+          <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.thinkingLevelMap") }}</span>
-            <textarea
+            <textarea :class="ui.textarea"
               v-model="editor.thinkingLevelMapJson"
               data-testid="thinking-level-map"
               spellcheck="false"
@@ -826,13 +828,13 @@ onBeforeUnmount(() => {
 {{ tr("settings.compatibilityExample") }}
 &#125;</pre>
           </div>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.providerCompatibility") }}</span>
-            <textarea v-model="editor.providerCompatJson" spellcheck="false" placeholder="{}" />
+            <textarea :class="ui.textarea" v-model="editor.providerCompatJson" spellcheck="false" placeholder="{}" />
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.modelCompatibility") }}</span>
-            <textarea v-model="editor.modelCompatJson" spellcheck="false" placeholder="{}" />
+            <textarea :class="ui.textarea" v-model="editor.modelCompatJson" spellcheck="false" placeholder="{}" />
           </label>
         </details>
 
@@ -840,17 +842,17 @@ onBeforeUnmount(() => {
         <p v-if="notice" class="model-result is-success"><CheckCircle2 :size="14" />{{ notice }}</p>
 
         <footer class="model-editor-actions">
-          <button v-if="isExisting" class="text-button danger-button" type="button" :disabled="saving || testing || quotaLoading" @click="void deleteModel()">
+          <button v-if="isExisting" class="text-button danger-button" :class="ui.buttonDanger" type="button" :disabled="saving || testing || quotaLoading" @click="void deleteModel()">
             <Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteModel") : tr("settings.deleteModel") }}
           </button>
           <span />
-          <button class="text-button" type="button" :disabled="saving || testing || quotaLoading || !hasRequiredQuotaFields" @click="void queryAccountQuota()">
+          <button class="text-button" :class="ui.button" type="button" :disabled="saving || testing || quotaLoading || !hasRequiredQuotaFields" @click="void queryAccountQuota()">
             <CircleDollarSign :size="14" />{{ quotaLoading ? tr("settings.loadingAccountQuota") : tr("settings.accountQuota") }}
           </button>
-          <button class="text-button" type="button" :disabled="saving || testing || quotaLoading || !hasRequiredProbeFields" :title="tr('settings.modelTestCost')" @click="openModelTest">
+          <button class="text-button" :class="ui.button" type="button" :disabled="saving || testing || quotaLoading || !hasRequiredProbeFields" :title="tr('settings.modelTestCost')" @click="openModelTest">
             <FlaskConical :size="14" />{{ testing ? tr("settings.testingModel") : tr("settings.testModel") }}
           </button>
-          <button class="text-button primary-button" type="submit" :disabled="saving || testing || quotaLoading || !dirty">
+          <button class="text-button primary-button" :class="ui.buttonPrimary" type="submit" :disabled="saving || testing || quotaLoading || !dirty">
             <Save :size="14" />{{ saving ? tr("settings.savingModel") : tr("settings.saveModel") }}
           </button>
         </footer>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { BarChart3, BookOpen, Boxes, Copy, Database, Download, ExternalLink, FileText, Info, PlugZap, Puzzle, RefreshCw, RotateCw, Search, Settings2, X } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { PiMaintenanceAction, type PiMaintenanceResult } from "../../bindings/pi-desk/internal/domain";
@@ -147,14 +148,39 @@ function sourceIcon(source: SlashCommand["source"]) {
   if (source === "extension") return Puzzle;
   return FileText;
 }
+
+function settingsSectionLabel(value: SettingsSection) {
+  switch (value) {
+    case "general": return tr("settings.general");
+    case "modelManagement": return tr("settings.modelManagement");
+    case "promptManagement": return tr("settings.promptManagement");
+    case "skillManagement": return tr("settings.skillManagement");
+    case "extensionManagement": return tr("settings.extensionManagement");
+    case "mcpManagement": return tr("settings.mcpManagement");
+    case "statistics": return tr("settings.statistics");
+    case "resources": return tr("settings.runtimeResources");
+  }
+}
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="appStore.closeSettings()">
-    <section ref="dialog" class="dialog-window settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
-      <header>
-        <h2 id="settings-title">{{ tr("settings.title") }}</h2>
-        <button class="icon-button" type="button" :title="tr('settings.close')" @click="appStore.closeSettings()"><X :size="17" /></button>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="appStore.closeSettings()">
+    <section
+      ref="dialog"
+      class="dialog-window settings-dialog"
+      :class="[ui.dialog, ui.dialogWide, ui.settingsControls]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      tabindex="-1"
+    >
+      <header :class="ui.dialogHeader">
+        <div class="settings-title-path">
+          <h2 id="settings-title">{{ tr("settings.title") }}</h2>
+          <span aria-hidden="true">/</span>
+          <strong>{{ settingsSectionLabel(section) }}</strong>
+        </div>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('settings.close')" @click="appStore.closeSettings()"><X :size="17" /></button>
       </header>
       <div class="dialog-body settings-layout">
         <nav class="settings-nav" :aria-label="tr('settings.sections')">
@@ -169,20 +195,20 @@ function sourceIcon(source: SlashCommand["source"]) {
           <button class="settings-nav-about" type="button" @click="appStore.closeSettings(); appStore.openAbout()"><Info :size="15" /><span>{{ tr("appMenu.about") }}</span></button>
         </nav>
 
-        <div v-if="section === 'general'" class="settings-content settings-sections">
+        <div v-if="section === 'general'" class="settings-content settings-sections" :class="ui.settingsSections">
           <section>
             <h3>{{ tr("settings.appearance") }}</h3>
-            <label class="setting-row setting-row-select">
+            <label class="setting-row setting-row-select" :class="ui.row">
               <span><strong>{{ tr("settings.theme") }}</strong><small>{{ tr("settings.themeHelp") }}</small></span>
-              <select v-model="appStore.appearance" :aria-label="tr('settings.theme')" @change="appStore.appearanceChanged()">
+              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.appearance" :aria-label="tr('settings.theme')" @change="appStore.appearanceChanged()">
                 <option value="dark">{{ tr("settings.dark") }}</option>
                 <option value="light">{{ tr("settings.light") }}</option>
                 <option value="system">{{ tr("settings.system") }}</option>
               </select>
             </label>
-            <label class="setting-row setting-row-select">
+            <label class="setting-row setting-row-select" :class="ui.row">
               <span><strong>{{ tr("settings.language") }}</strong><small>{{ tr("settings.languageHelp") }}</small></span>
-              <select v-model="appStore.language" :aria-label="tr('settings.language')" @change="appStore.languageChanged()">
+              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.language" :aria-label="tr('settings.language')" @change="appStore.languageChanged()">
                 <option value="zh-CN">{{ tr("settings.chinese") }}</option>
                 <option value="en">{{ tr("settings.english") }}</option>
               </select>
@@ -197,16 +223,16 @@ function sourceIcon(source: SlashCommand["source"]) {
               <div class="runtime-path"><dt>{{ tr("settings.command") }}</dt><dd :title="appStore.bootstrap?.runtime.command">{{ appStore.bootstrap?.runtime.command || tr("common.notFound") }}</dd></div>
             </dl>
             <div class="settings-actions">
-              <button class="text-button" type="button" :disabled="!appStore.bootstrap?.runtime.command" @click="copyRuntimePath"><Copy :size="14" />{{ copied ? tr("settings.copied") : tr("settings.copyPath") }}</button>
-              <button class="text-button" type="button" :disabled="appStore.runtimeCheckLoading" @click="appStore.checkRuntime"><RotateCw :size="14" :class="{ 'is-spinning': appStore.runtimeCheckLoading }" />{{ tr("settings.recheck") }}</button>
-              <button v-if="runtimeReady" data-testid="update-pi" class="text-button" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiUpdateSelf)"><RefreshCw :size="14" />{{ tr("settings.updatePi") }}</button>
-              <button v-else-if="runtimeMissing" data-testid="install-pi" class="text-button primary" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiInstall)"><Download :size="14" />{{ tr("settings.installPi") }}</button>
+              <button class="text-button" :class="ui.button" type="button" :disabled="!appStore.bootstrap?.runtime.command" @click="copyRuntimePath"><Copy :size="14" />{{ copied ? tr("settings.copied") : tr("settings.copyPath") }}</button>
+              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.runtimeCheckLoading" @click="appStore.checkRuntime"><RotateCw :size="14" :class="{ 'is-spinning': appStore.runtimeCheckLoading }" />{{ tr("settings.recheck") }}</button>
+              <button v-if="runtimeReady" data-testid="update-pi" class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiUpdateSelf)"><RefreshCw :size="14" />{{ tr("settings.updatePi") }}</button>
+              <button v-else-if="runtimeMissing" data-testid="install-pi" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiInstall)"><Download :size="14" />{{ tr("settings.installPi") }}</button>
             </div>
             <div v-if="maintenanceAction" class="maintenance-confirm" role="alert">
               <p><strong>{{ tr("settings.maintenanceConfirmTitle", { action: maintenanceActionLabel(maintenanceAction) }) }}</strong><span>{{ tr("settings.maintenanceConfirmHelp") }}</span></p>
               <div class="settings-actions">
-                <button class="text-button" type="button" :disabled="maintenanceLoading" @click="maintenanceAction = null">{{ tr("common.cancel") }}</button>
-                <button data-testid="confirm-pi-maintenance" class="text-button primary" type="button" :disabled="maintenanceLoading" @click="void confirmPiMaintenance()"><RefreshCw v-if="maintenanceLoading" :size="14" class="is-spinning" />{{ maintenanceLoading ? tr("settings.maintainingPi") : tr("common.confirm") }}</button>
+                <button class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="maintenanceAction = null">{{ tr("common.cancel") }}</button>
+                <button data-testid="confirm-pi-maintenance" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="void confirmPiMaintenance()"><RefreshCw v-if="maintenanceLoading" :size="14" class="is-spinning" />{{ maintenanceLoading ? tr("settings.maintainingPi") : tr("common.confirm") }}</button>
               </div>
             </div>
             <p v-if="maintenanceError" class="form-error">{{ maintenanceError }}</p>
@@ -218,22 +244,22 @@ function sourceIcon(source: SlashCommand["source"]) {
           </section>
           <section>
             <h3>{{ tr("settings.network") }}</h3>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.offline") }}</strong><small>{{ tr("settings.offlineHelp") }}</small></span>
               <input v-model="appStore.offlineMode" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.proxy") }}</strong><small>{{ tr("settings.proxyHelp") }}</small></span>
               <input v-model="appStore.proxyEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
             <label v-if="appStore.proxyEnabled" for="proxy-url">{{ tr("settings.proxyUrl") }}</label>
-            <input v-if="appStore.proxyEnabled" id="proxy-url" v-model="appStore.proxyURL" class="settings-input" spellcheck="false" @change="appStore.preferencesChanged()" />
+            <input :class="ui.input" v-if="appStore.proxyEnabled" id="proxy-url" v-model="appStore.proxyURL" class="settings-input" spellcheck="false" @change="appStore.preferencesChanged()" />
           </section>
           <section>
             <h3>{{ tr("settings.tasks") }}</h3>
-            <label class="setting-row setting-row-select">
+            <label class="setting-row setting-row-select" :class="ui.row">
               <span><strong>{{ tr("settings.steeringQueue") }}</strong><small>{{ tr("settings.steeringQueueHelp") }}</small></span>
-              <select
+              <select :class="ui.select"
                 aria-label="Steering queue processing"
                 :value="appStore.activeSessionState?.steeringMode || 'one-at-a-time'"
                 :disabled="!appStore.activeThread?.started || runtimeLoading"
@@ -243,7 +269,7 @@ function sourceIcon(source: SlashCommand["source"]) {
                 <option value="all">{{ tr("settings.allQueued") }}</option>
               </select>
             </label>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.autoCompaction") }}</strong><small>{{ tr("settings.autoCompactionHelp") }}</small></span>
               <input
                 type="checkbox"
@@ -252,7 +278,7 @@ function sourceIcon(source: SlashCommand["source"]) {
                 @change="void updateRuntimeBehavior(() => appStore.setAutoCompaction(($event.target as HTMLInputElement).checked))"
               />
             </label>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.autoRetry") }}</strong><small>{{ tr("settings.autoRetryHelp") }}</small></span>
               <input
                 type="checkbox"
@@ -265,17 +291,17 @@ function sourceIcon(source: SlashCommand["source"]) {
           </section>
           <section>
             <h3>{{ tr("settings.desktop") }}</h3>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.notifications") }}</strong><small>{{ tr("settings.notificationsHelp") }}</small></span>
               <input v-model="appStore.notificationsEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
-            <label class="setting-row">
+            <label class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.updates") }}</strong><small>{{ tr("settings.updatesHelp") }}</small></span>
               <input v-model="appStore.updateChecksEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
             <div class="settings-actions update-actions">
-              <button class="text-button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
-              <a v-if="appStore.updateCheckResult?.url" class="text-button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
+              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
+              <a v-if="appStore.updateCheckResult?.url" class="text-button" :class="ui.button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
             </div>
             <p class="setting-status" :class="{ 'is-warning': appStore.updateCheckResult?.status === 'available', 'is-error': appStore.updateCheckResult?.status === 'error' }">{{ updateMessage() }}</p>
           </section>
@@ -295,26 +321,26 @@ function sourceIcon(source: SlashCommand["source"]) {
         <SessionStatistics v-else-if="section === 'statistics'" />
 
         <div v-else class="settings-content runtime-settings-content">
-          <div class="settings-content-header">
+          <div class="settings-content-header" :class="ui.settingsHeader">
             <div><h3>{{ tr("settings.runtimeResources") }}</h3><span>{{ tr("settings.runtimeResourcesHelp") }}</span></div>
-            <button class="icon-button" type="button" title="Refresh resources" :disabled="!appStore.activeThread?.started || runtimeLoading" @click="void refreshRuntimeResources()"><RefreshCw :size="14" :class="{ 'is-spinning': runtimeLoading }" /></button>
+            <button class="icon-button" :class="ui.iconButton" type="button" title="Refresh resources" :disabled="!appStore.activeThread?.started || runtimeLoading" @click="void refreshRuntimeResources()"><RefreshCw :size="14" :class="{ 'is-spinning': runtimeLoading }" /></button>
           </div>
           <div class="resource-filters" role="tablist" aria-label="Resource type">
-            <button v-for="source in (['all', 'skill', 'extension', 'prompt'] as const)" :key="source" type="button" role="tab" :aria-selected="resourceSource === source" @click="resourceSource = source">
+            <button v-for="source in (['all', 'skill', 'extension', 'prompt'] as const)" :key="source" :class="ui.tab" type="button" role="tab" :aria-selected="resourceSource === source" @click="resourceSource = source">
               {{ source === "all" ? tr("settings.all") : source === "skill" ? tr("settings.skills") : source === "extension" ? tr("settings.extensions") : tr("settings.prompts") }}
               <span>{{ resourceCounts[source] }}</span>
             </button>
           </div>
-          <label class="resource-search"><Search :size="14" /><input v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
-          <div v-if="!appStore.activeThread?.started" class="settings-empty"><Boxes :size="18" /><span>{{ tr("settings.piNotRunning") }}</span></div>
+          <label class="resource-search"><Search :size="14" /><input :class="ui.input" v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
+          <div v-if="!appStore.activeThread?.started" class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.piNotRunning") }}</span></div>
           <div v-else-if="filteredResources.length" class="resource-list">
-            <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row">
+            <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row" :class="ui.listItem">
               <component :is="sourceIcon(resource.source)" :size="15" />
               <span><strong>/{{ resource.name }}</strong><small>{{ resource.description || resource.source }}</small><code v-if="resource.path" :title="resource.path">{{ resource.path }}</code></span>
               <em>{{ resource.location || resource.source }}</em>
             </div>
           </div>
-          <div v-else class="settings-empty"><Boxes :size="18" /><span>{{ tr("settings.noResources") }}</span></div>
+          <div v-else class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.noResources") }}</span></div>
           <p v-if="runtimeError" class="form-error">{{ runtimeError }}</p>
         </div>
       </div>

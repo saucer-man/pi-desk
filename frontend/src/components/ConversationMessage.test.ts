@@ -136,6 +136,23 @@ describe("ConversationMessage", () => {
     expect(wrapper.findAll(".message-action")).toHaveLength(4);
   });
 
+  it("expands only the active reasoning step and collapses it when reasoning finishes", async () => {
+    const pinia = createPinia();
+    const message = {
+      id: "assistant-thinking-live", role: "assistant" as const, text: "", thinking: "Inspecting",
+      timestamp: "10:01", streaming: true, activeExecution: "thinking" as const, tools: [],
+      executionSteps: [{ id: "thinking-live", kind: "thinking" as const, text: "Inspecting", active: true }],
+    };
+    const wrapper = mount(ConversationMessage, { props: { message }, global: { plugins: [pinia] } });
+
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
+    await wrapper.setProps({ message: {
+      ...message, text: "Answer", activeExecution: "text" as const,
+      executionSteps: [{ ...message.executionSteps[0], active: false }],
+    } });
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeUndefined();
+  });
+
   it("keeps message actions visible while disabling persisted mutations during a model run", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -395,7 +412,14 @@ describe("ConversationMessage", () => {
         runNotice: { status: "recovered", error: "OpenAI API error (520)", attempt: 2, maxAttempts: 4 },
       },
     });
-    expect(wrapper.get('.message-run-notice[data-status="recovered"]').text()).toContain("Pi recovered automatically");
+    expect(wrapper.find('.message-run-notice[data-status="recovered"]').exists()).toBe(false);
+    expect(wrapper.find(".message-actions").exists()).toBe(true);
+
+    await wrapper.setProps({
+      message: { ...baseMessage, text: "", runNotice: { status: "recovered", error: "OpenAI API error (520)" } },
+    });
+    expect(wrapper.find(".message-run-notice").exists()).toBe(false);
+    expect(wrapper.find(".message-actions").exists()).toBe(false);
 
     await wrapper.setProps({
       message: { ...baseMessage, error: "Request timed out." },

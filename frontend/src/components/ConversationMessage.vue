@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { ArrowUp, BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 import type { ExecutionStep, TimelineMessage } from "../stores/app";
@@ -25,7 +26,10 @@ const executionOpen = ref(props.message.streaming);
 const editBox = ref<HTMLTextAreaElement>();
 const skillInvocation = computed(() => props.message.role === "user" ? parseSkillInvocation(props.message.text) : undefined);
 const visibleMessageText = computed(() => skillInvocation.value?.userMessage ?? props.message.text);
-const actionable = computed(() => props.message.role === "user" || props.message.role === "assistant");
+const actionable = computed(() => (
+  (props.message.role === "user" || props.message.role === "assistant")
+  && Boolean(visibleMessageText.value.trim())
+));
 const sessionBusy = computed(() => (
   props.message.streaming
   || appStore.activeThread?.status === "running"
@@ -48,9 +52,10 @@ const showMessageMeta = computed(() => (
 ));
 const runNotice = computed(() => {
   if (props.message.role !== "assistant") return undefined;
-  return props.message.runNotice ?? (props.message.error
+  const notice = props.message.runNotice ?? (props.message.error
     ? { status: "failed" as const, error: props.message.error }
     : undefined);
+  return notice?.status === "recovered" ? undefined : notice;
 });
 const runNoticeLabel = computed(() => {
   const notice = runNotice.value;
@@ -75,7 +80,10 @@ const runNoticeLabel = computed(() => {
   return tr(notice.status === "recovered" ? "conversation.requestRecovered" : "conversation.requestFailed");
 });
 const executionSteps = computed(() => props.message.executionSteps ?? [
-  ...(props.message.thinking ? [{ id: `${props.message.id}-thinking`, kind: "thinking" as const, text: props.message.thinking }] : []),
+  ...(props.message.thinking ? [{
+    id: `${props.message.id}-thinking`, kind: "thinking" as const, text: props.message.thinking,
+    active: props.message.streaming && props.message.activeExecution === "thinking",
+  }] : []),
   ...(props.message.tools.length ? [{ id: `${props.message.id}-tools`, kind: "tools" as const, tools: props.message.tools }] : []),
 ]);
 const toolCount = computed(() => executionSteps.value.reduce((count, step) => count + (step.tools?.length ?? 0), 0));
@@ -168,12 +176,12 @@ function stepThinking(step: ExecutionStep): string {
 <template>
   <article
     class="message-row"
-    :class="{
+    :class="[ui.root, {
       'message-row--compact': Boolean(message.thinking || message.tools.length),
       'message-row--editing': editing,
       'message-row--compaction': Boolean(message.compaction),
       'message-row--search-active': searchActive,
-    }"
+    }]"
     :data-role="message.role"
     :data-message-id="message.id"
   >
@@ -207,7 +215,7 @@ function stepThinking(step: ExecutionStep): string {
         </summary>
         <div class="execution-process-details">
           <template v-for="step in executionSteps" :key="step.id">
-            <details v-if="step.kind === 'thinking'" class="thinking-block">
+            <details v-if="step.kind === 'thinking'" class="thinking-block" :open="step.active">
               <summary>
                 <ChevronRight class="disclosure-icon" :size="13" aria-hidden="true" />
                 <BrainCircuit class="thinking-icon" :size="15" aria-hidden="true" />
@@ -239,7 +247,7 @@ function stepThinking(step: ExecutionStep): string {
         <code>/skill:{{ skillInvocation.name }}</code>
       </div>
       <div v-if="editing" class="message-edit">
-        <textarea ref="editBox" v-model="editText" rows="3" @keydown.ctrl.enter.prevent="void submitEdit()" @keydown.meta.enter.prevent="void submitEdit()" @keydown.escape.prevent="editing = false" />
+        <textarea :class="ui.textarea" ref="editBox" v-model="editText" rows="3" @keydown.ctrl.enter.prevent="void submitEdit()" @keydown.meta.enter.prevent="void submitEdit()" @keydown.escape.prevent="editing = false" />
         <div class="message-edit-actions">
           <button class="message-edit-button" type="button" :title="tr('common.cancel')" @click="editing = false"><X :size="14" /></button>
           <button class="message-edit-button message-edit-button--primary" type="button" :title="tr(latestUserMessage ? 'conversation.sendEdit' : 'conversation.save')" :disabled="!editText.trim() || persistedActionsDisabled" @click="void submitEdit()">

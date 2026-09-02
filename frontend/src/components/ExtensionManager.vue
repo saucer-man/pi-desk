@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AlertTriangle, CheckCircle2, Download, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
@@ -158,13 +159,13 @@ onMounted(() => { void loadExtensions(); });
 </script>
 
 <template>
-  <div class="settings-content extension-config-content">
-    <div class="settings-content-header">
+  <div class="settings-content extension-config-content" :class="ui.settingsContent">
+    <div class="settings-content-header" :class="ui.settingsHeader">
       <div>
         <h3>{{ tr("settings.extensionManagement") }}</h3>
         <span>{{ tr("settings.extensionManagementHelp") }}</span>
       </div>
-      <button class="icon-button" type="button" :title="tr('common.refresh')" :disabled="loading || changing" @click="void loadExtensions()">
+      <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading || changing" @click="void loadExtensions()">
         <RefreshCw :size="14" :class="{ 'is-spinning': loading }" />
       </button>
     </div>
@@ -184,7 +185,7 @@ onMounted(() => { void loadExtensions(); });
           <button
             v-if="!snapshot?.todo.installed || snapshot.todo.updateAvailable"
             data-testid="install-todo-extension"
-            class="text-button primary"
+            class="text-button primary" :class="ui.buttonPrimary"
             type="button"
             :disabled="loading || changing"
             @click="void installTodo()"
@@ -194,7 +195,7 @@ onMounted(() => { void loadExtensions(); });
           <button
             v-else
             data-testid="remove-todo-extension"
-            class="text-button danger"
+            class="text-button danger" :class="ui.buttonDanger"
             type="button"
             :disabled="changing"
             @click="void removeTodo()"
@@ -216,26 +217,26 @@ onMounted(() => { void loadExtensions(); });
         <span>{{ packages.length }}</span>
       </header>
       <div class="extension-package-install">
-        <input v-model="packageSource" type="text" spellcheck="false" :placeholder="tr('settings.packageSource')" @keydown.enter.prevent="void installPackage()" />
-        <select v-model="packageScope" :aria-label="tr('settings.packageScope')">
+        <input :class="ui.input" v-model="packageSource" type="text" spellcheck="false" :placeholder="tr('settings.packageSource')" @keydown.enter.prevent="void installPackage()" />
+        <select :class="ui.select" v-model="packageScope" :aria-label="tr('settings.packageScope')">
           <option :value="PiPackageScope.PiPackageScopeGlobal">{{ tr("settings.packageScopeGlobal") }}</option>
           <option :value="PiPackageScope.PiPackageScopeProject" :disabled="!packageSnapshot?.projectEnabled">{{ tr("settings.packageScopeProject") }}</option>
         </select>
-        <button class="text-button primary" type="button" :disabled="!packageSource.trim() || Boolean(packageBusy)" @click="void installPackage()"><Download :size="14" />{{ tr("settings.installPackage") }}</button>
+        <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="!packageSource.trim() || Boolean(packageBusy)" @click="void installPackage()"><Download :size="14" />{{ tr("settings.installPackage") }}</button>
       </div>
       <p v-if="packageSnapshot?.projectNotice" class="setting-status">{{ packageSnapshot.projectNotice }}</p>
       <div v-if="packages.length" class="extension-list">
-        <div v-for="pkg in packages" :key="`${pkg.scope}-${pkg.source}`" class="resource-row package-row">
+        <div v-for="pkg in packages" :key="`${pkg.scope}-${pkg.source}`" class="resource-row package-row" :class="ui.listItem">
           <Package :size="15" />
           <span><strong>{{ pkg.source }}</strong><small>{{ pkg.scope === PiPackageScope.PiPackageScopeProject ? tr("settings.packageScopeProject") : tr("settings.packageScopeGlobal") }}</small></span>
           <div class="extension-feature-actions">
-            <button class="text-button" type="button" :disabled="Boolean(packageBusy)" @click="void setPackageEnabled(pkg)">{{ pkg.enabled ? tr("settings.disablePackage") : tr("settings.enablePackage") }}</button>
-            <button class="text-button" type="button" :disabled="Boolean(packageBusy)" @click="void updatePackage(pkg)">{{ tr("settings.updateExtension") }}</button>
-            <button class="icon-button danger" type="button" :title="tr('settings.removePackage')" :disabled="Boolean(packageBusy)" @click="void removePackage(pkg)"><Trash2 :size="14" /></button>
+            <button class="text-button" :class="ui.button" type="button" :disabled="Boolean(packageBusy)" @click="void setPackageEnabled(pkg)">{{ pkg.enabled ? tr("settings.disablePackage") : tr("settings.enablePackage") }}</button>
+            <button class="text-button" :class="ui.button" type="button" :disabled="Boolean(packageBusy)" @click="void updatePackage(pkg)">{{ tr("settings.updateExtension") }}</button>
+            <button class="icon-button danger" :class="ui.iconButton" type="button" :title="tr('settings.removePackage')" :disabled="Boolean(packageBusy)" @click="void removePackage(pkg)"><Trash2 :size="14" /></button>
           </div>
         </div>
       </div>
-      <div v-else-if="!loading" class="settings-empty compact"><Package :size="17" /><span>{{ tr("settings.noPackages") }}</span></div>
+      <div v-else-if="!loading" class="settings-empty compact" :class="ui.empty"><Package :size="17" /><span>{{ tr("settings.noPackages") }}</span></div>
     </section>
 
     <section class="installed-extensions" aria-labelledby="installed-extensions-title">
@@ -243,9 +244,9 @@ onMounted(() => { void loadExtensions(); });
         <strong id="installed-extensions-title">{{ tr("settings.installedExtensions") }}</strong>
         <span>{{ extensions.length }}</span>
       </header>
-      <div v-if="loading" class="settings-empty compact"><RefreshCw :size="17" class="is-spinning" /><span>{{ tr("settings.loadingExtensions") }}</span></div>
+      <div v-if="loading" class="settings-empty compact" :class="ui.empty"><RefreshCw :size="17" class="is-spinning" /><span>{{ tr("settings.loadingExtensions") }}</span></div>
       <div v-else-if="extensions.length" class="extension-list">
-        <div v-for="extension in extensions" :key="`${extension.origin}-${extension.path || extension.source}`" class="resource-row">
+        <div v-for="extension in extensions" :key="`${extension.origin}-${extension.path || extension.source}`" class="resource-row" :class="ui.listItem">
           <Package v-if="extension.origin === PiExtensionOrigin.PiExtensionOriginPackage" :size="15" />
           <Puzzle v-else :size="15" />
           <span>
@@ -256,7 +257,7 @@ onMounted(() => { void loadExtensions(); });
           <em>{{ originLabel(extension.origin) }}</em>
         </div>
       </div>
-      <div v-else class="settings-empty compact"><XCircle :size="17" /><span>{{ tr("settings.noInstalledExtensions") }}</span></div>
+      <div v-else class="settings-empty compact" :class="ui.empty"><XCircle :size="17" /><span>{{ tr("settings.noInstalledExtensions") }}</span></div>
     </section>
 
     <p class="extension-storage-note">{{ tr("settings.extensionStorageHelp", { directory: snapshot?.globalDirectory || "~/.pi/agent/extensions", settings: snapshot?.settingsPath || "~/.pi/agent/settings.json" }) }}</p>

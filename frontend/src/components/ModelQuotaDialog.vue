@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AlertTriangle, CircleDollarSign, LoaderCircle, RefreshCw, X } from "lucide-vue-next";
 import { ref } from "vue";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -22,26 +23,26 @@ useModalFocus(dialog, close, { canClose: () => !props.loading });
 
 <template>
   <Teleport to="body">
-    <div class="dialog-backdrop model-quota-backdrop" @mousedown.self="close">
+    <div class="dialog-backdrop model-quota-backdrop" :class="ui.dialogBackdrop" @mousedown.self="close">
       <section
         ref="dialog"
-        class="dialog-window model-quota-dialog"
+        class="dialog-window model-quota-dialog" :class="[ui.dialog, ui.dialogLarge]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="model-quota-title"
         tabindex="-1"
       >
-        <header>
+        <header :class="ui.dialogHeader">
           <div>
             <h2 id="model-quota-title">{{ tr("settings.accountQuotaTitle") }}</h2>
             <small>{{ tr("settings.accountQuotaDescription", { provider: props.providerName }) }}</small>
           </div>
-          <button class="icon-button" type="button" :disabled="props.loading" :title="tr('common.close')" @click="close">
+          <button class="icon-button" :class="ui.iconButton" type="button" :disabled="props.loading" :title="tr('common.close')" @click="close">
             <X :size="16" aria-hidden="true" />
           </button>
         </header>
 
-        <div class="dialog-body model-quota-body" aria-live="polite">
+        <div class="dialog-body model-quota-body" :class="ui.dialogBody" aria-live="polite">
           <div v-if="props.loading" class="model-quota-loading" role="status">
             <LoaderCircle :size="18" class="is-spinning" aria-hidden="true" />
             <span>{{ tr("settings.loadingAccountQuota") }}</span>
@@ -70,9 +71,9 @@ useModalFocus(dialog, close, { canClose: () => !props.loading });
           </div>
         </div>
 
-        <footer>
-          <button class="text-button" type="button" :disabled="props.loading" @click="close">{{ tr("common.close") }}</button>
-          <button class="text-button primary-button" type="button" :disabled="props.loading" @click="emit('retry')">
+        <footer :class="ui.dialogFooter">
+          <button class="text-button" :class="ui.button" type="button" :disabled="props.loading" @click="close">{{ tr("common.close") }}</button>
+          <button class="text-button primary-button" :class="ui.buttonPrimary" type="button" :disabled="props.loading" @click="emit('retry')">
             <RefreshCw :size="14" aria-hidden="true" />{{ tr("settings.retryAccountQuota") }}
           </button>
         </footer>

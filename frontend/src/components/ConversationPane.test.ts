@@ -45,6 +45,15 @@ describe("ConversationPane", () => {
     });
   }
 
+  it("keeps the workspace blank when no task is selected", () => {
+    const wrapper = mount(ConversationPane, { global: { stubs: { ComposerBar: true } } });
+
+    expect(wrapper.get(".empty-workspace").text()).toBe("");
+    expect(wrapper.find(".welcome-empty").exists()).toBe(false);
+    expect(wrapper.find(".empty-logo").exists()).toBe(false);
+    expect(wrapper.find("composer-bar-stub").exists()).toBe(false);
+  });
+
   it("keeps short transcripts on the exact DOM path", () => {
     const wrapper = mountTranscript(80);
     expect(wrapper.find("[data-virtualized]").exists()).toBe(false);
@@ -98,11 +107,12 @@ describe("ConversationPane", () => {
     expect(wrapper.find(".conversation-search").exists()).toBe(false);
   });
 
-  it("shows a conversation outline preview and jumps to a turn", async () => {
+  it("shows a left conversation outline preview and jumps to a turn", async () => {
     const wrapper = mountTranscript(3);
     const items = wrapper.findAll(".conversation-outline-item");
-
     expect(items).toHaveLength(2);
+    expect(wrapper.get(".conversation-outline").attributes("aria-label")).toBe("Conversation outline");
+
     await items[0].trigger("mouseenter");
     expect(wrapper.get(".conversation-outline-preview").text()).toContain("Message 0");
     expect(wrapper.get(".conversation-outline-preview").text()).toContain("Message 1");
@@ -111,7 +121,23 @@ describe("ConversationPane", () => {
     expect(items[1].classes()).toContain("is-active");
   });
 
-  it("renders recovery before the later assistant response in timeline order", () => {
+  it("renders an empty historical session without a card frame", () => {
+    const store = useAppStore();
+    store.threads = [{
+      id: "thread-1", title: "History", workspace: "repo", workspacePath: "D:\\repo",
+      trust: "deny", status: "idle", started: false, generation: 0, sessionFile: "session.jsonl",
+    }];
+    store.activeThreadId = "thread-1";
+    store.messagesByThread["thread-1"] = [];
+    const wrapper = mount(ConversationPane, { global: { stubs: { ComposerBar: true } } });
+
+    const emptyThread = wrapper.get(".empty-thread");
+    expect(emptyThread.classes()).not.toContain("border");
+    expect(emptyThread.classes()).not.toContain("rounded-xl");
+    expect(emptyThread.classes()).not.toContain("shadow-sm");
+  });
+
+  it("removes recovered retry noise before the later assistant response", () => {
     const store = useAppStore();
     store.threads = [{
       id: "thread-1", title: "Recovered task", workspace: "repo", workspacePath: "D:\\repo",
@@ -136,10 +162,9 @@ describe("ConversationPane", () => {
     });
 
     const rows = wrapper.findAll(".stub-message");
-    expect(rows).toHaveLength(3);
-    expect(rows[1].get(".stub-notice").text()).toBe("recovered");
-    expect(rows[2].text()).toContain("Upload complete");
-    expect(rows[2].find(".stub-notice").exists()).toBe(false);
+    expect(rows).toHaveLength(2);
+    expect(rows[1].text()).toContain("Upload complete");
+    expect(rows[1].find(".stub-notice").exists()).toBe(false);
   });
 
   it("virtualizes a long transcript", async () => {

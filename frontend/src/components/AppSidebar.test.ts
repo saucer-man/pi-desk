@@ -71,6 +71,8 @@ describe("AppSidebar", () => {
 
     const newTask = wrapper.get(".new-task-button");
     expect(newTask.text()).toContain("New task");
+    expect(newTask.classes()).toEqual(expect.arrayContaining(["bg-transparent", "text-[var(--text-secondary)]", "hover:bg-[var(--bg-hover)]"]));
+    expect(newTask.classes()).not.toContain("bg-[var(--text)]");
     await newTask.trigger("click");
     expect(store.newTaskOpen).toBe(true);
     expect(wrapper.get(".runtime-badge").text()).toContain("Current Pi version 0.83.0");
@@ -333,6 +335,9 @@ describe("AppSidebar", () => {
 
     await wrapper.get('button[aria-pressed="false"]').trigger("click");
     const search = wrapper.get('input[type="search"]');
+    expect(search.classes()).toContain("h-full");
+    expect(search.classes()).not.toContain("min-h-11");
+    expect(wrapper.get('.sidebar-search .icon-button').classes()).not.toContain("pointer-coarse:size-11");
     await search.setValue("missing");
     await vi.waitFor(() => expect(store.loadSessionSearchBodies).toHaveBeenCalled());
     expect(wrapper.text()).toContain("No matching tasks");

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import MarkdownIt from "markdown-it";
 import { computed, ref } from "vue";
 import { useAppStore } from "../stores/app";
@@ -122,12 +123,12 @@ function openContextMenu(event: MouseEvent) {
   <div
     v-if="renderMarkdown"
     class="markdown-body"
-    :class="{ streaming }"
+    :class="[ui.root, { streaming }]"
     v-html="rendered"
     @click="openPreview"
     @contextmenu="openContextMenu"
   />
-  <pre v-else class="oversized-message">{{ text }}</pre>
+  <pre v-else class="oversized-message" :class="ui.code">{{ text }}</pre>
   <FileLinkContextMenu
     v-if="contextMenu && workspacePath"
     :file="contextMenu.file"

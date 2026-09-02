@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { System } from "@wailsio/runtime";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AboutDialog from "./components/AboutDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import AppTopbar from "./components/AppTopbar.vue";
@@ -14,7 +14,6 @@ import NewTaskDialog from "./components/NewTaskDialog.vue";
 import OrphanSessionsDialog from "./components/OrphanSessionsDialog.vue";
 import RemoteReconnectDialog from "./components/RemoteReconnectDialog.vue";
 import PaneResizer from "./components/PaneResizer.vue";
-import SettingsDialog from "./components/SettingsDialog.vue";
 import WindowControls from "./components/WindowControls.vue";
 import {
   MAX_INSPECTOR_WIDTH,
@@ -25,6 +24,7 @@ import {
 } from "./stores/app";
 
 const appStore = useAppStore();
+const SettingsDialog = defineAsyncComponent(() => import("./components/SettingsDialog.vue"));
 const isWindows = ref(System.IsWindows());
 const windowTitle = computed(() => appStore.activeExtensionTitle || appStore.activeThread?.title || "Pi Desk");
 
@@ -71,7 +71,7 @@ watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
 <template>
   <div
     v-if="!appStore.desktopStateReady"
-    class="app-shell startup-shell"
+    class="app-shell startup-shell relative grid h-full w-full grid-cols-1 grid-rows-1 place-items-center overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased"
     :data-theme="appStore.appearance"
     :style="{
       '--sidebar-width': `${appStore.sidebarWidth}px`,
@@ -80,11 +80,11 @@ watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
     role="status"
     aria-label="Pi Desk"
   >
-    <span class="startup-mark">Pi</span>
+    <span class="startup-mark grid size-9 place-items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-raised)] text-sm font-bold shadow-sm">Pi</span>
   </div>
   <div
     v-else
-    class="app-shell"
+    class="app-shell relative grid h-full w-full grid-rows-[52px_minmax(0,1fr)] overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased max-[760px]:[grid-template-columns:56px_minmax(0,1fr)]"
     :data-theme="appStore.appearance"
     :style="{
       '--sidebar-width': `${appStore.sidebarWidth}px`,
@@ -95,6 +95,8 @@ watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
       'is-sidebar-collapsed': appStore.sidebarCollapsed,
       'is-inspector-closed': !appStore.inspectorOpen,
       'is-inspector-open': appStore.inspectorOpen,
+      '[grid-template-columns:56px_minmax(0,1fr)]': appStore.sidebarCollapsed,
+      '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]': !appStore.sidebarCollapsed,
     }"
   >
     <AppTopbar />
@@ -109,7 +111,7 @@ watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
       @resize="appStore.setSidebarWidth($event)"
       @commit="appStore.setSidebarWidth($event, true)"
     />
-    <main class="workspace-shell">
+    <main class="workspace-shell relative z-0 col-start-2 row-start-2 grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-[var(--bg-workspace)]">
       <ConversationPane />
     </main>
     <InspectorPanel v-if="appStore.inspectorOpen" />

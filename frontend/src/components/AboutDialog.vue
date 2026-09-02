@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { X } from "lucide-vue-next";
 import { ref } from "vue";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -11,13 +12,13 @@ useModalFocus(dialog, () => appStore.closeAbout());
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="appStore.closeAbout()">
-    <section ref="dialog" class="dialog-window about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" tabindex="-1">
-      <header>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="appStore.closeAbout()">
+    <section ref="dialog" class="dialog-window about-dialog" :class="ui.dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" tabindex="-1">
+      <header :class="ui.dialogHeader">
         <h2 id="about-title">{{ tr("about.title") }}</h2>
-        <button class="icon-button" type="button" :title="tr('common.close')" @click="appStore.closeAbout()"><X :size="17" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" @click="appStore.closeAbout()"><X :size="17" /></button>
       </header>
-      <div class="dialog-body about-content">
+      <div class="dialog-body about-content" :class="ui.dialogBody">
         <div class="about-product">
           <span class="about-mark" aria-hidden="true">Pi</span>
           <div>
@@ -33,8 +34,8 @@ useModalFocus(dialog, () => appStore.closeAbout());
         </dl>
         <p class="about-note">{{ tr("about.note") }}</p>
       </div>
-      <footer>
-        <button class="text-button primary" type="button" autofocus @click="appStore.closeAbout()">{{ tr("common.close") }}</button>
+      <footer :class="ui.dialogFooter">
+        <button class="text-button primary" :class="ui.buttonPrimary" type="button" autofocus @click="appStore.closeAbout()">{{ tr("common.close") }}</button>
       </footer>
     </section>
   </div>

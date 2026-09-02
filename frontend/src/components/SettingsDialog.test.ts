@@ -31,6 +31,27 @@ describe("SettingsDialog", () => {
     store.closeSettings = vi.fn();
     const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
 
+    expect(wrapper.get(".settings-title-path").text()).toContain("Settings");
+    expect(wrapper.get(".settings-title-path").text()).toContain("General");
+    expect(wrapper.get(".settings-layout").classes()).not.toContain("px-5");
+    expect(wrapper.get(".settings-dialog").classes()).toEqual(expect.arrayContaining([
+      "[&_.text-button]:!h-7",
+      "[&_.text-button]:!min-h-7",
+      "[&_.text-button]:!text-xs",
+      "[&_.icon-button]:!size-7",
+      "[&_.text-button_svg]:!size-[13px]",
+      "[&_select]:!h-7",
+      "[&_select]:!text-xs",
+      "[&_input:not([type=checkbox]):not([type=radio])]:!h-7",
+      "[&_input[type=checkbox]]:!size-3.5",
+      "[&_textarea]:!text-xs",
+    ]));
+    expect(wrapper.findAll(".appearance-select")).toHaveLength(2);
+    for (const select of wrapper.findAll(".appearance-select")) {
+      expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
+      expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
+    }
+
     const checkboxes = wrapper.findAll('input[type="checkbox"]');
     await checkboxes[0].setValue(false);
     await checkboxes[1].setValue(true);

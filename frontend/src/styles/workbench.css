@@ -1,9 +1,14 @@
+/* Hallmark · genre: modern-minimal · tone: technical/austere · palette: monochrome graphite
+   · macrostructure: split-shell workbench · critique: P5 H5 E5 S5 R5 V4
+   · contrast: pass (40–41) · slop: pass (42–45) · mobile: pass (34, 49, 50–57) */
 /* Pi Desk workbench calibration. Loaded after the legacy component rules so the
    shell can evolve without changing component-level behavior. */
 :root {
   --sidebar-width: 272px;
   --sidebar-collapsed-width: 56px;
   --inspector-width: 320px;
+  --conversation-content-width: 960px;
+  --composer-overlay-reserve: 164px;
   --topbar-height: 52px;
   --app-menu-height: 0px;
   --window-controls-width: 138px;
@@ -370,7 +375,7 @@
 }
 
 .app-shell.is-inspector-open .workspace-shell {
-  padding-right: calc(var(--inspector-width) + 48px);
+  padding-right: 0;
 }
 
 .sidebar {
@@ -406,20 +411,6 @@
   padding: 0 11px;
   border-radius: 7px;
   font-size: 14px;
-}
-
-.new-task-button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  border: 0;
-  background: var(--text);
-  color: var(--text-inverse);
-  cursor: pointer;
-}
-
-.new-task-button:hover {
-  opacity: 0.86;
 }
 
 .primary-nav-row {
@@ -473,7 +464,11 @@
 }
 
 .pane-resizer.is-right {
-  right: calc(var(--inspector-width) + 17px);
+  right: calc(var(--inspector-width) + 14px);
+}
+
+.pane-resizer.is-right::after {
+  content: none;
 }
 
 .inspector {
@@ -520,10 +515,22 @@
   min-height: 0;
 }
 
+.conversation-scroll-region {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+
 .timeline {
-  width: min(960px, 100%);
+  --conversation-inline-space: max(40px, calc((100% - var(--conversation-content-width)) / 2));
+  width: 100%;
   max-width: none;
-  padding: 36px 40px 28px;
+  padding: 36px var(--conversation-inline-space) calc(var(--composer-overlay-reserve) + 28px);
+  scroll-padding-bottom: var(--composer-overlay-reserve);
+}
+
+.app-shell.is-inspector-open .timeline {
+  --conversation-inline-space: max(40px, calc((100% - var(--inspector-width) - 18px - var(--conversation-content-width)) / 2));
+  padding-right: calc(var(--inspector-width) + 18px + var(--conversation-inline-space));
 }
 
 .message-row {
@@ -533,6 +540,11 @@
 .message-row[data-role="assistant"],
 .message-row[data-role="system"] {
   padding: 9px 0;
+}
+
+.message-row[data-role="assistant"] .message-content,
+.message-row[data-role="system"] .message-content {
+  max-width: 100%;
 }
 
 .message-content p,
@@ -583,9 +595,21 @@
 }
 
 .composer-wrap {
-  --composer-max-width: 880px;
+  --composer-max-width: var(--conversation-content-width);
   --composer-stack-total-inset: 24px;
-  padding: 10px 20px 22px;
+  --conversation-inline-space: max(40px, calc((100% - var(--conversation-content-width)) / 2));
+  position: relative;
+  z-index: 2;
+  grid-column: 1;
+  grid-row: 2;
+  padding: 10px var(--conversation-inline-space) 22px;
+  background: linear-gradient(to right, var(--bg-workspace) calc(100% - 15px), transparent calc(100% - 15px));
+  pointer-events: none;
+}
+
+.app-shell.is-inspector-open .composer-wrap {
+  --conversation-inline-space: max(40px, calc((100% - var(--inspector-width) - 18px - var(--conversation-content-width)) / 2));
+  padding-right: calc(var(--inspector-width) + 18px + var(--conversation-inline-space));
 }
 
 .composer,
@@ -593,6 +617,7 @@
 .extension-widget,
 .extension-status-list {
   width: min(var(--composer-max-width), 100%);
+  pointer-events: auto;
 }
 
 .composer {
@@ -626,7 +651,7 @@
 
 .composer-token-metrics {
   display: grid;
-  width: min(860px, calc(100% - 20px));
+  width: min(var(--composer-max-width), 100%);
 }
 
 .send-button,
@@ -642,28 +667,196 @@
 }
 
 .dialog-window h2 {
-  font-size: 16px;
-}
-
-.dialog-body,
-.settings-content {
   font-size: 14px;
-  line-height: 1.6;
 }
 
-.settings-nav button,
+.settings-dialog > header {
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.settings-title-path {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.settings-title-path > span,
+.settings-title-path > strong {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.dialog-body.settings-layout {
+  padding: 0 !important;
+  padding-block: 0 !important;
+  padding-inline: 0 !important;
+}
+
+.settings-content {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .settings-dialog label[for="proxy-url"],
 .dialog-body > label,
 .trust-options legend {
-  font-size: 14px;
+  font-size: 11.5px;
 }
 
 .settings-nav button {
-  height: 40px;
+  width: 100%;
+  height: 34px;
+  justify-content: flex-start;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 0;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .settings-layout {
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 156px minmax(0, 1fr);
+}
+
+.settings-nav {
+  gap: 0;
+  padding: 0;
+}
+
+.settings-nav button:hover {
+  background: var(--bg-hover);
+}
+
+.settings-nav button.is-active {
+  background: var(--bg-active);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.settings-dialog .setting-row-select select {
+  width: 128px;
+  flex-basis: 128px;
+}
+
+.settings-dialog .resource-search input {
+  min-height: 0 !important;
+  height: 100%;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  font-size: 12px !important;
+  outline: 0 !important;
+}
+
+.settings-dialog .prompt-config-scope > button {
+  min-height: 32px !important;
+  padding: 4px 8px !important;
+}
+
+.settings-dialog .prompt-config-scope > button > span {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.settings-dialog .provider-header-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) 28px;
+}
+
+.settings-dialog .model-config-content {
+  padding: 0 !important;
+}
+
+.settings-dialog .model-config-header {
+  min-height: 0 !important;
+  gap: 10px !important;
+  margin: 0 !important;
+  padding: 9px 12px !important;
+}
+
+.settings-dialog .model-manager-layout {
+  min-height: 0 !important;
+  grid-template-columns: 200px minmax(0, 1fr) !important;
+  border-radius: 6px !important;
+}
+
+.settings-dialog .model-config-list {
+  padding: 6px 6px 12px !important;
+}
+
+.settings-dialog .model-config-list > button,
+.settings-dialog .model-config-provider > button {
+  min-height: 32px !important;
+  padding: 4px 7px !important;
+  border-radius: 5px !important;
+}
+
+.settings-dialog .model-config-provider {
+  padding-top: 5px;
+}
+
+.settings-dialog .model-config-provider + .model-config-provider {
+  margin-top: 5px;
+}
+
+.settings-dialog .model-config-provider > header {
+  height: 24px;
+  padding: 0 7px;
+}
+
+.settings-dialog .model-editor {
+  padding: 12px 14px 0 !important;
+}
+
+.settings-dialog .model-editor-title {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-dialog .model-editor-title strong {
+  font-size: 12.5px;
+}
+
+.settings-dialog .model-form-grid {
+  gap: 8px 10px !important;
+}
+
+.settings-dialog .model-field {
+  gap: 4px !important;
+  font-size: 11px !important;
+}
+
+.settings-dialog .model-field > textarea {
+  min-height: 72px !important;
+}
+
+.settings-dialog .model-field > small {
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.settings-dialog .model-form-separator {
+  margin: 14px 0 10px;
+}
+
+.settings-dialog .model-check-row {
+  min-height: 44px;
+  padding: 5px 0;
+}
+
+.settings-dialog .model-advanced {
+  margin-top: 14px;
+  padding: 10px 0;
+}
+
+.settings-dialog .model-editor-actions {
+  gap: 4px;
+  margin: 10px -14px 0;
+  padding: 6px 14px 8px;
 }
 
 .context-panel dl div {
@@ -673,10 +866,6 @@
 @media (max-width: 1279px) {
   .app-shell.is-inspector-open .workspace-shell {
     padding-right: 0;
-  }
-
-  .app-shell.is-inspector-open .conversation-outline {
-    right: min(var(--inspector-width), calc(100% - 58px));
   }
 
   .inspector {
@@ -837,6 +1026,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .settings-dialog .provider-header-row {
+    grid-template-columns: minmax(0, 1fr) 28px;
   }
 }
 

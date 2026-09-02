@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { ref, watch } from "vue";
 
-const props = defineProps<{ path: string; content: string; label: string }>();
+const props = defineProps<{ path: string; content: string; label: string; flush?: boolean }>();
 const highlighted = ref<{ text: string; classes: string }[]>();
 let generation = 0;
 
@@ -39,5 +40,5 @@ watch(() => [props.path, props.content] as const, async ([path, content]) => {
 </script>
 
 <template>
-  <pre class="file-preview-content" :aria-label="label"><code v-if="highlighted"><span v-for="(segment, index) in highlighted" :key="index" :class="segment.classes">{{ segment.text }}</span></code><code v-else>{{ content }}</code></pre>
+  <pre class="file-preview-content" :class="[ui.code, { 'rounded-none! border-0!': flush }]" :aria-label="label"><code v-if="highlighted"><span v-for="(segment, index) in highlighted" :key="index" :class="segment.classes">{{ segment.text }}</span></code><code v-else>{{ content }}</code></pre>
 </template>

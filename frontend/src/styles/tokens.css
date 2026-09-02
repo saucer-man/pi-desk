@@ -30,7 +30,7 @@
   --amber: #d8ad5b;
   --red: #e27a76;
   --blue: #8ab4e8;
-  --focus: #6e9edb;
+  --focus: var(--text);
   --text-code: #e7e0d4;
   --text-inverse: #222;
   --brand-surface: #f2f2f2;
@@ -46,7 +46,7 @@
   --diff-hunk-text: #b0c8e2;
   --overlay: rgb(0 0 0 / 52%);
   --shadow-menu: 0 14px 38px rgb(0 0 0 / 35%);
-  --shadow-raised: none;
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 18%);
   --shadow-dialog: 0 24px 70px rgb(0 0 0 / 48%);
   --sidebar-width: 280px;
   --sidebar-collapsed-width: 36px;
@@ -57,6 +57,21 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 8px;
+  --color-paper: var(--bg-workspace);
+  --color-ink: var(--text);
+  --color-ink-muted: var(--text-muted);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-accent: var(--text);
+  --color-accent-ink: var(--text-inverse);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
 }
 
 :root[data-theme="light"],
@@ -84,7 +99,7 @@
   --amber: #a26c12;
   --red: #c44943;
   --blue: #4c78b5;
-  --focus: #4c78b5;
+  --focus: var(--text);
   --text-code: #454545;
   --text-inverse: #ffffff;
   --brand-surface: #f1f1f1;
@@ -100,7 +115,7 @@
   --diff-hunk-text: #466ea5;
   --overlay: rgb(30 30 30 / 28%);
   --shadow-menu: 0 14px 38px rgb(0 0 0 / 12%);
-  --shadow-raised: none;
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 8%);
   --shadow-dialog: 0 24px 70px rgb(0 0 0 / 18%);
 }
 
@@ -130,7 +145,7 @@
     --amber: #a26c12;
     --red: #c44943;
     --blue: #4c78b5;
-    --focus: #4c78b5;
+    --focus: var(--text);
     --text-code: #454545;
     --text-inverse: #ffffff;
     --brand-surface: #f1f1f1;
@@ -146,7 +161,7 @@
     --diff-hunk-text: #466ea5;
     --overlay: rgb(30 30 30 / 28%);
     --shadow-menu: 0 14px 38px rgb(0 0 0 / 12%);
-    --shadow-raised: none;
+    --shadow-raised: 0 1px 2px rgb(0 0 0 / 8%);
     --shadow-dialog: 0 24px 70px rgb(0 0 0 / 18%);
   }
 }

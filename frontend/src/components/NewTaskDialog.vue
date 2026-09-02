@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { FolderGit2, FolderOpen, LoaderCircle, Server, ShieldCheck, ShieldOff, X } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -300,31 +301,31 @@ async function create() {
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="void close()">
-    <section ref="dialog" class="dialog-window new-task-dialog" role="dialog" aria-modal="true" aria-labelledby="new-task-title" tabindex="-1" @click="closeRemoteAliasPicker">
-      <header>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="void close()">
+    <section ref="dialog" class="dialog-window new-task-dialog" :class="ui.dialog" role="dialog" aria-modal="true" aria-labelledby="new-task-title" tabindex="-1" @click="closeRemoteAliasPicker">
+      <header :class="ui.dialogHeader">
         <h2 id="new-task-title">{{ tr("newTask.title") }}</h2>
-        <button class="icon-button" type="button" :title="tr('common.close')" :disabled="remoteBusy" @click="void close()"><X :size="17" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" :disabled="remoteBusy" @click="void close()"><X :size="17" /></button>
       </header>
-      <div class="dialog-body">
+      <div class="dialog-body" :class="ui.dialogBody">
         <div class="segmented-control" role="group" :aria-label="tr('newTask.location')">
-          <button type="button" :class="{ active: mode === 'local' }" @click="void selectMode('local')"><FolderGit2 :size="15" />{{ tr("newTask.local") }}</button>
-          <button type="button" :class="{ active: mode === 'ssh' }" @click="void selectMode('ssh')"><Server :size="15" />{{ tr("newTask.ssh") }}</button>
+          <button type="button" :class="[ui.tab, { active: mode === 'local' }]" :aria-pressed="mode === 'local'" @click="void selectMode('local')"><FolderGit2 :size="15" />{{ tr("newTask.local") }}</button>
+          <button type="button" :class="[ui.tab, { active: mode === 'ssh' }]" :aria-pressed="mode === 'ssh'" @click="void selectMode('ssh')"><Server :size="15" />{{ tr("newTask.ssh") }}</button>
         </div>
 
         <template v-if="mode === 'local'">
           <label for="workspace-path">{{ tr("newTask.workspace") }}</label>
-          <div class="path-input">
+          <div class="path-input focus-within:border-[var(--text-secondary)] focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-[var(--text)]">
             <FolderGit2 :size="16" />
-            <input id="workspace-path" v-model="workspacePath" autofocus spellcheck="false" placeholder="D:\projects\my-project" @keydown.enter="create" />
-            <button class="icon-button" type="button" :title="tr('newTask.browse')" :disabled="browsing" @click="browse">
+            <input class="h-full w-full min-w-0 border-0 bg-transparent p-0 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]" id="workspace-path" v-model="workspacePath" autofocus spellcheck="false" placeholder="D:\projects\my-project" @keydown.enter="create" />
+            <button class="icon-button inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50" type="button" :title="tr('newTask.browse')" :disabled="browsing" @click="browse">
               <LoaderCircle v-if="browsing" :size="15" class="is-spinning" /><FolderOpen v-else :size="15" />
             </button>
           </div>
           <fieldset class="trust-options">
             <legend>{{ tr("newTask.resources") }}</legend>
-            <label :class="{ 'is-selected': trust === 'deny' }"><input v-model="trust" type="radio" value="deny" /><ShieldOff :size="18" /><span><strong>{{ tr("newTask.restricted") }}</strong><small>{{ tr("newTask.restrictedHelp") }}</small></span></label>
-            <label :class="{ 'is-selected': trust === 'approve' }"><input v-model="trust" type="radio" value="approve" /><ShieldCheck :size="18" /><span><strong>{{ tr("newTask.trusted") }}</strong><small>{{ tr("newTask.trustedHelp") }}</small></span></label>
+            <label :class="[ui.listItem, { 'is-selected': trust === 'deny' }]"><input v-model="trust" type="radio" value="deny" /><ShieldOff :size="18" /><span><strong>{{ tr("newTask.restricted") }}</strong><small>{{ tr("newTask.restrictedHelp") }}</small></span></label>
+            <label :class="[ui.listItem, { 'is-selected': trust === 'approve' }]"><input v-model="trust" type="radio" value="approve" /><ShieldCheck :size="18" /><span><strong>{{ tr("newTask.trusted") }}</strong><small>{{ tr("newTask.trustedHelp") }}</small></span></label>
           </fieldset>
         </template>
 
@@ -345,13 +346,13 @@ async function create() {
             >
               <span :class="{ 'is-placeholder': !remoteAlias }">{{ remoteAlias || "my-server" }}</span>
             </button>
-            <div v-if="remoteAliasOpen" id="remote-alias-options" class="remote-alias-options" role="listbox">
+            <div v-if="remoteAliasOpen" id="remote-alias-options" class="remote-alias-options" :class="ui.menu" role="listbox">
               <button
                 v-for="(alias, index) in remoteAliases"
                 :id="`remote-alias-option-${index}`"
                 :key="alias.name"
                 class="remote-alias-option"
-                :class="{ 'is-active': index === remoteAliasActiveIndex, 'is-risky': alias.risky }"
+                :class="[ui.menuItem, { 'is-active': index === remoteAliasActiveIndex, 'is-risky': alias.risky }]"
                 type="button"
                 role="option"
                 :aria-selected="alias.name === remoteAlias"
@@ -364,9 +365,9 @@ async function create() {
             </div>
           </div>
           <label for="remote-root">{{ tr("newTask.sshRoot") }}</label>
-          <input id="remote-root" v-model="remoteRoot" spellcheck="false" placeholder="/home/me/project" />
+          <input :class="ui.input" id="remote-root" v-model="remoteRoot" spellcheck="false" placeholder="/home/me/project" />
           <label for="remote-name">{{ tr("newTask.sshName") }}</label>
-          <input id="remote-name" v-model="remoteName" maxlength="100" @input="remoteNameCustomized = true" />
+          <input :class="ui.input" id="remote-name" v-model="remoteName" maxlength="100" @input="remoteNameCustomized = true" />
           <div v-if="candidate" class="remote-root-review">
             <strong>{{ tr("newTask.sshReview") }}</strong>
             <span>{{ candidate.hostAlias }}</span>
@@ -384,10 +385,10 @@ async function create() {
 
         <p v-if="validationError" class="form-error">{{ validationError }}</p>
       </div>
-      <footer>
-        <button class="text-button" type="button" :disabled="remoteBusy" @click="void close()">{{ tr("common.cancel") }}</button>
-        <button v-if="candidate" class="text-button danger-button" type="button" :disabled="remoteBusy" @click="void rejectRemoteRoot()">{{ tr("newTask.sshReject") }}</button>
-        <button class="text-button primary" type="button" :disabled="creating || (mode === 'local' ? !workspacePath.trim() : (!candidate && (!remoteName.trim() || !remoteAlias.trim() || !remoteRoot.trim())))" @click="create">
+      <footer :class="ui.dialogFooter">
+        <button class="text-button" :class="ui.button" type="button" :disabled="remoteBusy" @click="void close()">{{ tr("common.cancel") }}</button>
+        <button v-if="candidate" class="text-button danger-button" :class="ui.buttonDanger" type="button" :disabled="remoteBusy" @click="void rejectRemoteRoot()">{{ tr("newTask.sshReject") }}</button>
+        <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="creating || (mode === 'local' ? !workspacePath.trim() : (!candidate && (!remoteName.trim() || !remoteAlias.trim() || !remoteRoot.trim())))" @click="create">
           <LoaderCircle v-if="creating" :size="14" class="is-spinning" />
           {{ creating ? tr("newTask.creating") : candidate ? tr("newTask.sshApprove") : mode === 'ssh' ? tr("newTask.sshCheckConnect") : tr("newTask.create") }}
         </button>

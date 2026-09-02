@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { LoaderCircle, RefreshCw, X } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import type { OrphanSessionSummary } from "../../bindings/pi-desk/internal/domain";
@@ -131,17 +132,17 @@ onMounted(() => { void loadSessions(); });
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="close">
-    <section ref="dialog" class="dialog-window orphan-dialog" role="dialog" aria-modal="true" aria-labelledby="orphan-title" tabindex="-1">
-      <header>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="close">
+    <section ref="dialog" class="dialog-window orphan-dialog" :class="[ui.dialog, ui.dialogWide]" role="dialog" aria-modal="true" aria-labelledby="orphan-title" tabindex="-1">
+      <header :class="ui.dialogHeader">
         <h2 id="orphan-title">{{ tr("orphan.title") }}</h2>
-        <button class="icon-button" type="button" :title="tr('common.close')" :disabled="busy" @click="close"><X :size="17" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" :disabled="busy" @click="close"><X :size="17" /></button>
       </header>
       <div class="orphan-body">
         <aside class="orphan-list" :aria-label="tr('orphan.sessions')">
           <p v-if="loading" class="sidebar-empty"><LoaderCircle :size="15" class="is-spinning" /> {{ tr("orphan.loading") }}</p>
           <p v-else-if="sessions.length === 0" class="sidebar-empty">{{ tr("orphan.empty") }}</p>
-          <button v-for="session in sessions" :key="session.path" type="button" :class="{ active: selectedPath === session.path }" @click="void selectSession(session.path)">
+          <button v-for="session in sessions" :key="session.path" type="button" :class="[ui.listItem, { active: selectedPath === session.path }]" @click="void selectSession(session.path)">
             <strong>{{ session.title || session.name || tr("orphan.untitled") }}</strong>
             <small>{{ session.firstMessage }}</small>
             <span>{{ tr("orphan.messageCount", { count: session.messageCount }) }}</span>
@@ -155,12 +156,12 @@ onMounted(() => { void loadSessions(); });
                 <small>{{ matchingWorkspace ? tr("orphan.matchFound", { workspace: matchingWorkspace.name }) : tr("orphan.matchMissing") }}</small>
               </div>
               <div class="orphan-actions">
-                <button class="text-button" type="button" :disabled="busy || !matchingWorkspace" @click="void restoreSelected()"><RefreshCw :size="14" />{{ tr("orphan.restore") }}</button>
+                <button class="text-button" :class="ui.button" type="button" :disabled="busy || !matchingWorkspace" @click="void restoreSelected()"><RefreshCw :size="14" />{{ tr("orphan.restore") }}</button>
               </div>
             </header>
             <div class="orphan-messages" aria-live="polite">
               <p v-if="loadingTranscript && messages.length === 0" class="sidebar-empty"><LoaderCircle :size="15" class="is-spinning" /> {{ tr("orphan.loadingTranscript") }}</p>
-              <article v-for="message in messages" :key="message.id" :data-role="message.role">
+              <article v-for="message in messages" :key="message.id" :class="ui.messageItem" :data-role="message.role">
                 <header><strong>{{ message.role }}</strong><time v-if="message.timestamp">{{ message.timestamp }}</time></header>
                 <pre>{{ message.text }}</pre>
               </article>
@@ -170,10 +171,10 @@ onMounted(() => { void loadSessions(); });
           <p v-else class="sidebar-empty">{{ tr("orphan.select") }}</p>
         </main>
       </div>
-      <footer>
+      <footer :class="ui.dialogFooter">
         <p v-if="errorText" class="form-error" role="alert">{{ errorText }}</p>
         <p v-else-if="resultText" class="form-success">{{ resultText }}</p>
-        <button class="text-button" type="button" :disabled="busy" @click="close">{{ tr("common.close") }}</button>
+        <button class="text-button" :class="ui.button" type="button" :disabled="busy" @click="close">{{ tr("common.close") }}</button>
       </footer>
     </section>
   </div>

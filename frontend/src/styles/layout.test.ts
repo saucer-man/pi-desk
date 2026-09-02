@@ -46,21 +46,22 @@ describe("application rail alignment", () => {
   });
 });
 
-describe("conversation outline spacing", () => {
-  it("uses fixed rows instead of distributing gaps across the rail", async () => {
+describe("conversation scroll rail", () => {
+  it("places the quick-jump outline on the left and the scrollbar on the far right", async () => {
     const layout = await layoutText();
+    const timeline = firstRuleBody(layout, ".timeline");
+    expect(timeline).toMatch(/overflow-y:\s*auto/);
+    expect(timeline).toMatch(/max-width:\s*none/);
+    expect(timeline).toMatch(/scrollbar-width:\s*auto/);
+    expect(timeline).toMatch(/scrollbar-gutter:\s*stable/);
+    expect(timeline).not.toMatch(/scrollbar-color:/);
+    expect(ruleBodies(layout, ".timeline::-webkit-scrollbar")).toHaveLength(0);
+    expect(ruleBodies(layout, ".timeline::-webkit-scrollbar-track")).toHaveLength(0);
+    expect(ruleBodies(layout, ".timeline::-webkit-scrollbar-thumb")).toHaveLength(0);
     const outline = firstRuleBody(layout, ".conversation-outline");
-    expect(outline).toMatch(/right:\s*0/);
-    expect(outline).toMatch(/left:\s*auto/);
-    const outlineList = firstRuleBody(layout, ".conversation-outline-list");
-    expect(outlineList).toMatch(/display:\s*grid/);
-    expect(outlineList).toMatch(/grid-auto-rows:\s*10px/);
-    expect(outlineList).toMatch(/row-gap:\s*0/);
-    expect(outlineList).toMatch(/align-content:\s*safe center/);
-    expect(outlineList).not.toMatch(/space-around/);
-    const preview = firstRuleBody(layout, ".conversation-outline-preview");
-    expect(preview).toMatch(/right:\s*42px/);
-    expect(preview).toMatch(/left:\s*auto/);
+    expect(outline).toMatch(/left:\s*8px/);
+    expect(outline).not.toMatch(/right:/);
+    expect(firstRuleBody(layout, ".conversation-outline-preview")).toMatch(/left:\s*40px/);
   });
 });
 

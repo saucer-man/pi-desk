@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { LoaderCircle, Server, X } from "lucide-vue-next";
 import { useModalFocus } from "../composables/useModalFocus";
 import { useAppStore } from "../stores/app";
@@ -25,13 +26,13 @@ useModalFocus(dialog, close, { canClose: () => !appStore.remoteReconnectBusy });
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="close">
-    <section ref="dialog" class="dialog-window remote-reconnect-dialog" role="dialog" aria-modal="true" aria-labelledby="remote-reconnect-title" tabindex="-1">
-      <header>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="close">
+    <section ref="dialog" class="dialog-window remote-reconnect-dialog" :class="ui.dialog" role="dialog" aria-modal="true" aria-labelledby="remote-reconnect-title" tabindex="-1">
+      <header :class="ui.dialogHeader">
         <h2 id="remote-reconnect-title">{{ tr("remoteReconnect.title") }}</h2>
-        <button class="icon-button" type="button" :title="tr('common.close')" :disabled="appStore.remoteReconnectBusy" @click="close"><X :size="17" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" :disabled="appStore.remoteReconnectBusy" @click="close"><X :size="17" /></button>
       </header>
-      <div class="dialog-body">
+      <div class="dialog-body" :class="ui.dialogBody">
         <div class="remote-reconnect-target">
           <Server :size="20" />
           <div>
@@ -48,9 +49,9 @@ useModalFocus(dialog, close, { canClose: () => !appStore.remoteReconnectBusy });
         </div>
         <p v-if="appStore.remoteReconnectError" class="form-error" role="alert">{{ appStore.remoteReconnectError }}</p>
       </div>
-      <footer>
-        <button class="text-button" type="button" :disabled="appStore.remoteReconnectBusy" @click="close">{{ tr("common.cancel") }}</button>
-        <button class="text-button primary" type="button" :disabled="appStore.remoteReconnectBusy" @click="void appStore.confirmRemoteReconnect()">
+      <footer :class="ui.dialogFooter">
+        <button class="text-button" :class="ui.button" type="button" :disabled="appStore.remoteReconnectBusy" @click="close">{{ tr("common.cancel") }}</button>
+        <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="appStore.remoteReconnectBusy" @click="void appStore.confirmRemoteReconnect()">
           <LoaderCircle v-if="appStore.remoteReconnectBusy" :size="14" class="is-spinning" />
           {{ appStore.remoteReconnectBusy ? tr("remoteReconnect.connecting") : tr("remoteReconnect.connect") }}
         </button>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, SquareTerminal, Wrench } from "lucide-vue-next";
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolExecution } from "../stores/app";
 import { tr } from "../i18n";
 
 const props = defineProps<{ tool: ToolExecution }>();
 const copied = ref<"input" | "output" | "">("");
+const open = ref(props.tool.status === "running");
 let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
 
 const inputText = computed(() => {
@@ -37,6 +39,15 @@ const durationLabel = computed(() => {
   return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)}s`;
 });
 
+watch(() => props.tool.status, (status, previous) => {
+  if (status === "running") open.value = true;
+  else if (previous === "running") open.value = false;
+});
+
+function syncOpen(event: Event) {
+  open.value = (event.currentTarget as HTMLDetailsElement).open;
+}
+
 function diffLineClass(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++")) return "is-added";
   if (line.startsWith("-") && !line.startsWith("---")) return "is-removed";
@@ -62,8 +73,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <details class="tool-call" :data-state="tool.status">
-    <summary>
+  <details class="tool-call" :data-state="tool.status" :open="open" @toggle="syncOpen">
+    <summary :class="ui.root">
       <ChevronRight class="disclosure-icon" :size="13" aria-hidden="true" />
       <SquareTerminal v-if="tool.name === 'bash'" :size="15" aria-hidden="true" />
       <Wrench v-else :size="15" aria-hidden="true" />

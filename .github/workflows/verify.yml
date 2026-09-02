@@ -3,6 +3,7 @@ name: verify
 on:
   push:
     branches: [main]
+    tags: ["*"]
   pull_request:
   workflow_dispatch:
 
@@ -34,25 +35,21 @@ jobs:
         working-directory: frontend
         run: npm ci --ignore-scripts
 
-      - name: Check frontend
-        working-directory: frontend
-        run: npm run check
-
-      - name: Test and vet Go
-        shell: pwsh
-        run: ./.github/scripts/verify-go.ps1
-
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
 
       - name: Build Windows desktop executable
         run: wails3 build
 
-      - name: Upload Windows executable
+      - name: Archive Windows executable
+        shell: pwsh
+        run: Compress-Archive -Path bin/pi-desk.exe -DestinationPath bin/pi-desk-windows-amd64.zip
+
+      - name: Upload Windows archive
         uses: actions/upload-artifact@v4
         with:
           name: pi-desk-windows-amd64
-          path: bin/pi-desk.exe
+          path: bin/pi-desk-windows-amd64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -79,14 +76,6 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci --ignore-scripts
-
-      - name: Check frontend
-        working-directory: frontend
-        run: npm run check
-
-      - name: Test and vet Go
-        shell: pwsh
-        run: ./.github/scripts/verify-go.ps1
 
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
@@ -134,13 +123,14 @@ jobs:
         working-directory: frontend
         run: npm ci --ignore-scripts
 
-      - name: Check frontend
+      - name: Test frontend
         working-directory: frontend
-        run: npm run check
+        run: npm test
 
       - name: Test and vet Go
-        shell: pwsh
-        run: ./.github/scripts/verify-go.ps1
+        run: |
+          go test ./...
+          go vet ./...
 
       - name: Race remote protocol and helper
         env:
@@ -153,19 +143,15 @@ jobs:
           go test ./internal/remotehelper -run '^$' -fuzz '^FuzzValidateRelativePath$' -fuzztime=10s
           go test ./internal/remotessh -run '^$' -fuzz '^FuzzParseHostKeyEvidence$' -fuzztime=10s
 
-      - name: Build remote helper target matrix
-        run: >-
-          go run ./cmd/pi-desk-remote-artifacts
-          -output "${RUNNER_TEMP}/remote-helper-artifacts"
-          -build-identity pi-desk-v0.1.0-p1
-          -pi-min 0.84.2
-          -pi-max 0.85.0
-
       - name: Install pinned Wails CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.6
 
       - name: Build Linux desktop executable
         run: wails3 build
+
+      - name: Smoke test frontend bundle
+        working-directory: frontend
+        run: npm run smoke:dist
 
       - name: Archive Linux executable
         run: tar -C bin -czf bin/pi-desk-linux-amd64.tar.gz pi-desk
@@ -177,3 +163,26 @@ jobs:
           path: bin/pi-desk-linux-amd64.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pi-desk-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber

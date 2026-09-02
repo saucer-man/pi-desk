@@ -1431,6 +1431,7 @@ describe("app store", () => {
 
     store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "message_start", payload: { message: { id: "assistant-thinking", role: "assistant", content: [] } } } });
     store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "message_update", payload: { assistantMessageEvent: { type: "thinking_delta", delta: "Partial" } } } });
+    expect(store.activeMessages[0].activeExecution).toBe("thinking");
     store.handlePiEvent({
       threadId: thread.id,
       event: {
@@ -1444,9 +1445,12 @@ describe("app store", () => {
     });
 
     expect(store.activeMessages[0]).toMatchObject({ text: "Final answer", thinking: "Complete reasoning", streaming: true });
+    expect(store.activeMessages[0].activeExecution).toBeUndefined();
 
     store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "tool_execution_start", payload: { toolCallId: "verify-1", toolName: "bash", args: { command: "npm test" } } } });
-    expect(store.activeMessages[0]).toMatchObject({ streaming: true });
+    expect(store.activeMessages[0]).toMatchObject({ streaming: true, activeExecution: "tool" });
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "tool_execution_end", payload: { toolCallId: "verify-1", toolName: "bash", result: { output: "ok" } } } });
+    expect(store.activeMessages[0].activeExecution).toBeUndefined();
 
     store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "message_start", payload: { message: { id: "assistant-final", role: "assistant", content: [] } } } });
     store.handlePiEvent({ threadId: thread.id, event: { generation: 10, type: "message_update", payload: { assistantMessageEvent: { type: "text_delta", delta: "All checks passed" } } } });

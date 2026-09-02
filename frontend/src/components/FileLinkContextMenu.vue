@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { Clipboard } from "@wailsio/runtime";
 import { AppWindow, Check, Copy, ExternalLink, FolderOpen, LoaderCircle, Save } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
@@ -90,7 +91,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div ref="menu" class="file-link-context-menu" role="menu" :style="menuStyle" :aria-label="tr('files.actions')">
+    <div ref="menu" class="file-link-context-menu" :class="ui.menu" role="menu" :style="menuStyle" :aria-label="tr('files.actions')">
       <div class="file-link-context-path" :title="file.absolutePath">{{ file.absolutePath }}</div>
       <button type="button" role="menuitem" :disabled="Boolean(busy)" @click="void run('open')">
         <LoaderCircle v-if="busy === 'open'" :size="15" class="is-spinning" /><ExternalLink v-else :size="15" />

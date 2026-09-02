@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -291,23 +292,23 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="inspector-content terminal-panel">
-    <div class="terminal-toolbar">
+  <div class="inspector-content terminal-panel" :class="ui.root">
+    <div class="terminal-toolbar" :class="ui.toolbar">
       <span class="terminal-status" :class="{ 'is-running': running }" :title="running ? 'Terminal running' : 'Terminal stopped'" />
       <strong :title="shell">{{ activeThread ? shellName : "Terminal" }}</strong>
       <span v-if="activeThread" class="terminal-cwd" :title="workspaceLabel">{{ workspaceLabel }}</span>
       <div class="terminal-actions">
         <LoaderCircle v-if="loading" :size="14" class="is-spinning" />
-        <button v-else-if="!running && activeThread" class="icon-button" type="button" title="Start terminal" @click="void startTerminal()"><Play :size="14" /></button>
-        <button v-else-if="running" class="icon-button" type="button" title="Stop terminal" @click="void stopTerminal()"><Square :size="13" /></button>
-        <button class="icon-button" type="button" title="Clear terminal" :disabled="!activeThread" @click="terminal?.clear()"><Trash2 :size="14" /></button>
+        <button v-else-if="!running && activeThread" class="icon-button" :class="ui.iconButton" type="button" title="Start terminal" @click="void startTerminal()"><Play :size="14" /></button>
+        <button v-else-if="running" class="icon-button" :class="ui.iconButton" type="button" title="Stop terminal" @click="void stopTerminal()"><Square :size="13" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" title="Clear terminal" :disabled="!activeThread" @click="terminal?.clear()"><Trash2 :size="14" /></button>
       </div>
     </div>
     <div class="terminal-stage">
       <div ref="host" class="terminal-host" />
-      <div v-if="!activeThread" class="terminal-empty"><span>Select a task to open its terminal.</span></div>
-      <div v-else-if="!running && !loading && !error" class="terminal-empty">
-        <button class="text-button" type="button" @click="void startTerminal()"><Play :size="14" />Start terminal</button>
+      <div v-if="!activeThread" class="terminal-empty" :class="ui.empty"><span>Select a task to open its terminal.</span></div>
+      <div v-else-if="!running && !loading && !error" class="terminal-empty" :class="ui.empty">
+        <button class="text-button" :class="ui.button" type="button" @click="void startTerminal()"><Play :size="14" />Start terminal</button>
       </div>
     </div>
     <div v-if="error" class="terminal-error" role="alert">{{ error }}</div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ArrowLeft, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, RefreshCw, Search, X } from "lucide-vue-next";
+import { ui } from "../ui/classes";
+import { ArrowLeft, Binary, Check, ChevronDown, ExternalLink, FileCode2, FileDiff, FolderGit2, FolderOpen, GitBranch, LoaderCircle, PanelRightClose, RefreshCw, Search } from "lucide-vue-next";
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { buildRepositoryTree } from "../utils/fileMentions";
@@ -25,7 +26,6 @@ const activeDiff = computed(() => appStore.activeRepositoryDiff);
 const remoteWorkspace = computed(() => appStore.activeThread ? appStore.remoteWorkspaceForThread(appStore.activeThread) : undefined);
 const workspaceLabel = computed(() => remoteWorkspace.value?.remoteRoot || appStore.activeThread?.workspacePath || "");
 const filePreview = computed(() => appStore.activeRepositoryFilePreview);
-const previewTabs = computed(() => appStore.activeRepositoryFileTabs);
 const filePreviewName = computed(() => appStore.activeRepositoryFilePreviewPath.split(/[\\/]/).pop() || appStore.activeRepositoryFilePreviewPath);
 const markdownRendered = ref(true);
 const filteredBranches = computed(() => {
@@ -80,12 +80,6 @@ function diffLines(value: string): string[] {
   return value.replace(/\n$/, "").split("\n");
 }
 
-function formatFileSize(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-}
-
 function toggleBranches() {
   branchesOpen.value = !branchesOpen.value;
   if (branchesOpen.value) void appStore.refreshActiveRepositoryBranches();
@@ -124,46 +118,31 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
 </script>
 
 <template>
-  <aside class="inspector" :aria-label="tr('inspector.label')">
-    <div class="inspector-header">
-      <div v-if="appStore.activeRepositoryFilePreviewPath" class="inspector-file-header">
-        <button class="icon-button" type="button" :title="tr('files.closePreview')" @click="appStore.closeRepositoryFilePreview()"><ArrowLeft :size="15" /></button>
+  <aside class="inspector absolute bottom-4 right-4 top-[68px] z-30 grid w-[var(--inspector-width)] grid-rows-[52px_minmax(0,1fr)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)] shadow-lg max-[1279px]:bottom-0 max-[1279px]:right-0 max-[1279px]:top-[52px] max-[1279px]:rounded-none max-[1279px]:rounded-l-xl max-[520px]:left-14 max-[520px]:w-[calc(100%_-_56px)] max-[520px]:rounded-none" :class="ui.root" :aria-label="tr('inspector.label')">
+    <div class="inspector-header flex min-h-[52px] items-center justify-between border-b border-[var(--border)] px-3">
+      <div v-if="appStore.activeRepositoryFilePreviewPath" class="inspector-file-header flex min-w-0 flex-1 items-center gap-2">
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.closePreview')" @click="appStore.closeRepositoryFilePreview()"><ArrowLeft :size="15" /></button>
         <FileCode2 :size="14" aria-hidden="true" />
         <strong :title="filePreview?.absolutePath || appStore.activeRepositoryFilePreviewPath">{{ filePreviewName }}</strong>
         <span v-if="appStore.activeRepositoryFilePreviewLine" class="file-preview-line">:{{ appStore.activeRepositoryFilePreviewLine }}</span>
-        <button class="icon-button" type="button" :title="tr('files.refreshPreview')" :disabled="appStore.activeRepositoryFilePreviewLoading" @click="refreshPreview"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryFilePreviewLoading }" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.refreshPreview')" :disabled="appStore.activeRepositoryFilePreviewLoading" @click="refreshPreview"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryFilePreviewLoading }" /></button>
         <div v-if="!remoteWorkspace" class="inspector-file-actions">
-          <button class="icon-button" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
-          <button class="icon-button" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
+          <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
+          <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
         </div>
       </div>
-      <div v-else class="inspector-tabs" role="tablist">
-        <button :class="{ 'is-active': appStore.inspectorTab === 'changes' }" type="button" role="tab" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.files") }}</button>
-        <button :class="{ 'is-active': appStore.inspectorTab === 'context' }" type="button" role="tab" @click="appStore.setInspectorTab('context')">{{ tr("inspector.context") }}</button>
-        <button :class="{ 'is-active': appStore.inspectorTab === 'terminal' }" type="button" role="tab" @click="appStore.setInspectorTab('terminal')">{{ tr("inspector.terminal") }}</button>
+      <div v-else class="inspector-tabs flex h-full items-stretch" role="tablist">
+        <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[13px] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'changes' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'changes'" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.files") }}</button>
+        <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[13px] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'context' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'context'" @click="appStore.setInspectorTab('context')">{{ tr("inspector.context") }}</button>
+        <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[13px] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'terminal' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'terminal'" @click="appStore.setInspectorTab('terminal')">{{ tr("inspector.terminal") }}</button>
       </div>
+      <button class="icon-button ml-auto hidden size-8 shrink-0 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] max-[520px]:inline-grid" :class="ui.iconButton" type="button" :title="tr('topbar.closeInspector')" :aria-label="tr('topbar.closeInspector')" @click="appStore.toggleInspector()"><PanelRightClose :size="17" /></button>
     </div>
 
     <div v-if="appStore.activeRepositoryFilePreviewPath" class="inspector-content file-preview-panel">
-      <div v-if="previewTabs.length" class="file-preview-tabs" role="tablist" :aria-label="tr('files.openFiles')">
-        <div
-          v-for="path in previewTabs"
-          :key="path"
-          class="file-preview-tab"
-          :class="{ 'is-active': path === appStore.activeRepositoryFilePreviewPath }"
-          :title="path"
-        >
-          <button type="button" role="tab" :aria-selected="path === appStore.activeRepositoryFilePreviewPath" @click="void appStore.openRepositoryFilePreview(path)"><span>{{ path.split(/[\\/]/).pop() }}</span></button>
-          <button class="file-preview-tab-close" type="button" :aria-label="`${tr('files.closeFile')}: ${path}`" @click="appStore.closeRepositoryFilePreview(path)"><X :size="12" /></button>
-        </div>
-      </div>
-      <div v-if="appStore.activeRepositoryFilePreviewLoading" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-      <div v-else-if="appStore.activeRepositoryFilePreviewError" class="repository-state error-text">{{ appStore.activeRepositoryFilePreviewError }}</div>
+      <div v-if="appStore.activeRepositoryFilePreviewLoading" class="repository-state" :class="ui.empty"><LoaderCircle :size="18" class="is-spinning" /></div>
+      <div v-else-if="appStore.activeRepositoryFilePreviewError" class="repository-state error-text" :class="ui.empty">{{ appStore.activeRepositoryFilePreviewError }}</div>
       <template v-else-if="filePreview">
-        <div class="file-preview-meta">
-          <span :title="filePreview.absolutePath">{{ filePreview.absolutePath }}</span>
-          <small>{{ formatFileSize(filePreview.size) }}</small>
-        </div>
         <img v-if="filePreview.mediaType?.startsWith('image/') && filePreview.dataUrl" class="file-media-preview" :src="filePreview.dataUrl" :alt="filePreviewName" />
         <audio v-else-if="filePreview.mediaType?.startsWith('audio/') && filePreview.dataUrl" class="file-audio-preview" :src="filePreview.dataUrl" controls />
         <object v-else-if="filePreview.mediaType === 'application/pdf' && filePreview.dataUrl" class="file-pdf-preview" :data="filePreview.dataUrl" type="application/pdf"><span>{{ tr("files.pdfUnavailable") }}</span></object>
@@ -173,26 +152,26 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
             <button type="button" :class="{ 'is-active': !markdownRendered }" @click="markdownRendered = false">{{ tr("files.source") }}</button>
           </div>
           <MarkdownBody v-if="markdownRendered" class="file-markdown-preview" :text="filePreview.content ?? ''" />
-          <CodePreview v-else :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
+          <CodePreview v-else flush :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
         </template>
-        <div v-else-if="filePreview.binary" class="repository-state"><Binary :size="18" /><span>{{ tr("files.binaryPreview") }}</span></div>
-        <CodePreview v-else :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
+        <div v-else-if="filePreview.binary" class="repository-state" :class="ui.empty"><Binary :size="18" /><span>{{ tr("files.binaryPreview") }}</span></div>
+        <CodePreview v-else flush :path="filePreview.path" :content="filePreview.content ?? ''" :label="tr('files.previewContent')" />
         <div v-if="filePreview.truncated" class="diff-notice">{{ tr("files.previewTruncated") }}</div>
       </template>
     </div>
 
-    <div v-else-if="appStore.inspectorTab === 'changes'" class="inspector-content repository-panel">
-      <div v-if="!appStore.activeRepositoryDiffPath" class="repository-toolbar">
-        <button class="branch-summary" type="button" title="Show branches" :disabled="!repository?.git.isRepository" @click="toggleBranches">
+    <div v-else-if="appStore.inspectorTab === 'changes'" class="inspector-content repository-panel flex min-h-0 flex-col overflow-hidden p-0 text-sm">
+      <div v-if="!appStore.activeRepositoryDiffPath" class="repository-toolbar flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-3">
+        <button class="branch-summary flex min-w-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-1.5 py-1.5 text-xs text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-default disabled:opacity-60" type="button" title="Show branches" :disabled="!repository?.git.isRepository" @click="toggleBranches">
           <GitBranch :size="14" />
           <span>{{ repository?.git.isRepository ? repository.git.branch || "Detached HEAD" : "Not a Git repository" }}</span>
           <small v-if="repository?.git.ahead">+{{ repository.git.ahead }}</small>
           <small v-if="repository?.git.behind">-{{ repository.git.behind }}</small>
           <ChevronDown :size="13" :class="{ 'is-expanded': branchesOpen }" />
         </button>
-        <div class="repository-toolbar-actions">
+        <div class="repository-toolbar-actions flex items-center gap-1">
           <span v-if="changedFiles.length" class="changed-count" title="Changed files">{{ changedFiles.length }}</span>
-          <button class="icon-button" type="button" title="Refresh repository" :disabled="appStore.activeRepositoryLoading" @click="void appStore.refreshActiveRepository()">
+          <button class="icon-button inline-grid size-8 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton" type="button" title="Refresh repository" :disabled="appStore.activeRepositoryLoading" @click="void appStore.refreshActiveRepository()">
             <RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryLoading }" />
           </button>
         </div>
@@ -200,7 +179,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
       <div v-if="branchesOpen && !appStore.activeRepositoryDiffPath" class="branch-browser">
         <label class="file-search">
           <Search :size="13" />
-          <input v-model="branchQuery" type="search" placeholder="Filter branches" aria-label="Filter branches" />
+          <input :class="ui.input" v-model="branchQuery" type="search" placeholder="Filter branches" aria-label="Filter branches" />
         </label>
         <div v-if="appStore.activeRepositoryBranchesLoading && !appStore.activeRepositoryBranches" class="branch-browser-state"><LoaderCircle :size="16" class="is-spinning" /></div>
         <div v-else-if="appStore.activeRepositoryBranchesError" class="branch-browser-state error-text">{{ appStore.activeRepositoryBranchesError }}</div>
@@ -227,19 +206,19 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
         <div v-else class="branch-browser-state">No matching branches</div>
       </div>
       <div v-if="appStore.activeRepositoryDiffPath" class="diff-toolbar">
-        <button class="icon-button" type="button" title="Back to changes" @click="appStore.closeRepositoryDiff()"><ArrowLeft :size="15" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" title="Back to changes" @click="appStore.closeRepositoryDiff()"><ArrowLeft :size="15" /></button>
         <strong :title="appStore.activeRepositoryDiffPath">{{ appStore.activeRepositoryDiffPath }}</strong>
         <div v-if="!remoteWorkspace" class="diff-toolbar-actions">
-          <button class="icon-button" type="button" title="Open file" @click="void appStore.openActiveRepositoryFile()"><ExternalLink :size="14" /></button>
-          <button class="icon-button" type="button" title="Show in file manager" @click="void appStore.openActiveRepositoryFile(true)"><FolderOpen :size="14" /></button>
+          <button class="icon-button" :class="ui.iconButton" type="button" title="Open file" @click="void appStore.openActiveRepositoryFile()"><ExternalLink :size="14" /></button>
+          <button class="icon-button" :class="ui.iconButton" type="button" title="Show in file manager" @click="void appStore.openActiveRepositoryFile(true)"><FolderOpen :size="14" /></button>
         </div>
       </div>
       <div v-if="appStore.activeRepositoryDiffPath" class="repository-diff">
-        <div v-if="appStore.activeRepositoryDiffLoading" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-        <div v-else-if="appStore.activeRepositoryDiffError && !activeDiff" class="repository-state error-text">{{ appStore.activeRepositoryDiffError }}</div>
+        <div v-if="appStore.activeRepositoryDiffLoading" class="repository-state" :class="ui.empty"><LoaderCircle :size="18" class="is-spinning" /></div>
+        <div v-else-if="appStore.activeRepositoryDiffError && !activeDiff" class="repository-state error-text" :class="ui.empty">{{ appStore.activeRepositoryDiffError }}</div>
         <template v-else-if="activeDiff">
           <div v-if="appStore.activeRepositoryDiffError" class="diff-notice error-text">{{ appStore.activeRepositoryDiffError }}</div>
-          <div v-if="activeDiff.binary" class="repository-state"><FileDiff :size="18" /><span>Binary file changed</span></div>
+          <div v-if="activeDiff.binary" class="repository-state" :class="ui.empty"><FileDiff :size="18" /><span>Binary file changed</span></div>
           <template v-else>
             <section v-if="activeDiff.staged" class="diff-section">
               <header>Staged changes</header>
@@ -258,19 +237,19 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
         </template>
       </div>
       <template v-else>
-        <div class="repository-file-controls">
-          <div class="repository-file-filters" role="group" :aria-label="tr('inspector.fileScope')">
-            <button :class="{ 'is-active': fileScope === 'all' }" type="button" :aria-pressed="fileScope === 'all'" @click="fileScope = 'all'">{{ tr("inspector.allFiles") }}</button>
-            <button :class="{ 'is-active': fileScope === 'changed' }" type="button" :aria-pressed="fileScope === 'changed'" @click="fileScope = 'changed'">{{ tr("inspector.changes") }}<span v-if="changedFiles.length">{{ changedFiles.length }}</span></button>
+        <div class="repository-file-controls grid shrink-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-b border-[var(--border)] p-2.5">
+          <div class="repository-file-filters inline-flex h-8 items-center rounded-lg border border-[var(--border)] bg-[var(--bg-app)] p-0.5" role="group" :aria-label="tr('inspector.fileScope')">
+            <button class="h-7 whitespace-nowrap rounded-md border-0 bg-transparent px-2.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-raised)] aria-pressed:text-[var(--text)] aria-pressed:shadow-sm" :class="{ 'is-active': fileScope === 'all' }" type="button" :aria-pressed="fileScope === 'all'" @click="fileScope = 'all'">{{ tr("inspector.allFiles") }}</button>
+            <button class="h-7 whitespace-nowrap rounded-md border-0 bg-transparent px-2.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-raised)] aria-pressed:text-[var(--text)] aria-pressed:shadow-sm" :class="{ 'is-active': fileScope === 'changed' }" type="button" :aria-pressed="fileScope === 'changed'" @click="fileScope = 'changed'">{{ tr("inspector.changes") }}<span v-if="changedFiles.length">{{ changedFiles.length }}</span></button>
           </div>
-          <label class="file-search">
+          <label class="file-search flex h-8 min-w-0 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 text-[var(--text-secondary)] focus-within:border-[var(--text)] focus-within:ring-1 focus-within:ring-[var(--text)]/20">
             <Search :size="13" />
-            <input v-model="fileQuery" type="search" :placeholder="tr('inspector.filterFiles')" :aria-label="tr('inspector.filterFiles')" />
+            <input :class="ui.input" class="min-w-0 flex-1 border-0 bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]" v-model="fileQuery" type="search" :placeholder="tr('inspector.filterFiles')" :aria-label="tr('inspector.filterFiles')" />
           </label>
         </div>
         <div v-if="appStore.activeRepositoryStale && repository" class="diff-notice error-text">Repository data is stale. Refresh after reconnecting.</div>
-        <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state"><LoaderCircle :size="18" class="is-spinning" /></div>
-        <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text">{{ appStore.activeRepositoryError }}</div>
+        <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state" :class="ui.empty"><LoaderCircle :size="18" class="is-spinning" /></div>
+        <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text" :class="ui.empty">{{ appStore.activeRepositoryError }}</div>
         <template v-else-if="fileTree.length">
           <div v-if="fileListTruncated" class="diff-notice">{{ tr("inspector.firstFiles", { count: filteredFiles.length }) }}</div>
           <div class="file-tree">
@@ -285,7 +264,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
             />
           </div>
         </template>
-        <div v-else class="repository-state">
+        <div v-else class="repository-state flex min-h-32 flex-1 items-center justify-center gap-2 text-xs text-[var(--text-secondary)]" :class="ui.empty">
           <FileDiff v-if="fileScope === 'changed'" :size="18" />
           <span>{{ fileScope === "changed" ? tr("inspector.noChanges") : tr("inspector.noFiles") }}</span>
         </div>
@@ -296,7 +275,8 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
       <dl v-if="appStore.activeThread">
         <div><dt>{{ tr("inspector.workspace") }}</dt><dd :title="workspaceLabel">{{ workspaceLabel }}</dd></div>
         <div><dt>{{ tr("inspector.piProcess") }}</dt><dd>{{ appStore.activeThread.started ? tr("inspector.generation", { generation: appStore.activeThread.generation }) : tr("common.notStarted") }}</dd></div>
-        <div><dt>{{ tr("inspector.session") }}</dt><dd>{{ state?.sessionId || tr("inspector.createdOnPrompt") }}</dd></div>
+        <div><dt>{{ tr("inspector.session") }}</dt><dd :title="appStore.activeThread.title">{{ appStore.activeThread.title }}</dd></div>
+        <div><dt>{{ tr("inspector.sessionId") }}</dt><dd :title="state?.sessionId || appStore.activeThread.sessionId">{{ state?.sessionId || appStore.activeThread.sessionId || tr("inspector.createdOnPrompt") }}</dd></div>
         <div><dt>{{ tr("inspector.model") }}</dt><dd>{{ state?.model ? `${state.model.provider}/${state.model.id}` : tr("common.auto") }}</dd></div>
         <div><dt>{{ tr("inspector.reasoning") }}</dt><dd>{{ state?.thinkingLevel || tr("common.auto") }}</dd></div>
         <div><dt>{{ tr("inspector.messages") }}</dt><dd>{{ stats?.totalMessages ?? state?.messageCount ?? 0 }}</dd></div>
@@ -304,7 +284,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
         <div><dt>{{ tr("inspector.cost") }}</dt><dd>{{ stats?.cost ? `$${stats.cost.toFixed(4)}` : "-" }}</dd></div>
         <div><dt>{{ tr("inspector.contextUsage") }}</dt><dd>{{ stats?.contextUsage?.percent != null ? `${stats.contextUsage.percent.toFixed(1)}%` : "-" }}</dd></div>
       </dl>
-      <div v-else class="panel-empty"><span>{{ tr("inspector.selectTask") }}</span></div>
+      <div v-else class="panel-empty" :class="ui.empty"><span>{{ tr("inspector.selectTask") }}</span></div>
     </div>
 
     <TerminalPane v-else />

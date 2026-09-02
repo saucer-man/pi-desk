@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AlertTriangle, Check, ClipboardList } from "lucide-vue-next";
 import { computed, reactive, ref } from "vue";
 import { tr } from "../i18n";
@@ -102,7 +103,7 @@ function submit() {
 </script>
 
 <template>
-  <div class="batch-question-form">
+  <div class="batch-question-form" :class="ui.root">
     <div class="batch-question-progress">
       <span>{{ tr("extension.batchProgress", { done: answeredCount, total: questions.length }) }}</span>
     </div>
@@ -116,7 +117,7 @@ function submit() {
         role="tab"
         :aria-selected="currentTab === index"
         :aria-controls="`batch-question-panel-${question.id}`"
-        :class="{ active: currentTab === index, answered: Boolean(answers[question.id]) }"
+        :class="[ui.tab, { active: currentTab === index, answered: Boolean(answers[question.id]) }]"
         @click="currentTab = index"
       >
         <span class="batch-question-tab-number">{{ index + 1 }}</span>
@@ -131,7 +132,7 @@ function submit() {
         :aria-selected="isReviewTab"
         aria-controls="batch-question-panel-review"
         class="batch-question-review-tab"
-        :class="{ active: isReviewTab }"
+        :class="[ui.tab, { active: isReviewTab }]"
         @click="currentTab = questions.length"
       >
         <ClipboardList :size="14" />
@@ -154,7 +155,7 @@ function submit() {
         </div>
       </header>
       <div class="batch-question-review-list">
-        <div v-for="(question, index) in questions" :key="question.id" class="batch-question-review-item">
+        <div v-for="(question, index) in questions" :key="question.id" class="batch-question-review-item" :class="ui.listItem">
           <span class="batch-question-review-number">{{ index + 1 }}</span>
           <div>
             <strong>{{ question.question }}</strong>
@@ -170,7 +171,7 @@ function submit() {
         <AlertTriangle :size="14" />
         {{ tr("extension.batchTooLarge") }}
       </p>
-      <button class="text-button primary batch-question-submit" type="button" :disabled="!canSubmit" @click="submit">
+      <button class="text-button primary batch-question-submit" :class="ui.buttonPrimary" type="button" :disabled="!canSubmit" @click="submit">
         {{ tr("extension.batchSubmit") }}
       </button>
     </section>
@@ -192,7 +193,7 @@ function submit() {
           v-for="option in currentQuestion.options"
           :key="`${currentQuestion.id}-${option.value}`"
           type="button"
-          :class="{ selected: answers[currentQuestion.id]?.value === option.value && !answers[currentQuestion.id]?.wasCustom }"
+          :class="[ui.listItem, { selected: answers[currentQuestion.id]?.value === option.value && !answers[currentQuestion.id]?.wasCustom }]"
           @click="selectOption(currentQuestion, option)"
         >
           <span class="batch-question-radio" aria-hidden="true"></span>
@@ -204,7 +205,7 @@ function submit() {
         <div v-if="currentQuestion.allowOther !== false" class="batch-question-custom">
           <label :for="`batch-question-custom-${currentQuestion.id}`">{{ tr("extension.batchOther") }}</label>
           <div>
-            <input
+            <input :class="ui.input"
               :id="`batch-question-custom-${currentQuestion.id}`"
               :value="inputValues[currentQuestion.id]"
               :placeholder="currentQuestion.placeholder || tr('extension.batchOtherPlaceholder')"
@@ -212,7 +213,7 @@ function submit() {
               @input="updateCustomDraft(currentQuestion, $event)"
               @keydown.enter.prevent="commitCustom(currentQuestion)"
             />
-            <button class="text-button" type="button" :disabled="!inputValues[currentQuestion.id]?.trim()" @click="commitCustom(currentQuestion)">
+            <button class="text-button" :class="ui.button" type="button" :disabled="!inputValues[currentQuestion.id]?.trim()" @click="commitCustom(currentQuestion)">
               {{ tr("extension.batchUseOther") }}
             </button>
           </div>
@@ -220,11 +221,11 @@ function submit() {
       </div>
 
       <div v-else-if="currentQuestion.type === 'confirm'" class="batch-question-confirm">
-        <button type="button" :class="{ selected: answers[currentQuestion.id]?.value === true }" @click="selectConfirmation(currentQuestion, true)">{{ tr("extension.yes") }}</button>
-        <button type="button" :class="{ selected: answers[currentQuestion.id]?.value === false }" @click="selectConfirmation(currentQuestion, false)">{{ tr("extension.no") }}</button>
+        <button type="button" :class="[ui.button, { selected: answers[currentQuestion.id]?.value === true }]" @click="selectConfirmation(currentQuestion, true)">{{ tr("extension.yes") }}</button>
+        <button type="button" :class="[ui.button, { selected: answers[currentQuestion.id]?.value === false }]" @click="selectConfirmation(currentQuestion, false)">{{ tr("extension.no") }}</button>
       </div>
 
-      <textarea
+      <textarea :class="ui.textarea"
         v-else-if="currentQuestion.type === 'editor'"
         :value="inputValues[currentQuestion.id]"
         :placeholder="currentQuestion.placeholder"
@@ -233,7 +234,7 @@ function submit() {
         autofocus
         @input="updateText(currentQuestion, $event)"
       />
-      <input
+      <input :class="ui.input"
         v-else
         :value="inputValues[currentQuestion.id]"
         :placeholder="currentQuestion.placeholder"
@@ -243,11 +244,11 @@ function submit() {
       />
 
       <nav class="batch-question-navigation" :aria-label="tr('extension.batchNavigation')">
-        <button v-if="currentTab > 0" class="text-button" type="button" @click="currentTab -= 1">{{ tr("extension.batchPrevious") }}</button>
+        <button v-if="currentTab > 0" class="text-button" :class="ui.button" type="button" @click="currentTab -= 1">{{ tr("extension.batchPrevious") }}</button>
         <span></span>
-        <button v-if="currentTab < questions.length - 1" class="text-button primary" type="button" @click="currentTab += 1">{{ tr("extension.batchNext") }}</button>
-        <button v-else-if="review" class="text-button primary" type="button" @click="currentTab = questions.length">{{ tr("extension.batchGoReview") }}</button>
-        <button v-else class="text-button primary" type="button" :disabled="!canSubmit" @click="submit">{{ tr("extension.batchSubmit") }}</button>
+        <button v-if="currentTab < questions.length - 1" class="text-button primary" :class="ui.buttonPrimary" type="button" @click="currentTab += 1">{{ tr("extension.batchNext") }}</button>
+        <button v-else-if="review" class="text-button primary" :class="ui.buttonPrimary" type="button" @click="currentTab = questions.length">{{ tr("extension.batchGoReview") }}</button>
+        <button v-else class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="!canSubmit" @click="submit">{{ tr("extension.batchSubmit") }}</button>
       </nav>
       <p v-if="allAnswered && !canSubmit" class="batch-question-warning" role="status">
         <AlertTriangle :size="14" />

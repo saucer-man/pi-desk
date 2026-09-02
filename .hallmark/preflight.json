@@ -1,0 +1,13 @@
+{
+  "date": "2026-08-29",
+  "framework": "Vue 3 + Wails 3 + Tailwind CSS 4",
+  "font_stack": "Bahnschrift + Segoe UI Variable Text + Cascadia Code",
+  "palette": "existing light/dark CSS variables; neutral monochrome",
+  "motion": "motion-cut; CSS transitions only",
+  "spacing": "4-point Tailwind scale",
+  "source_files": [
+    "frontend/package.json",
+    "frontend/src/styles/tokens.css",
+    "frontend/src/styles/tailwind.css"
+  ]
+}

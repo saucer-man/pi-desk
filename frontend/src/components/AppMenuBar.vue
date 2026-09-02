@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { toggleDebugMode } from "../services/desktop";
 import { tr } from "../i18n";
@@ -57,7 +58,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header class="app-menubar">
+  <header class="app-menubar" :class="ui.root">
     <div class="app-menu-drag-region" aria-hidden="true" />
     <nav class="app-menu-list" :aria-label="tr('appMenu.navigation')">
       <div class="app-menu-identity" aria-label="Pi Desk">
@@ -67,7 +68,7 @@ onBeforeUnmount(() => {
         <button ref="helpButton" class="app-menu-trigger" type="button" aria-haspopup="menu" :aria-expanded="helpOpen" @click="helpOpen = !helpOpen">
           {{ tr("appMenu.help") }}
         </button>
-        <div v-if="helpOpen" class="app-menu-popover help-menu" role="menu" @keydown.esc.stop.prevent="closeHelp(true)">
+        <div v-if="helpOpen" class="app-menu-popover help-menu" :class="ui.menuSurface" role="menu" @keydown.esc.stop.prevent="closeHelp(true)">
           <button type="button" role="menuitem" :disabled="debugBusy" @click="void toggleDebug()"><span>{{ debugLabel }}</span></button>
           <button type="button" role="menuitem" @click="openAbout"><span>{{ tr("appMenu.about") }}</span></button>
         </div>

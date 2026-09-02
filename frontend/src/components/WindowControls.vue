@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { Copy, Minus, Square, X } from "lucide-vue-next";
 import { Events, Window } from "@wailsio/runtime";
 import { onBeforeUnmount, onMounted, ref } from "vue";
@@ -50,7 +51,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="props.isWindows" class="window-controls" :aria-label="tr('window.controls')">
+  <div v-if="props.isWindows" class="window-controls" :class="ui.root" :aria-label="tr('window.controls')">
     <button class="window-control window-control-minimise" type="button" :title="tr('window.minimise')" :aria-label="tr('window.minimise')" @click="minimise">
       <Minus :size="16" :stroke-width="1.6" />
     </button>

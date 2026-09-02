@@ -1,0 +1,10 @@
+[
+  {
+    "date": "2026-08-29",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "custom-neutral",
+    "enrichment": "none",
+    "brief": "Pi Desk full frontend Tailwind redesign"
+  }
+]

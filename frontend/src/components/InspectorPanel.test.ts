@@ -89,6 +89,9 @@ describe("InspectorPanel", () => {
 
     await wrapper.findAll('[role="tab"]')[1].trigger("click");
     expect(wrapper.text()).toContain("D:\\repo");
+    const contextRows = wrapper.findAll(".context-panel dl > div");
+    expect(contextRows[2].text()).toContain("SessionAudit");
+    expect(contextRows[3].text()).toContain("Session IDCreated on first prompt");
     expect(wrapper.text()).not.toContain("All files");
   });
 
@@ -183,14 +186,17 @@ describe("InspectorPanel", () => {
     const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
 
     expect(wrapper.text()).toContain("join_groups.py");
-    expect(wrapper.text()).toContain("D:\\repo\\scripts\\join_groups.py");
+    expect(wrapper.text()).not.toContain("D:\\repo\\scripts\\join_groups.py");
     expect(wrapper.text()).toContain("print('ok')");
     expect(wrapper.text()).toContain(":7");
+    expect(wrapper.find(".file-preview-tabs").exists()).toBe(false);
+    expect(wrapper.find(".file-preview-meta").exists()).toBe(false);
+    expect(wrapper.get('[aria-label="File preview content"]').classes()).toEqual(expect.arrayContaining(["rounded-none!", "border-0!"]));
     await wrapper.get('button[title="Close file preview"]').trigger("click");
     expect(store.activeRepositoryFilePreviewPath).toBe("");
   });
 
-  it("renders media previews and switches among open file tabs", async () => {
+  it("renders media previews without redundant file metadata", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -208,7 +214,9 @@ describe("InspectorPanel", () => {
     const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
 
     expect(wrapper.get("img.file-media-preview").attributes("src")).toContain("data:image/png");
-    await wrapper.findAll('.file-preview-tabs [role="tab"]')[0].trigger("click");
+    expect(wrapper.find(".file-preview-tabs").exists()).toBe(false);
+    expect(wrapper.find(".file-preview-meta").exists()).toBe(false);
+    await store.openRepositoryFilePreview("README.md");
     await flushPromises();
     expect(repositoryMocks.previewFile).toHaveBeenCalledWith("D:\\repo", "README.md");
     expect(wrapper.text()).toContain("Repo");

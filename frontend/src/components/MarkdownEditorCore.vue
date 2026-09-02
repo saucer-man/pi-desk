@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx, serializerCtx } from "@milkdown/core";
 import { commonmark } from "@milkdown/preset-commonmark";
 import { gfm } from "@milkdown/preset-gfm";
@@ -105,7 +106,7 @@ defineExpose({ focus, replaceMarkdown });
 </script>
 
 <template>
-  <div ref="root" class="markdown-editor" :class="{ 'is-empty': !modelValue.trim() }">
+  <div ref="root" class="markdown-editor" :class="[ui.root, { 'is-empty': !modelValue.trim() }]">
     <Milkdown />
   </div>
 </template>

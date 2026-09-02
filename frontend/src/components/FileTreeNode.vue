@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AtSign, ChevronDown, ChevronRight, File, Folder, FolderOpen } from "lucide-vue-next";
 import { ref } from "vue";
 import type { RepositoryTreeNode } from "../utils/fileMentions";
@@ -25,8 +26,8 @@ function forwardDiff(path: string) {
 </script>
 
 <template>
-  <div class="file-tree-node">
-    <div class="file-tree-row" :style="{ '--tree-depth': depth || 0 }">
+  <div class="file-tree-node" :class="ui.root">
+    <div class="file-tree-row" :class="ui.listItem" :style="{ '--tree-depth': depth || 0 }">
       <button v-if="node.directory" class="file-tree-toggle" type="button" :title="open ? 'Collapse folder' : 'Expand folder'" @click="open = !open">
         <ChevronDown v-if="open" :size="13" />
         <ChevronRight v-else :size="13" />

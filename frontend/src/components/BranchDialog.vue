@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AlertTriangle, GitBranch, GitFork, LoaderCircle, X } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -80,17 +81,17 @@ function fork(node: VisibleNode) {
 </script>
 
 <template>
-  <div class="dialog-backdrop" @mousedown.self="appStore.closeBranchPanel()">
-    <section ref="dialog" class="dialog-window branch-dialog" :role="appStore.activeSessionBranchesError ? 'alertdialog' : 'dialog'" aria-modal="true" aria-labelledby="branch-dialog-title" tabindex="-1">
-      <header>
+  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="appStore.closeBranchPanel()">
+    <section ref="dialog" class="dialog-window branch-dialog" :class="ui.dialog" :role="appStore.activeSessionBranchesError ? 'alertdialog' : 'dialog'" aria-modal="true" aria-labelledby="branch-dialog-title" tabindex="-1">
+      <header :class="ui.dialogHeader">
         <h2 id="branch-dialog-title">
           <AlertTriangle v-if="appStore.activeSessionBranchesError" :size="16" />
           <GitBranch v-else :size="16" />
           {{ appStore.activeSessionBranchesError ? tr("branches.loadFailedTitle") : tr("branches.title") }}
         </h2>
-        <button class="icon-button" type="button" :title="tr('branches.close')" @click="appStore.closeBranchPanel()"><X :size="17" /></button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('branches.close')" @click="appStore.closeBranchPanel()"><X :size="17" /></button>
       </header>
-      <div class="dialog-body branch-tree">
+      <div class="dialog-body branch-tree" :class="ui.dialogBody">
         <div v-if="appStore.activeSessionBranchesError" class="branch-warning">
           <AlertTriangle :size="24" aria-hidden="true" />
           <div>
@@ -98,11 +99,11 @@ function fork(node: VisibleNode) {
             <code>{{ appStore.activeSessionBranchesError }}</code>
           </div>
         </div>
-        <div v-else-if="!appStore.activeSessionBranches" class="panel-empty">
+        <div v-else-if="!appStore.activeSessionBranches" class="panel-empty" :class="ui.empty">
           <LoaderCircle :size="20" class="is-spinning" />
           <strong>{{ tr("branches.loading") }}</strong>
         </div>
-        <div v-else-if="visibleNodes.length === 0" class="panel-empty">
+        <div v-else-if="visibleNodes.length === 0" class="panel-empty" :class="ui.empty">
           <GitBranch :size="20" />
           <strong>{{ tr("branches.empty") }}</strong>
         </div>
@@ -121,7 +122,7 @@ function fork(node: VisibleNode) {
             <span class="branch-text" :title="node.label">{{ node.label }}</span>
             <button
               v-if="node.type === 'message' && node.role === 'user'"
-              class="icon-button"
+              class="icon-button" :class="ui.iconButton"
               type="button"
               :title="tr('branches.fork')"
               :disabled="Boolean(appStore.activeSessionOperation)"
@@ -131,13 +132,13 @@ function fork(node: VisibleNode) {
           <p v-if="visibleNodes.length === maxVisibleNodes" class="branch-limit">{{ tr("branches.limit", { count: maxVisibleNodes }) }}</p>
         </div>
       </div>
-      <footer>
+      <footer :class="ui.dialogFooter">
         <template v-if="appStore.activeSessionBranchesError">
-          <button class="text-button primary" type="button" @click="appStore.closeBranchPanel()">{{ tr("common.close") }}</button>
+          <button class="text-button primary" :class="ui.buttonPrimary" type="button" @click="appStore.closeBranchPanel()">{{ tr("common.close") }}</button>
         </template>
         <template v-else>
           <span v-if="appStore.activeSessionOperation" class="operation-label"><LoaderCircle :size="13" class="is-spinning" /> {{ appStore.activeSessionOperation }}</span>
-          <button class="text-button" type="button" :disabled="Boolean(appStore.activeSessionOperation)" @click="void appStore.cloneActiveSession()">{{ tr("branches.clone") }}</button>
+          <button class="text-button" :class="ui.button" type="button" :disabled="Boolean(appStore.activeSessionOperation)" @click="void appStore.cloneActiveSession()">{{ tr("branches.clone") }}</button>
         </template>
       </footer>
     </section>

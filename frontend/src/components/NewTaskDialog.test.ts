@@ -35,6 +35,9 @@ describe("NewTaskDialog", () => {
     const wrapper = mount(NewTaskDialog, { global: { plugins: [pinia] } });
 
     expect(wrapper.findAll(".segmented-control button")).toHaveLength(2);
+    expect(wrapper.get("#workspace-path").classes()).toContain("h-full");
+    expect(wrapper.get("#workspace-path").classes()).not.toContain("min-h-11");
+    expect(wrapper.get('.path-input .icon-button').classes()).not.toContain("pointer-coarse:size-11");
   });
 
   it("reports SSH alias discovery failures", async () => {

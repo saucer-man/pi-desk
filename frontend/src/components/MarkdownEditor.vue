@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { MilkdownProvider } from "@milkdown/vue";
 import { ref } from "vue";
+import { ui } from "../ui/classes";
 import MarkdownEditorCore from "./MarkdownEditorCore.vue";
 
 const props = defineProps<{
@@ -20,6 +21,6 @@ defineExpose({
 
 <template>
   <MilkdownProvider>
-    <MarkdownEditorCore ref="core" v-bind="props" @update:modelValue="emit('update:modelValue', $event)" />
+    <MarkdownEditorCore ref="core" v-bind="props" :class="ui.root" @update:modelValue="emit('update:modelValue', $event)" />
   </MilkdownProvider>
 </template>

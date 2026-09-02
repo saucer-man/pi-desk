@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { AlertTriangle, CheckCircle2, FlaskConical, LoaderCircle, X } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { useModalFocus } from "../composables/useModalFocus";
@@ -35,29 +36,29 @@ useModalFocus(dialog, close, { canClose: () => !props.testing });
 
 <template>
   <Teleport to="body">
-    <div class="dialog-backdrop model-test-backdrop" @mousedown.self="close">
+    <div class="dialog-backdrop model-test-backdrop" :class="ui.dialogBackdrop" @mousedown.self="close">
       <section
         ref="dialog"
-        class="dialog-window model-test-dialog"
+        class="dialog-window model-test-dialog" :class="[ui.dialog, ui.dialogLarge]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="model-test-title"
         tabindex="-1"
       >
-        <header>
+        <header :class="ui.dialogHeader">
           <div>
             <h2 id="model-test-title">{{ tr("settings.modelTestTitle") }}</h2>
             <small>{{ tr("settings.modelTestDescription", { model: props.modelName }) }}</small>
           </div>
-          <button class="icon-button" type="button" :disabled="props.testing" :title="tr('common.close')" @click="close">
+          <button class="icon-button" :class="ui.iconButton" type="button" :disabled="props.testing" :title="tr('common.close')" @click="close">
             <X :size="16" aria-hidden="true" />
           </button>
         </header>
 
-        <div class="dialog-body model-test-body">
+        <div class="dialog-body model-test-body" :class="ui.dialogBody">
           <label class="model-test-field">
             <span>{{ tr("settings.modelTestPrompt") }}</span>
-            <textarea
+            <textarea :class="ui.textarea"
               autofocus
               data-testid="model-test-prompt"
               :value="props.prompt"
@@ -88,10 +89,10 @@ useModalFocus(dialog, close, { canClose: () => !props.testing });
           </section>
         </div>
 
-        <footer>
-          <button class="text-button" type="button" :disabled="props.testing" @click="close">{{ tr("common.cancel") }}</button>
+        <footer :class="ui.dialogFooter">
+          <button class="text-button" :class="ui.button" type="button" :disabled="props.testing" @click="close">{{ tr("common.cancel") }}</button>
           <button
-            class="text-button primary-button model-test-submit"
+            class="text-button primary-button model-test-submit" :class="ui.buttonPrimary"
             type="button"
             :disabled="props.testing || !props.prompt.trim()"
             @click="emit('submit')"

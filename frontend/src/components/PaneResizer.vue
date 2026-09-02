@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { onBeforeUnmount } from "vue";
 
 const props = defineProps<{
@@ -68,7 +69,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="pane-resizer"
-    :class="`is-${side}`"
+    :class="[ui.root, `is-${side}`]"
     role="separator"
     aria-orientation="vertical"
     :aria-label="label"

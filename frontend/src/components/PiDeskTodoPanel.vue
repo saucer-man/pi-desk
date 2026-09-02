@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { Check, ChevronDown, Circle, ListTodo } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { tr } from "../i18n";
@@ -22,7 +23,7 @@ const progressLabel = computed(() => tr("composer.todoProgress", {
 <template>
   <section
     class="pi-desk-todo-panel composer-stack-panel"
-    :class="{ 'is-collapsed': collapsed, 'is-complete': complete }"
+    :class="[ui.panel, { 'is-collapsed': collapsed, 'is-complete': complete }]"
     :aria-label="progressLabel"
   >
     <header class="pi-desk-todo-header">

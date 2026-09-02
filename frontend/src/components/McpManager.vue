@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { CheckCircle2, Copy, FilePlus2, PlugZap, RefreshCw, Save, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref } from "vue";
 import { McpConfigScope, type McpServerSummary } from "../../bindings/pi-desk/internal/domain";
@@ -241,8 +242,8 @@ onMounted(() => { void loadServers(); });
 </script>
 
 <template>
-  <div class="settings-content model-config-content mcp-config-content">
-    <div class="settings-content-header model-config-header">
+  <div class="settings-content model-config-content mcp-config-content" :class="ui.settingsContent">
+    <div class="settings-content-header model-config-header" :class="ui.settingsHeader">
       <div>
         <h3>{{ tr("settings.mcpManagement") }}</h3>
         <button v-if="snapshot?.globalPath" class="model-config-path" type="button" :title="snapshot.globalPath" @click="void copyPath()">
@@ -250,24 +251,24 @@ onMounted(() => { void loadServers(); });
         </button>
       </div>
       <div class="settings-actions">
-        <button class="icon-button" type="button" :title="tr('common.refresh')" :disabled="loading || saving" @click="void loadServers()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-        <button class="text-button" type="button" :disabled="saving" @click="resetEditor()"><FilePlus2 :size="14" />{{ tr("settings.addMcpServer") }}</button>
+        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading || saving" @click="void loadServers()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
+        <button class="text-button" :class="ui.button" type="button" :disabled="saving" @click="resetEditor()"><FilePlus2 :size="14" />{{ tr("settings.addMcpServer") }}</button>
       </div>
     </div>
     <p v-if="copied" class="setting-status">{{ tr("settings.copied") }}</p>
-    <div v-if="loading" class="settings-empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingMcp") }}</span></div>
-    <div v-else-if="loadError" class="settings-empty is-error"><XCircle :size="18" /><span>{{ loadError }}</span></div>
-    <div v-else class="prompt-manager-layout">
-      <aside class="prompt-config-list" :aria-label="tr('settings.mcpServers')">
-        <button class="model-config-add-row" type="button" :class="{ 'is-active': selectedKey === 'new' }" :disabled="saving" @click="resetEditor()"><FilePlus2 :size="14" /><span>{{ tr("settings.addMcpServer") }}</span></button>
-        <section class="prompt-config-scope">
+    <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingMcp") }}</span></div>
+    <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
+    <div v-else class="prompt-manager-layout" :class="ui.managerLayout">
+      <aside class="prompt-config-list" :class="ui.managerList" :aria-label="tr('settings.mcpServers')">
+        <button class="model-config-add-row" type="button" :class="[ui.listItem, { 'is-active': selectedKey === 'new' }]" :disabled="saving" @click="resetEditor()"><FilePlus2 :size="14" /><span>{{ tr("settings.addMcpServer") }}</span></button>
+        <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.globalMcp") }}</strong><span>{{ globalServers.length }}</span></header>
           <button v-for="server in globalServers" :key="keyOf(server)" type="button" :class="{ 'is-active': selectedKey === keyOf(server) }" :disabled="saving" @click="void selectServer(server)">
             <span><strong>{{ server.name }}</strong><small>{{ server.transport }} · {{ server.disabled ? tr("settings.mcpDisabled") : tr("settings.mcpEnabled") }}</small></span>
             <CheckCircle2 v-if="selectedKey === keyOf(server)" :size="13" />
           </button>
         </section>
-        <section class="prompt-config-scope">
+        <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.projectMcp") }}</strong><span>{{ projectServers.length }}</span></header>
           <p v-if="!snapshot?.projectEnabled" class="settings-inline-note">{{ snapshot?.projectNotice || tr("settings.projectMcpUnavailable") }}</p>
           <button v-for="server in projectServers" :key="keyOf(server)" type="button" :class="{ 'is-active': selectedKey === keyOf(server) }" :disabled="saving" @click="void selectServer(server)">
@@ -276,31 +277,31 @@ onMounted(() => { void loadServers(); });
           </button>
         </section>
       </aside>
-      <form class="prompt-editor mcp-editor" @submit.prevent="void saveServer()">
+      <form class="prompt-editor mcp-editor" :class="ui.managerEditor" @submit.prevent="void saveServer()">
         <div class="model-editor-title">
           <div><strong>{{ isExisting ? editor.name : tr("settings.newMcpServer") }}</strong><small>{{ tr("settings.mcpConfigScope") }}</small></div>
           <span v-if="dirty" class="model-dirty">{{ tr("settings.unsaved") }}</span>
         </div>
-        <label class="model-field"><span>{{ tr("settings.mcpScope") }}</span><select v-model="editor.scope" :disabled="isExisting"><option :value="McpConfigScope.McpConfigScopeGlobal">{{ tr("settings.globalMcp") }}</option><option :value="McpConfigScope.McpConfigScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectMcp") }}</option></select></label>
-        <div class="model-form-grid">
-          <label class="model-field">
+        <label class="model-field" :class="ui.field"><span>{{ tr("settings.mcpScope") }}</span><select :class="ui.select" v-model="editor.scope" :disabled="isExisting"><option :value="McpConfigScope.McpConfigScopeGlobal">{{ tr("settings.globalMcp") }}</option><option :value="McpConfigScope.McpConfigScopeProject" :disabled="!snapshot?.projectEnabled">{{ tr("settings.projectMcp") }}</option></select></label>
+        <div class="model-form-grid" :class="ui.formGrid">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.mcpName") }}</span>
-            <input v-model="editor.name" spellcheck="false" placeholder="filesystem" />
+            <input :class="ui.input" v-model="editor.name" spellcheck="false" placeholder="filesystem" />
           </label>
-          <label class="model-field">
+          <label class="model-field" :class="ui.field">
             <span>{{ tr("settings.mcpTransport") }}</span>
-            <select :value="editor.transport" @change="selectTransport">
+            <select :class="ui.select" :value="editor.transport" @change="selectTransport">
               <option value="stdio">stdio</option><option value="http">HTTP</option><option value="socket">socket</option>
             </select>
           </label>
-          <label class="model-field mcp-disabled-field"><span>{{ tr("settings.mcpStatus") }}</span><span class="mcp-checkbox"><input v-model="editor.disabled" type="checkbox" @change="updateDefinitionFromFields" />{{ tr("settings.mcpDisabled") }}</span></label>
-          <label v-if="editor.transport === 'stdio'" class="model-field"><span>{{ tr("settings.mcpCommand") }}</span><input v-model="editor.command" spellcheck="false" placeholder="npx" @change="updateDefinitionFromFields" /></label>
-          <label v-if="editor.transport === 'stdio'" class="model-field"><span>{{ tr("settings.mcpArgs") }}</span><input v-model="editor.args" spellcheck="false" placeholder='["-y", "package"]' @change="updateDefinitionFromFields" /></label>
-          <label v-if="editor.transport === 'http'" class="model-field model-field-wide"><span>URL</span><input v-model="editor.url" spellcheck="false" placeholder="https://example.com/mcp" @change="updateDefinitionFromFields" /></label>
-          <label v-if="editor.transport === 'socket'" class="model-field model-field-wide"><span>Socket</span><input v-model="editor.socket" spellcheck="false" placeholder="/path/to/mcp.sock" @change="updateDefinitionFromFields" /></label>
-          <label class="model-field model-field-wide">
+          <label class="model-field mcp-disabled-field" :class="ui.field"><span>{{ tr("settings.mcpStatus") }}</span><span class="mcp-checkbox"><input v-model="editor.disabled" type="checkbox" @change="updateDefinitionFromFields" />{{ tr("settings.mcpDisabled") }}</span></label>
+          <label v-if="editor.transport === 'stdio'" class="model-field" :class="ui.field"><span>{{ tr("settings.mcpCommand") }}</span><input :class="ui.input" v-model="editor.command" spellcheck="false" placeholder="npx" @change="updateDefinitionFromFields" /></label>
+          <label v-if="editor.transport === 'stdio'" class="model-field" :class="ui.field"><span>{{ tr("settings.mcpArgs") }}</span><input :class="ui.input" v-model="editor.args" spellcheck="false" placeholder='["-y", "package"]' @change="updateDefinitionFromFields" /></label>
+          <label v-if="editor.transport === 'http'" class="model-field model-field-wide" :class="ui.field"><span>URL</span><input :class="ui.input" v-model="editor.url" spellcheck="false" placeholder="https://example.com/mcp" @change="updateDefinitionFromFields" /></label>
+          <label v-if="editor.transport === 'socket'" class="model-field model-field-wide" :class="ui.field"><span>Socket</span><input :class="ui.input" v-model="editor.socket" spellcheck="false" placeholder="/path/to/mcp.sock" @change="updateDefinitionFromFields" /></label>
+          <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.mcpAdvancedJson") }}</span>
-            <textarea v-model="editor.definition" spellcheck="false" @blur="parseDefinition" />
+            <textarea :class="ui.textarea" v-model="editor.definition" spellcheck="false" @blur="parseDefinition" />
             <small>{{ tr("settings.mcpAdvancedHelp") }}</small>
           </label>
         </div>
@@ -308,9 +309,9 @@ onMounted(() => { void loadServers(); });
         <p v-if="formError" class="form-error">{{ formError }}</p>
         <p v-if="notice" class="setting-status">{{ notice }}</p>
         <footer class="model-editor-footer">
-          <button v-if="isExisting" class="text-button danger" type="button" :disabled="saving" @click="void deleteServer()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteMcp") : tr("settings.deleteMcp") }}</button>
+          <button v-if="isExisting" class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteServer()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteMcp") : tr("settings.deleteMcp") }}</button>
           <span />
-          <button class="text-button primary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingMcp") : tr("settings.saveMcp") }}</button>
+          <button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingMcp") : tr("settings.saveMcp") }}</button>
         </footer>
       </form>
     </div>

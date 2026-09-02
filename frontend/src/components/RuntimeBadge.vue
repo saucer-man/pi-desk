@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ui } from "../ui/classes";
 import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-vue-next";
 import { computed } from "vue";
 import { useAppStore } from "../stores/app";
@@ -21,7 +22,7 @@ const label = computed(() => {
 </script>
 
 <template>
-  <div class="runtime-badge" :data-state="state" :title="appStore.bootstrap?.runtime.message">
+  <div class="runtime-badge" :class="ui.root" :data-state="state" :title="appStore.bootstrap?.runtime.message">
     <LoaderCircle v-if="checking" :size="14" class="is-spinning" />
     <CircleCheck v-else-if="state === 'ready'" :size="14" />
     <CircleAlert v-else :size="14" />
