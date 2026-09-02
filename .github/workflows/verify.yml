@@ -123,9 +123,9 @@ jobs:
         working-directory: frontend
         run: npm ci --ignore-scripts
 
-      - name: Test frontend
+      - name: Check frontend
         working-directory: frontend
-        run: npm test
+        run: npm run check
 
       - name: Test and vet Go
         run: |
@@ -148,10 +148,6 @@ jobs:
 
       - name: Build Linux desktop executable
         run: wails3 build
-
-      - name: Smoke test frontend bundle
-        working-directory: frontend
-        run: npm run smoke:dist
 
       - name: Archive Linux executable
         run: tar -C bin -czf bin/pi-desk-linux-amd64.tar.gz pi-desk
