@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	appVersion        = "1.0.0"
+	appVersion        = "1.0.1"
 	wailsVersion      = "v3.0.0-beta.6"
 	updateManifestURL = "https://api.github.com/repos/saucer-man/pi-desk/releases/latest"
 	// Pi's Node CLI can take several seconds to initialise on Windows while

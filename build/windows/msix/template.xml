@@ -17,7 +17,7 @@
         PackageDisplayName="Pi Desk"
         PublisherName="CN=Pi Desk Contributors"
         PublisherDisplayName="Pi Desk Contributors"
-        Version="1.0.0.0"
+        Version="1.0.1.0"
         PackageDescription="A desktop interface for the Pi coding agent">
         <Capabilities>
             <Capability Name="runFullTrust" />
