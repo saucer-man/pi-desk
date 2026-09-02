@@ -8,6 +8,6 @@ import "./styles/layout.css";
 import "./styles/workbench.css";
 import "./styles/tailwind.css";
 
-document.documentElement.classList.add("text-base", "overflow-x-clip");
+document.documentElement.classList.add("overflow-x-clip");
 document.body.classList.add("overflow-x-clip");
 createApp(App).use(createPinia()).use(i18n).mount("#app");

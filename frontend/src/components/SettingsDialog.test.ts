@@ -46,7 +46,7 @@ describe("SettingsDialog", () => {
       "[&_input[type=checkbox]]:!size-3.5",
       "[&_textarea]:!text-xs",
     ]));
-    expect(wrapper.findAll(".appearance-select")).toHaveLength(2);
+    expect(wrapper.findAll(".appearance-select")).toHaveLength(4);
     for (const select of wrapper.findAll(".appearance-select")) {
       expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
       expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
@@ -56,11 +56,15 @@ describe("SettingsDialog", () => {
     await checkboxes[0].setValue(false);
     await checkboxes[1].setValue(true);
     await wrapper.get('select[aria-label="Theme"]').setValue("light");
+    await wrapper.get('select[aria-label="Font"]').setValue("mono");
+    await wrapper.get('select[aria-label="Font size"]').setValue("16");
 
     expect(store.offlineMode).toBe(false);
     expect(store.proxyEnabled).toBe(true);
     expect(store.appearance).toBe("light");
-    expect(store.preferencesChanged).toHaveBeenCalledTimes(2);
+    expect(store.interfaceFont).toBe("mono");
+    expect(store.interfaceFontSize).toBe(16);
+    expect(store.preferencesChanged).toHaveBeenCalledTimes(4);
     expect(store.appearanceChanged).toHaveBeenCalledOnce();
     await wrapper.get('button[title="Close settings"]').trigger("click");
     expect(store.closeSettings).toHaveBeenCalledOnce();

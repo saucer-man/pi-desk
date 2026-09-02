@@ -68,7 +68,7 @@ describe("responsive workbench layout", () => {
     expect(css).toMatch(/\.dialog-body\.settings-layout\s*{[^}]*padding-block:\s*0 !important[^}]*padding-inline:\s*0 !important/s);
     expect(css).toMatch(/\.settings-layout\s*{[^}]*grid-template-columns:\s*156px minmax\(0, 1fr\)/s);
     expect(css).toMatch(/\.settings-nav\s*{[^}]*gap:\s*0[^}]*padding:\s*0/s);
-    expect(css).toMatch(/\.settings-nav button\s*{[^}]*width:\s*100%[^}]*height:\s*34px[^}]*border-radius:\s*0[^}]*font-size:\s*11\.5px/s);
+    expect(css).toMatch(/\.settings-nav button\s*{[^}]*width:\s*100%[^}]*height:\s*34px[^}]*border-radius:\s*0[^}]*font-size:\s*calc\(11\.5px \+ var\(--font-size-delta\)\)/s);
     expect(css).not.toMatch(/\.settings-dialog \.text-button\s*{/);
     expect(css).toMatch(/\.settings-dialog \.setting-row-select select\s*{[^}]*width:\s*128px[^}]*flex-basis:\s*128px/s);
     expect(css).not.toMatch(/\.settings-dialog \.setting-row-select select\s*{[^}]*font-size:/s);

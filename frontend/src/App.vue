@@ -45,6 +45,14 @@ function syncDocumentTheme(theme: string) {
   document.documentElement.dataset.theme = theme;
 }
 
+function syncDocumentFont(font: string) {
+  document.documentElement.dataset.fontFamily = font;
+}
+
+function syncDocumentFontSize(size: number) {
+  document.documentElement.dataset.fontSize = String(size);
+}
+
 async function initializeDesktop() {
   await appStore.initialize();
   if (window.innerWidth < 1280) appStore.inspectorOpen = false;
@@ -66,6 +74,8 @@ watch(windowTitle, (title) => {
 }, { immediate: true });
 
 watch(() => appStore.appearance, syncDocumentTheme, { immediate: true });
+watch(() => appStore.interfaceFont, syncDocumentFont, { immediate: true });
+watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true });
 </script>
 
 <template>

@@ -213,6 +213,21 @@ function settingsSectionLabel(value: SettingsSection) {
                 <option value="en">{{ tr("settings.english") }}</option>
               </select>
             </label>
+            <label class="setting-row setting-row-select" :class="ui.row">
+              <span><strong>{{ tr("settings.font") }}</strong><small>{{ tr("settings.fontHelp") }}</small></span>
+              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.interfaceFont" :aria-label="tr('settings.font')" @change="appStore.preferencesChanged()">
+                <option value="default">{{ tr("settings.fontDefault") }}</option>
+                <option value="system">{{ tr("settings.fontSystem") }}</option>
+                <option value="serif">{{ tr("settings.fontSerif") }}</option>
+                <option value="mono">{{ tr("settings.fontMono") }}</option>
+              </select>
+            </label>
+            <label class="setting-row setting-row-select" :class="ui.row">
+              <span><strong>{{ tr("settings.fontSize") }}</strong><small>{{ tr("settings.fontSizeHelp") }}</small></span>
+              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model.number="appStore.interfaceFontSize" :aria-label="tr('settings.fontSize')" @change="appStore.preferencesChanged()">
+                <option v-for="size in [12, 13, 14, 15, 16, 17, 18]" :key="size" :value="size">{{ size }} px</option>
+              </select>
+            </label>
           </section>
           <section class="runtime-settings">
             <h3>{{ tr("settings.runtime") }}</h3>

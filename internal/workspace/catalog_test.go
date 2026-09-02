@@ -183,7 +183,7 @@ func TestCatalogPersistsValidatedDesktopPreferences(t *testing.T) {
 	root := t.TempDir()
 	catalog := NewCatalog(filepath.Join(root, "state.json"))
 	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
-		Appearance: "light", Language: "en",
+		Appearance: "light", Language: "en", FontFamily: "serif", FontSize: 16,
 		OfflineMode: true, ProxyEnabled: true, ProxyURL: "socks5://127.0.0.1:10800",
 		StreamingBehavior: "followUp", SidebarCollapsed: true, SidebarWidth: 344,
 		InspectorOpen: true, InspectorWidth: 468, InspectorTab: "context",
@@ -195,8 +195,13 @@ func TestCatalogPersistsValidatedDesktopPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if desktop.Preferences == nil || desktop.Preferences.Appearance != "light" || desktop.Preferences.Language != "en" || !desktop.Preferences.ProxyEnabled || desktop.Preferences.StreamingBehavior != "followUp" || desktop.Preferences.SidebarWidth != 344 || desktop.Preferences.InspectorWidth != 468 || desktop.Preferences.InspectorTab != "context" {
+	if desktop.Preferences == nil || desktop.Preferences.Appearance != "light" || desktop.Preferences.Language != "en" || desktop.Preferences.FontFamily != "serif" || desktop.Preferences.FontSize != 16 || !desktop.Preferences.ProxyEnabled || desktop.Preferences.StreamingBehavior != "followUp" || desktop.Preferences.SidebarWidth != 344 || desktop.Preferences.InspectorWidth != 468 || desktop.Preferences.InspectorTab != "context" {
 		t.Fatalf("unexpected preferences: %#v", desktop.Preferences)
+	}
+	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
+		Appearance: "light", Language: "en", FontFamily: "comic", FontSize: 30, StreamingBehavior: "steer", InspectorTab: "changes",
+	}}); err == nil {
+		t.Fatal("expected invalid typography preferences to be rejected")
 	}
 	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
 		ProxyEnabled: true, ProxyURL: "http://user:secret@example.com", StreamingBehavior: "steer", InspectorTab: "changes",

@@ -7,9 +7,14 @@
 @import "tailwindcss" important;
 
 @theme {
-  --font-display: "Bahnschrift", "Arial Narrow", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --font-body: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-display: var(--font-interface-display);
+  --font-body: var(--font-interface-body);
   --font-mono: "Cascadia Code", Consolas, monospace;
+  --text-xs: calc(12px + var(--font-size-delta));
+  --text-sm: calc(14px + var(--font-size-delta));
+  --text-base: calc(16px + var(--font-size-delta));
+  --text-lg: calc(18px + var(--font-size-delta));
+  --text-xl: calc(20px + var(--font-size-delta));
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);

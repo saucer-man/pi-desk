@@ -14,12 +14,18 @@ const terminalHarness = vi.hoisted(() => ({
   focus: vi.fn(),
   dispose: vi.fn(),
   fit: vi.fn(),
+  options: {} as Record<string, unknown>,
 }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown>) {
+      this.options = options;
+      terminalHarness.options = options;
+    }
     loadAddon() {}
     open() {}
     write = terminalHarness.write;
@@ -78,6 +84,7 @@ describe("TerminalPane", () => {
     terminalHarness.dataHandler = undefined;
     terminalHarness.resizeHandler = undefined;
     terminalHarness.eventHandler = undefined;
+    terminalHarness.options = {};
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     terminalMocks.snapshot.mockResolvedValue({ threadId: "thread-1", running: false, sequence: 0 });
     terminalMocks.start.mockResolvedValue({
@@ -87,6 +94,21 @@ describe("TerminalPane", () => {
     terminalMocks.write.mockResolvedValue(undefined);
     terminalMocks.resize.mockResolvedValue(undefined);
     terminalMocks.stop.mockResolvedValue(undefined);
+  });
+
+  it("updates the terminal font size with the interface preference", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    const wrapper = mount(TerminalPane, { global: { plugins: [pinia] } });
+
+    expect(terminalHarness.options.fontSize).toBe(12);
+    store.interfaceFontSize = 17;
+    await flushPromises();
+
+    expect(terminalHarness.options.fontSize).toBe(15);
+    expect(terminalHarness.fit).toHaveBeenCalled();
+    wrapper.unmount();
   });
 
   it("starts a trusted task terminal and forwards input and sequenced output", async () => {

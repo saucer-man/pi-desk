@@ -301,7 +301,8 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 	result := domain.DesktopState{ActiveThreadID: record.ActiveThreadID, Threads: make([]domain.DesktopThreadState, 0, len(record.Threads))}
 	if record.Preferences != nil {
 		result.Preferences = &domain.DesktopPreferences{
-			Appearance: record.Preferences.Appearance, Language: record.Preferences.Language, OfflineMode: record.Preferences.OfflineMode, ProxyEnabled: record.Preferences.ProxyEnabled,
+			Appearance: record.Preferences.Appearance, Language: record.Preferences.Language, FontFamily: record.Preferences.FontFamily, FontSize: record.Preferences.FontSize,
+			OfflineMode: record.Preferences.OfflineMode, ProxyEnabled: record.Preferences.ProxyEnabled,
 			ProxyURL: record.Preferences.ProxyURL, StreamingBehavior: record.Preferences.StreamingBehavior,
 			SidebarCollapsed: record.Preferences.SidebarCollapsed, SidebarWidth: record.Preferences.SidebarWidth,
 			InspectorOpen: record.Preferences.InspectorOpen, InspectorWidth: record.Preferences.InspectorWidth,
@@ -324,7 +325,8 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error
 	record := workspace.DesktopRecord{ActiveThreadID: strings.TrimSpace(state.ActiveThreadID), Threads: make([]workspace.ThreadRecord, 0, len(state.Threads))}
 	if state.Preferences != nil {
 		record.Preferences = &workspace.PreferencesRecord{
-			Appearance: strings.TrimSpace(state.Preferences.Appearance), Language: strings.TrimSpace(state.Preferences.Language), OfflineMode: state.Preferences.OfflineMode, ProxyEnabled: state.Preferences.ProxyEnabled,
+			Appearance: strings.TrimSpace(state.Preferences.Appearance), Language: strings.TrimSpace(state.Preferences.Language), FontFamily: strings.TrimSpace(state.Preferences.FontFamily), FontSize: state.Preferences.FontSize,
+			OfflineMode: state.Preferences.OfflineMode, ProxyEnabled: state.Preferences.ProxyEnabled,
 			ProxyURL: strings.TrimSpace(state.Preferences.ProxyURL), StreamingBehavior: strings.TrimSpace(state.Preferences.StreamingBehavior),
 			SidebarCollapsed: state.Preferences.SidebarCollapsed, SidebarWidth: state.Preferences.SidebarWidth,
 			InspectorOpen: state.Preferences.InspectorOpen, InspectorWidth: state.Preferences.InspectorWidth,

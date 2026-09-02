@@ -84,6 +84,8 @@ export interface DeletedSession {
 export interface DesktopPreferences {
     "appearance": string;
     "language": string;
+    "fontFamily": string;
+    "fontSize": number;
     "offlineMode": boolean;
     "proxyEnabled": boolean;
     "proxyUrl"?: string;

@@ -81,13 +81,13 @@ onBeforeUnmount(() => {
 
     <div class="topbar-task flex min-w-0 items-center justify-between gap-4">
       <div class="topbar-title-group flex min-w-0 items-center gap-2.5">
-        <strong class="min-w-0 max-w-[min(42vw,540px)] truncate font-display text-[15px] font-semibold tracking-[-0.01em] text-[var(--text)]" :title="appStore.activeThread?.title || 'Pi Desk'">{{ appStore.activeThread?.title || "Pi Desk" }}</strong>
+        <strong class="min-w-0 max-w-[min(42vw,540px)] truncate font-display text-[calc(15px+var(--font-size-delta))] font-semibold tracking-[-0.01em] text-[var(--text)]" :title="appStore.activeThread?.title || 'Pi Desk'">{{ appStore.activeThread?.title || "Pi Desk" }}</strong>
         <span v-if="appStore.activeExtensionTitle" class="extension-window-title min-w-0 truncate text-xs text-[var(--text-secondary)]" :title="appStore.activeExtensionTitle">{{ appStore.activeExtensionTitle }}</span>
         <span v-if="appStore.activeThread" class="workspace-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] shadow-sm" :title="appStore.activeThread.workspacePath">
           <FolderGit2 :size="14" />
           <span>{{ appStore.activeThread.workspace }}</span>
         </span>
-        <span v-if="activeBranch" class="branch-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 font-mono text-[11px] text-[var(--text-secondary)] shadow-sm" :title="activeBranch">
+        <span v-if="activeBranch" class="branch-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 font-mono text-[calc(11px+var(--font-size-delta))] text-[var(--text-secondary)] shadow-sm" :title="activeBranch">
           <GitBranch :size="14" />
           <span>{{ activeBranch }}</span>
         </span>

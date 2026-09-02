@@ -330,6 +330,8 @@ describe("app store", () => {
       preferences: {
         appearance: "dark",
         language: "en",
+        fontFamily: "serif",
+        fontSize: 16,
         offlineMode: false,
         proxyEnabled: true,
         proxyUrl: "http://127.0.0.1:7890",
@@ -347,7 +349,7 @@ describe("app store", () => {
     await store.initialize();
 
     expect(store).toMatchObject({
-      appearance: "dark", language: "en",
+      appearance: "dark", language: "en", interfaceFont: "serif", interfaceFontSize: 16,
       offlineMode: false, proxyEnabled: true, proxyURL: "http://127.0.0.1:7890",
       streamingBehavior: "followUp", sidebarCollapsed: true, sidebarWidth: 344,
       inspectorOpen: false, inspectorWidth: 468, inspectorTab: "context", workspaceApplication: "vscode",
@@ -355,7 +357,7 @@ describe("app store", () => {
     await store.persistDesktopState();
     expect(mocks.saveDesktopState).toHaveBeenCalledWith(expect.objectContaining({
       preferences: expect.objectContaining({
-        proxyUrl: "http://127.0.0.1:7890", streamingBehavior: "followUp",
+        proxyUrl: "http://127.0.0.1:7890", streamingBehavior: "followUp", fontFamily: "serif", fontSize: 16,
         sidebarWidth: 344, inspectorOpen: false, inspectorWidth: 468, workspaceApplication: "vscode",
       }),
     }));
@@ -477,6 +479,8 @@ describe("app store", () => {
     const store = useAppStore();
     expect(store.appearance).toBe("light");
     expect(store.language).toBe("zh-CN");
+    expect(store.interfaceFont).toBe("default");
+    expect(store.interfaceFontSize).toBe(14);
   });
 
   it("starts Pi asynchronously when a catalog task is selected and closes the oldest idle process above ten", async () => {

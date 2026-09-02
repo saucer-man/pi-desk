@@ -67,6 +67,8 @@ type WindowRecord struct {
 type PreferencesRecord struct {
 	Appearance           string `json:"appearance"`
 	Language             string `json:"language"`
+	FontFamily           string `json:"fontFamily"`
+	FontSize             int    `json:"fontSize"`
 	OfflineMode          bool   `json:"offlineMode"`
 	ProxyEnabled         bool   `json:"proxyEnabled"`
 	ProxyURL             string `json:"proxyUrl,omitempty"`
@@ -307,13 +309,19 @@ func (catalog *Catalog) Desktop() (DesktopRecord, error) {
 }
 
 func (catalog *Catalog) SaveDesktop(desktop DesktopRecord) error {
-	if desktop.Preferences != nil && (strings.TrimSpace(desktop.Preferences.Appearance) == "" || strings.TrimSpace(desktop.Preferences.Language) == "") {
+	if desktop.Preferences != nil {
 		preferences := *desktop.Preferences
 		if strings.TrimSpace(preferences.Appearance) == "" {
 			preferences.Appearance = "light"
 		}
 		if strings.TrimSpace(preferences.Language) == "" {
 			preferences.Language = "zh-CN"
+		}
+		if strings.TrimSpace(preferences.FontFamily) == "" {
+			preferences.FontFamily = "default"
+		}
+		if preferences.FontSize == 0 {
+			preferences.FontSize = 14
 		}
 		desktop.Preferences = &preferences
 	}
@@ -616,6 +624,14 @@ func validateDesktop(desktop DesktopRecord) error {
 		case "zh-CN", "en":
 		default:
 			return errors.New("invalid language preference")
+		}
+		switch preferences.FontFamily {
+		case "default", "system", "serif", "mono":
+		default:
+			return errors.New("invalid font family preference")
+		}
+		if preferences.FontSize < 12 || preferences.FontSize > 18 {
+			return errors.New("invalid font size preference")
 		}
 		switch preferences.StreamingBehavior {
 		case "steer", "followUp":

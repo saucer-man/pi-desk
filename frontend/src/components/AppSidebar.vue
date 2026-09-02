@@ -277,7 +277,7 @@ onBeforeUnmount(() => {
       <input class="h-full min-w-0 border-0 bg-transparent p-0 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-muted)]" ref="searchInput" v-model="appStore.searchQuery" type="search" :placeholder="tr('sidebar.searchTasks')" :aria-label="tr('sidebar.searchTasks')" />
       <button class="icon-button inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.closeSearch')" @click="toggleSearch"><X :size="14" /></button>
     </div>
-    <p v-if="!appStore.sidebarCollapsed && appStore.searchOpen" class="sidebar-search-help mx-5 mt-1 text-[11px] leading-relaxed text-[var(--text-muted)]">{{ tr("sidebar.searchHelp") }}</p>
+    <p v-if="!appStore.sidebarCollapsed && appStore.searchOpen" class="sidebar-search-help mx-5 mt-1 text-[calc(11px+var(--font-size-delta))] leading-relaxed text-[var(--text-muted)]">{{ tr("sidebar.searchHelp") }}</p>
 
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-3 pt-4">
       <div class="section-heading flex h-8 items-center justify-between px-2 text-xs font-semibold text-[var(--text-secondary)]">
@@ -302,7 +302,7 @@ onBeforeUnmount(() => {
           >
             <Folder :size="16" />
             <span class="workspace-name min-w-0 flex-1 truncate">{{ group.workspace.name }}</span>
-            <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag shrink-0 rounded-full border border-[var(--border-strong)] bg-[var(--bg-workspace)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--text-secondary)]">{{ tr("sidebar.remoteDirectory") }}</span>
+            <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag shrink-0 rounded-full border border-[var(--border-strong)] bg-[var(--bg-workspace)] px-1.5 py-0.5 text-[calc(9px+var(--font-size-delta))] font-semibold text-[var(--text-secondary)]">{{ tr("sidebar.remoteDirectory") }}</span>
           </button>
           <button
             class="icon-button workspace-menu-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
@@ -317,7 +317,7 @@ onBeforeUnmount(() => {
           <button
             v-for="thread in group.threads"
             :key="thread.id"
-            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-lg border border-transparent bg-transparent px-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
+            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-lg border border-transparent bg-transparent px-2.5 text-left text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
             :class="{ 'is-active border-[var(--border)] bg-[var(--bg-active)] text-[var(--text)]': appStore.activeThreadId === thread.id }"
             type="button"
             :title="thread.title"

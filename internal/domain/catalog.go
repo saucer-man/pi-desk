@@ -203,6 +203,8 @@ type DesktopThreadState struct {
 type DesktopPreferences struct {
 	Appearance           string `json:"appearance"`
 	Language             string `json:"language"`
+	FontFamily           string `json:"fontFamily"`
+	FontSize             int    `json:"fontSize"`
 	OfflineMode          bool   `json:"offlineMode"`
 	ProxyEnabled         bool   `json:"proxyEnabled"`
 	ProxyURL             string `json:"proxyUrl,omitempty"`

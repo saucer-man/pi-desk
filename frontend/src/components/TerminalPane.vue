@@ -211,12 +211,16 @@ function scheduleResize(columns: number, rows: number) {
   }, 80);
 }
 
+function terminalFontSize(size: number) {
+  return 12 + size - 14;
+}
+
 onMounted(() => {
   terminal = new Terminal({
     cursorBlink: true,
     cursorStyle: "bar",
     fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
-    fontSize: 12,
+    fontSize: terminalFontSize(appStore.interfaceFontSize),
     lineHeight: 1.25,
     scrollback: 5000,
     theme: terminalTheme(),
@@ -257,6 +261,10 @@ onMounted(() => {
 watch(() => activeThread.value?.id, (threadID) => {
   if (pendingRemoteStartThreadID && pendingRemoteStartThreadID !== threadID) pendingRemoteStartThreadID = "";
   void loadActiveTerminal();
+});
+watch(() => appStore.interfaceFontSize, (size) => {
+  if (terminal) terminal.options.fontSize = terminalFontSize(size);
+  fitAddon?.fit();
 });
 watch(() => [activeThread.value?.id, activeThread.value?.started, activeThread.value?.status] as const, ([threadID, started, status]) => {
   if (!threadID || pendingRemoteStartThreadID !== threadID) return;

@@ -21,6 +21,7 @@ export type StreamingBehavior = "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
 export type Appearance = "dark" | "light" | "system";
 export type Language = "zh-CN" | "en";
+export type InterfaceFont = "default" | "system" | "serif" | "mono";
 type RemoteReconnectIntent = "start" | "prompt" | "bash" | "terminal";
 export type RemoteReconnectProgressStatus = "pending" | "active" | "complete" | "error";
 export interface RemoteReconnectProgressStep {
@@ -806,6 +807,8 @@ export const useAppStore = defineStore("app", {
     streamingBehavior: "steer" as StreamingBehavior,
     appearance: "light" as Appearance,
     language: "zh-CN" as Language,
+    interfaceFont: "default" as InterfaceFont,
+    interfaceFontSize: 14,
     piProcessOrder: [] as string[],
     extensionRequestByThread: {} as Record<string, ExtensionUIRequest | undefined>,
     extensionStatusesByThread: {} as Record<string, Record<string, string>>,
@@ -3086,6 +3089,12 @@ export const useAppStore = defineStore("app", {
       if (!desktop.preferences) return;
       this.appearance = (desktop.preferences.appearance || "light") as Appearance;
       this.language = (desktop.preferences.language || "zh-CN") as Language;
+      this.interfaceFont = (["default", "system", "serif", "mono"] as const).includes(desktop.preferences.fontFamily as InterfaceFont)
+        ? desktop.preferences.fontFamily as InterfaceFont
+        : "default";
+      this.interfaceFontSize = Number.isInteger(desktop.preferences.fontSize) && desktop.preferences.fontSize >= 12 && desktop.preferences.fontSize <= 18
+        ? desktop.preferences.fontSize
+        : 14;
       setAppLanguage(this.language);
       this.offlineMode = desktop.preferences.offlineMode;
       this.proxyEnabled = desktop.preferences.proxyEnabled;
@@ -3321,6 +3330,8 @@ export const useAppStore = defineStore("app", {
         preferences: {
           appearance: this.appearance,
           language: this.language,
+          fontFamily: this.interfaceFont,
+          fontSize: this.interfaceFontSize,
           offlineMode: this.offlineMode,
           proxyEnabled: this.proxyEnabled,
           proxyUrl: this.proxyURL.trim(),

@@ -292,7 +292,7 @@ onBeforeUnmount(() => {
           @keydown.enter.prevent="moveSearchMatch($event.shiftKey ? -1 : 1)"
           @keydown.esc.prevent.stop="closeSearch"
         />
-        <span class="conversation-search-result shrink-0 font-mono text-[10px] text-[var(--text-muted)]" aria-live="polite">{{ searchResultLabel }}</span>
+        <span class="conversation-search-result shrink-0 font-mono text-[calc(10px+var(--font-size-delta))] text-[var(--text-muted)]" aria-live="polite">{{ searchResultLabel }}</span>
         <button class="conversation-search-control inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-40" type="button" :title="tr('conversation.previousSearchResult')" :aria-label="tr('conversation.previousSearchResult')" :disabled="!searchMatches.length" @click="moveSearchMatch(-1)">
           <ChevronUp :size="15" aria-hidden="true" />
         </button>

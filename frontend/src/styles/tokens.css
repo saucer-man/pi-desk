@@ -1,9 +1,14 @@
 :root {
   color-scheme: dark;
-  --font-sans: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
-  --font-reading: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+  --font-interface-body: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+  --font-interface-display: "Bahnschrift", "Arial Narrow", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-interface-reading: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+  --font-sans: var(--font-interface-body);
+  --font-reading: var(--font-interface-reading);
   --font-mono: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
-  --font-size-body: 14px;
+  --font-size-root: 16px;
+  --font-size-delta: 0px;
+  --font-size-body: calc(14px + var(--font-size-delta));
   --line-height-body: 1.45;
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -73,6 +78,32 @@
   --motion-fast: 120ms;
   --motion-base: 160ms;
 }
+
+:root[data-font-family="system"] {
+  --font-interface-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-interface-display: var(--font-interface-body);
+  --font-interface-reading: var(--font-interface-body);
+}
+
+:root[data-font-family="serif"] {
+  --font-interface-body: Georgia, "Times New Roman", "Songti SC", SimSun, serif;
+  --font-interface-display: var(--font-interface-body);
+  --font-interface-reading: var(--font-interface-body);
+}
+
+:root[data-font-family="mono"] {
+  --font-interface-body: var(--font-mono);
+  --font-interface-display: var(--font-mono);
+  --font-interface-reading: var(--font-mono);
+}
+
+:root[data-font-size="12"] { --font-size-delta: -2px; }
+:root[data-font-size="13"] { --font-size-delta: -1px; }
+:root[data-font-size="14"] { --font-size-delta: 0px; }
+:root[data-font-size="15"] { --font-size-delta: 1px; }
+:root[data-font-size="16"] { --font-size-delta: 2px; }
+:root[data-font-size="17"] { --font-size-delta: 3px; }
+:root[data-font-size="18"] { --font-size-delta: 4px; }
 
 :root[data-theme="light"],
 .app-shell[data-theme="light"] {
