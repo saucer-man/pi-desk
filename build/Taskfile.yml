@@ -30,7 +30,7 @@ tasks:
       - build/remote-helper/artifacts/helper-darwin-arm64
       - build/remote-helper/artifacts/manifest.json
     cmds:
-      - go run ./cmd/pi-desk-remote-artifacts -output build/remote-helper/artifacts -build-identity pi-desk-v1.0.1-p1 -pi-min 0.84.2 -pi-max 0.85.0
+      - go run ./cmd/pi-desk-remote-artifacts -output build/remote-helper/artifacts -build-identity pi-desk-v1.0.2-p1 -pi-min 0.84.2 -pi-max 0.85.0
 
   install:frontend:deps:
     summary: Install frontend dependencies

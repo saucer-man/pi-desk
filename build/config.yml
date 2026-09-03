@@ -11,7 +11,7 @@ info:
   description: "A desktop interface for the Pi coding agent" # The application description
   copyright: "(c) 2026 Pi Desk Contributors" # Copyright text
   comments: "Pi-powered coding agent desktop client" # Comments
-  version: "1.0.1" # The application version
+  version: "1.0.2" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
   #                               # If not set and Assets.car exists, defaults to "appicon"

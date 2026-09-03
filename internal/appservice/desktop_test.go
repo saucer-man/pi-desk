@@ -95,7 +95,7 @@ func TestCheckForUpdates(t *testing.T) {
 	}
 
 	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		_, _ = response.Write([]byte(`{"version":"1.0.1"}`))
+		_, _ = response.Write([]byte(`{"version":"1.0.2"}`))
 	})
 	result = service.CheckForUpdates()
 	if result.Status != "current" {
@@ -113,7 +113,7 @@ func TestCheckForUpdatesRejectsRemoteHTTP(t *testing.T) {
 }
 
 func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
-	manifest := `{"version":"1.0.1-beta.1"}`
+	manifest := `{"version":"1.0.2-beta.1"}`
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte(manifest))
 	}))
@@ -124,7 +124,7 @@ func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
 	if result := service.CheckForUpdates(); result.Status != "current" {
 		t.Fatalf("expected an older prerelease to be current, got %#v", result)
 	}
-	manifest = `{"version":"1.0.2-beta.1"}`
+	manifest = `{"version":"1.0.3-beta.1"}`
 	if result := service.CheckForUpdates(); result.Status != "available" {
 		t.Fatalf("expected a newer prerelease to be available, got %#v", result)
 	}

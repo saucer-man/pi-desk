@@ -101,7 +101,7 @@ PI_DESK_SSH_LIVE_DIRECTORY='/workspace/repo' \
 PI_DESK_SSH_LIVE_HELPER='C:/path/to/pi-desk/build/remote-helper/artifacts/helper-linux-amd64' \
 PI_DESK_SSH_LIVE_HELPER_OS='linux' \
 PI_DESK_SSH_LIVE_HELPER_ARCH='amd64' \
-PI_DESK_SSH_LIVE_HELPER_BUILD='pi-desk-v1.0.1-p1' \
+PI_DESK_SSH_LIVE_HELPER_BUILD='pi-desk-v1.0.2-p1' \
 go test ./internal/remotessh \
   -run '^(TestLiveSSHConfigExecutionConsentBoundary|TestLiveSSHConnectionFixture|TestLiveSSHAuthenticationAndProxyJumpMatrix|TestLiveSSHRestrictedFilesystemMatrix|TestLiveSSHConcurrentHelperInstallers|TestLiveSSHHelperBootstrap|TestLiveSSHNetworkDisconnectFaults)$' \
   -count=1 -v -timeout=240s

@@ -6,7 +6,7 @@ fixture="$root/test/sshfixture/manage.sh"
 temporary=$(mktemp -d)
 original_gocache=$(go env GOCACHE)
 original_gomodcache=$(go env GOMODCACHE)
-build_identity=pi-desk-v1.0.1-p1
+build_identity=pi-desk-v1.0.2-p1
 helper="$root/build/remote-helper/artifacts/helper-linux-amd64"
 
 cleanup() {
