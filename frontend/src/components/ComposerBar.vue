@@ -511,7 +511,6 @@ onBeforeUnmount(() => {
   <div class="composer-wrap" :class="ui.root">
     <div v-for="widget in widgetsAbove" :key="widget.key" class="extension-widget" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
     <div v-if="appStore.activeRetry" class="retry-banner" :class="ui.status" role="status">
-      <LoaderCircle :size="14" class="is-spinning" />
       <span>Retry {{ appStore.activeRetry.attempt }} of {{ appStore.activeRetry.maxAttempts }}</span>
       <small v-if="appStore.activeRetry.errorMessage">{{ appStore.activeRetry.errorMessage }}</small>
       <button type="button" title="Stop retry" @click="void appStore.abortActiveRetry()"><X :size="14" /></button>

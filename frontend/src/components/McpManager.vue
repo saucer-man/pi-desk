@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { CheckCircle2, Copy, FilePlus2, PlugZap, RefreshCw, Save, Trash2, XCircle } from "lucide-vue-next";
+import { CheckCircle2, FilePlus2, RefreshCw, Save, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref } from "vue";
 import { McpConfigScope, type McpServerSummary } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -18,7 +18,6 @@ const formError = ref("");
 const notice = ref("");
 const selectedKey = ref("");
 const deleteArmed = ref(false);
-const copied = ref(false);
 const savedFingerprint = ref("");
 const editor = reactive({
   scope: McpConfigScope.McpConfigScopeGlobal,
@@ -230,32 +229,11 @@ async function deleteServer() {
   }
 }
 
-async function copyPath() {
-  const path = snapshot.value?.globalPath;
-  if (!path) return;
-  await navigator.clipboard.writeText(path);
-  copied.value = true;
-  window.setTimeout(() => { copied.value = false; }, 1200);
-}
-
 onMounted(() => { void loadServers(); });
 </script>
 
 <template>
   <div class="settings-content model-config-content mcp-config-content" :class="ui.settingsContent">
-    <div class="settings-content-header model-config-header" :class="ui.settingsHeader">
-      <div>
-        <h3>{{ tr("settings.mcpManagement") }}</h3>
-        <button v-if="snapshot?.globalPath" class="model-config-path" type="button" :title="snapshot.globalPath" @click="void copyPath()">
-          <PlugZap :size="12" /><span>{{ snapshot.globalPath }}</span><Copy :size="12" />
-        </button>
-      </div>
-      <div class="settings-actions">
-        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading || saving" @click="void loadServers()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-        <button class="text-button" :class="ui.button" type="button" :disabled="saving" @click="resetEditor()"><FilePlus2 :size="14" />{{ tr("settings.addMcpServer") }}</button>
-      </div>
-    </div>
-    <p v-if="copied" class="setting-status">{{ tr("settings.copied") }}</p>
     <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingMcp") }}</span></div>
     <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
     <div v-else class="prompt-manager-layout" :class="ui.managerLayout">

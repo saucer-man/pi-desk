@@ -119,6 +119,45 @@ func TestCatalogServiceWorkspaceLifecycle(t *testing.T) {
 	}
 }
 
+func TestCatalogServicePermanentlyDeletesOnlyWorkspaceSessions(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	otherProject := filepath.Join(root, "other")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(otherProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(root, "workspace.jsonl")
+	otherSessionPath := filepath.Join(root, "other.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherSessionPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := workspace.NewCatalog(filepath.Join(root, "state.json"))
+	record, err := catalog.Add(project, "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := &fakeSessionLister{sessions: []sessionindex.Summary{
+		{Path: sessionPath, CWD: record.Path},
+		{Path: otherSessionPath, CWD: otherProject},
+	}}
+	service := newCatalogService(catalog, index, nil)
+	if err := service.DeleteWorkspaceSessions(domain.WorkspaceRequest{ID: record.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("workspace session still exists: %v", err)
+	}
+	if _, err := os.Stat(otherSessionPath); err != nil {
+		t.Fatalf("unrelated session was deleted: %v", err)
+	}
+}
+
 func TestCatalogServiceOpensOnlyRegisteredWorkspace(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")

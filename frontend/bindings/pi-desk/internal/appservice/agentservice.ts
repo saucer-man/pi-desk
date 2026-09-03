@@ -89,6 +89,10 @@ export function GetState(request: domain$0.ThreadRequest): $CancellablePromise<d
     return $Call.ByID(221571890, request);
 }
 
+export function ReplaySessionMessage(request: domain$0.SessionMessageRequest): $CancellablePromise<domain$0.CommandResult> {
+    return $Call.ByID(2965284235, request);
+}
+
 export function RespondExtensionUI(request: domain$0.ExtensionUIResponseRequest): $CancellablePromise<void> {
     return $Call.ByID(3284289759, request);
 }

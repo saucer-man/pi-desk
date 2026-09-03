@@ -32,7 +32,9 @@ describe("SettingsDialog", () => {
     const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
 
     expect(wrapper.get(".settings-title-path").text()).toContain("Settings");
-    expect(wrapper.get(".settings-title-path").text()).toContain("General");
+    expect(wrapper.find(".settings-title-path strong").exists()).toBe(false);
+    expect(wrapper.get(".settings-title-path").text()).not.toContain("/ General");
+    expect(wrapper.get(".settings-project-path").text()).toBe("Current project path: None");
     expect(wrapper.get(".settings-layout").classes()).not.toContain("px-5");
     expect(wrapper.get(".settings-dialog").classes()).toEqual(expect.arrayContaining([
       "[&_.text-button]:!h-7",
@@ -51,6 +53,11 @@ describe("SettingsDialog", () => {
       expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
       expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
     }
+    expect(wrapper.text()).not.toContain("Open a task to start Pi and change runtime behavior.");
+    const updateRow = wrapper.get('[data-testid="update-check-row"]');
+    expect(updateRow.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(updateRow.get('[data-testid="check-updates-now"]').text()).toContain("Check now");
+    expect(updateRow.text()).toContain("Not checked");
 
     const checkboxes = wrapper.findAll('input[type="checkbox"]');
     await checkboxes[0].setValue(false);
@@ -68,6 +75,19 @@ describe("SettingsDialog", () => {
     expect(store.appearanceChanged).toHaveBeenCalledOnce();
     await wrapper.get('button[title="Close settings"]').trigger("click");
     expect(store.closeSettings).toHaveBeenCalledOnce();
+  });
+
+  it("hides an expected unregistered-workspace persistence error", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.settingsError = "workspace is not registered";
+    const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
+
+    expect(wrapper.text()).not.toContain("workspace is not registered");
+    store.settingsError = "state file is locked";
+    await flushPromises();
+    expect(wrapper.text()).toContain("state file is locked");
   });
 
   it("shows loaded Pi resources as a separate read-only view", async () => {
@@ -95,6 +115,8 @@ describe("SettingsDialog", () => {
     store.setAutoRetry = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
 
+    expect(wrapper.get(".settings-project-path").text()).toBe("Current project path: D:\\repo");
+
     await wrapper.get('select[aria-label="Steering queue processing"]').setValue("all");
     await flushPromises();
     expect(store.setSteeringMode).toHaveBeenCalledWith("all");
@@ -104,19 +126,19 @@ describe("SettingsDialog", () => {
     expect(wrapper.findAll(".settings-nav button").filter((button) => button.text() === "Extensions")).toHaveLength(1);
 
     await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Extensions")!.trigger("click");
-    expect(wrapper.text()).toContain("Global Pi extensions and packages");
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    expect(wrapper.find(".settings-fill-body").exists()).toBe(true);
 
     await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Runtime resources")!.trigger("click");
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    expect(wrapper.find(".runtime-resources-body").exists()).toBe(true);
     expect(wrapper.findAll(".resource-row")).toHaveLength(3);
     expect(wrapper.text()).toContain("SKILL.md");
     await wrapper.findAll(".resource-filters button")[1].trigger("click");
     expect(wrapper.findAll(".resource-row")).toHaveLength(1);
     expect(wrapper.text()).toContain("/skill:review");
 
-    await wrapper.get('button[title="Refresh resources"]').trigger("click");
-    await flushPromises();
-    expect(store.refreshModels).toHaveBeenCalledWith("thread-1");
-    expect(store.refreshCommands).toHaveBeenCalledWith("thread-1");
+    expect(wrapper.find('button[title="Refresh resources"]').exists()).toBe(false);
   });
 
   it("keeps only Pi self-update in Runtime and confirms before invoking the backend", async () => {

@@ -4616,6 +4616,17 @@
   gap: 12px;
 }
 
+.settings-fill-body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  overflow: auto;
+}
+
 .settings-content-header {
   display: flex;
   min-height: 34px;
@@ -5044,14 +5055,8 @@
 }
 
 .prompt-editor .model-field > textarea {
-  min-height: 260px;
-}
-
-.prompt-reload-note {
-  margin: 15px 0 0;
-  color: var(--text-muted);
-  font-size: calc(10.5px + var(--font-size-delta));
-  line-height: 1.5;
+  height: 100%;
+  min-height: 0 !important;
 }
 
 .skill-directory {
@@ -5992,7 +5997,7 @@
   font-size: calc(9px + var(--font-size-delta));
 }
 
-.extension-config-content {
+.extension-config-content .settings-fill-body {
   gap: 16px;
 }
 

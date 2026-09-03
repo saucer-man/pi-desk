@@ -292,6 +292,70 @@ func (index *Index) EditMessage(path, entryID, text string) (Mutation, error) {
 	})
 }
 
+// RewindBefore removes the latest user turn from the active branch so it can
+// be replayed in the same session file.
+func (index *Index) RewindBefore(path, entryID string) (Mutation, error) {
+	return index.mutateMessage(path, entryID, func(lines []json.RawMessage, _ int, entry map[string]json.RawMessage) ([]json.RawMessage, error) {
+		if entryRole(entry) != "user" {
+			return nil, errors.New("only user messages can be replayed")
+		}
+		type branchEntry struct {
+			raw    json.RawMessage
+			id     string
+			parent string
+			entry  map[string]json.RawMessage
+		}
+		byID := make(map[string]branchEntry, len(lines))
+		leafID := ""
+		for _, line := range lines[1:] {
+			var decoded map[string]json.RawMessage
+			if json.Unmarshal(line, &decoded) != nil {
+				continue
+			}
+			var id, parent string
+			_ = json.Unmarshal(decoded["id"], &id)
+			_ = json.Unmarshal(decoded["parentId"], &parent)
+			if id != "" {
+				byID[id] = branchEntry{raw: line, id: id, parent: parent, entry: decoded}
+				leafID = id
+			}
+		}
+		current, exists := byID[leafID]
+		seen := make(map[string]struct{}, 64)
+		for exists && current.id != entryID {
+			if _, duplicate := seen[current.id]; duplicate {
+				return nil, errors.New("session branch contains a parent cycle")
+			}
+			seen[current.id] = struct{}{}
+			if entryRole(current.entry) == "user" {
+				return nil, errors.New("only the latest user message can be replayed")
+			}
+			current, exists = byID[current.parent]
+		}
+		if !exists || current.id != entryID {
+			return nil, errors.New("message is not on the active session branch")
+		}
+
+		branch := make([]json.RawMessage, 0, 64)
+		for parentID := current.parent; parentID != ""; {
+			parent, found := byID[parentID]
+			if !found {
+				return nil, errors.New("session branch contains a missing parent")
+			}
+			if _, duplicate := seen[parent.id]; duplicate {
+				return nil, errors.New("session branch contains a parent cycle")
+			}
+			seen[parent.id] = struct{}{}
+			branch = append(branch, parent.raw)
+			parentID = parent.parent
+		}
+		for left, right := 0, len(branch)-1; left < right; left, right = left+1, right-1 {
+			branch[left], branch[right] = branch[right], branch[left]
+		}
+		return append([]json.RawMessage{lines[0]}, branch...), nil
+	})
+}
+
 // DeleteMessage removes one entry and reconnects each direct child to the
 // deleted entry's parent. This preserves later branches without introducing a
 // non-Pi tombstone entry into the session tree.

@@ -126,6 +126,7 @@ export interface TimelineRunNotice {
   attempt?: number;
   maxAttempts?: number;
   delayMs?: number;
+  retryAt?: number;
 }
 
 export interface TimelineMessage {
@@ -1221,7 +1222,7 @@ export const useAppStore = defineStore("app", {
       // revoking the shared target connection and its helper runtime.
       await this.disconnectRemoteTarget(workspace.targetId);
     },
-    async removeWorkspace(id: string) {
+    async removeWorkspace(id: string, deleteSessions = false) {
       const workspace = this.workspaces.find((item) => item.id === id);
       if (!workspace) throw new Error("Workspace not found");
       const removedThreads = this.threads.filter((thread) => workspace.kind === "ssh"
@@ -1241,6 +1242,7 @@ export const useAppStore = defineStore("app", {
         throw new Error(stopFailure);
       }
       if (stopFailure) throw new Error(stopFailure);
+      if (deleteSessions) await catalogService.deleteWorkspaceSessions(id);
       await catalogService.removeWorkspace(id);
       for (const thread of removedThreads) this.removeThreadState(thread.id);
       this.workspaces = this.workspaces.filter((item) => item.id !== id);
@@ -2124,19 +2126,27 @@ export const useAppStore = defineStore("app", {
       }
     },
     async resendEditedMessage(messageId: string, text: string): Promise<boolean> {
-      const threadId = this.activeThreadId;
+      const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && item.role === "user");
       const latestUserMessage = this.activeMessages.findLast((item) => item.role === "user");
-      if (!message || latestUserMessage?.id !== messageId || !text.trim()) return false;
+      if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       const images = message.images?.map((image) => ({ ...image })) ?? [];
-      if (!await this.forkFromMessage(messageId)) return false;
-      if (this.activeThreadId !== threadId) {
-        this.draftsByThread[threadId] = text;
-        this.attachmentsByThread[threadId] = images;
+      this.sessionOperationByThread[thread.id] = "Replaying message";
+      try {
+        await this.callWithSession(thread, () => agentService.replaySessionMessage({
+          threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
+        }));
+        await this.reloadSessionTranscript(thread, false);
+      } catch (error) {
+        thread.status = "attention";
+        thread.error = errorMessage(error);
         return false;
+      } finally {
+        delete this.sessionOperationByThread[thread.id];
       }
+      if (this.activeThreadId !== thread.id) return false;
       this.updateDraft(text);
-      this.attachmentsByThread[this.activeThreadId] = images;
+      this.attachmentsByThread[thread.id] = images;
       await this.sendActivePrompt();
       return true;
     },
@@ -2939,6 +2949,7 @@ export const useAppStore = defineStore("app", {
             delayMs: Number(payload.delayMs ?? 0),
             errorMessage: retryError,
           };
+          const retryAt = Date.now() + Math.max(0, retry.delayMs);
           this.retryByThread[thread.id] = retry;
           const assistant = this.currentAssistant(thread.id, false)
             ?? messages.findLast((message) => message.role === "assistant");
@@ -2953,6 +2964,7 @@ export const useAppStore = defineStore("app", {
               attempt: retry.attempt,
               maxAttempts: retry.maxAttempts,
               delayMs: retry.delayMs,
+              retryAt,
             };
           }
           break;

@@ -159,18 +159,9 @@ onMounted(() => { void loadExtensions(); });
 </script>
 
 <template>
-  <div class="settings-content extension-config-content" :class="ui.settingsContent">
-    <div class="settings-content-header" :class="ui.settingsHeader">
-      <div>
-        <h3>{{ tr("settings.extensionManagement") }}</h3>
-        <span>{{ tr("settings.extensionManagementHelp") }}</span>
-      </div>
-      <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading || changing" @click="void loadExtensions()">
-        <RefreshCw :size="14" :class="{ 'is-spinning': loading }" />
-      </button>
-    </div>
-
-    <section class="extension-recommended" aria-labelledby="todo-extension-title">
+  <div class="settings-content model-config-content extension-config-content" :class="ui.settingsContent">
+    <div class="settings-fill-body">
+      <section class="extension-recommended" aria-labelledby="todo-extension-title">
       <div class="extension-feature-row">
         <Puzzle :size="18" />
         <span>
@@ -206,12 +197,12 @@ onMounted(() => { void loadExtensions(); });
       </div>
       <p v-if="snapshot?.todo.legacyInstalled" class="extension-warning"><AlertTriangle :size="14" />{{ tr("settings.legacyTodoExtensionWarning", { path: snapshot.todo.legacyPath || "" }) }}</p>
       <p class="setting-status">{{ tr("settings.extensionRestartNeeded") }}</p>
-    </section>
+      </section>
 
-    <p v-if="notice" class="setting-status is-success">{{ notice }}</p>
-    <p v-if="loadError" class="form-error">{{ loadError }}</p>
+      <p v-if="notice" class="setting-status is-success">{{ notice }}</p>
+      <p v-if="loadError" class="form-error">{{ loadError }}</p>
 
-    <section class="installed-extensions" aria-labelledby="pi-packages-title">
+      <section class="installed-extensions" aria-labelledby="pi-packages-title">
       <header>
         <strong id="pi-packages-title">{{ tr("settings.piPackages") }}</strong>
         <span>{{ packages.length }}</span>
@@ -237,9 +228,9 @@ onMounted(() => { void loadExtensions(); });
         </div>
       </div>
       <div v-else-if="!loading" class="settings-empty compact" :class="ui.empty"><Package :size="17" /><span>{{ tr("settings.noPackages") }}</span></div>
-    </section>
+      </section>
 
-    <section class="installed-extensions" aria-labelledby="installed-extensions-title">
+      <section class="installed-extensions" aria-labelledby="installed-extensions-title">
       <header>
         <strong id="installed-extensions-title">{{ tr("settings.installedExtensions") }}</strong>
         <span>{{ extensions.length }}</span>
@@ -258,8 +249,9 @@ onMounted(() => { void loadExtensions(); });
         </div>
       </div>
       <div v-else class="settings-empty compact" :class="ui.empty"><XCircle :size="17" /><span>{{ tr("settings.noInstalledExtensions") }}</span></div>
-    </section>
+      </section>
 
-    <p class="extension-storage-note">{{ tr("settings.extensionStorageHelp", { directory: snapshot?.globalDirectory || "~/.pi/agent/extensions", settings: snapshot?.settingsPath || "~/.pi/agent/settings.json" }) }}</p>
+      <p class="extension-storage-note">{{ tr("settings.extensionStorageHelp", { directory: snapshot?.globalDirectory || "~/.pi/agent/extensions", settings: snapshot?.settingsPath || "~/.pi/agent/settings.json" }) }}</p>
+    </div>
   </div>
 </template>

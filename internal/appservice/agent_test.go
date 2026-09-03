@@ -148,6 +148,46 @@ func TestAgentServiceEditsPersistedMessageAndReloadsPi(t *testing.T) {
 	}
 }
 
+func TestAgentServiceReplaysLatestUserMessageInSameSession(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "project")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "session.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		`{"type":"session","version":3,"id":"session","timestamp":"2026-08-10T08:00:00Z","cwd":"D:\\repo"}`,
+		`{"type":"message","id":"user-1","parentId":null,"message":{"role":"user","content":"First"}}`,
+		`{"type":"message","id":"assistant-1","parentId":"user-1","message":{"role":"assistant","content":"First response"}}`,
+		`{"type":"message","id":"user-2","parentId":"assistant-1","message":{"role":"user","content":"Replay me"}}`,
+		`{"type":"message","id":"assistant-2","parentId":"user-2","message":{"role":"assistant","content":"Old response"}}`,
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeAgentRuntime{stateData: json.RawMessage(`{"sessionFile":` + strconv.Quote(path) + `,"isStreaming":false}`)}
+	service := newAgentService(runtime)
+	service.index = sessionindex.New(root)
+
+	if _, err := service.ReplaySessionMessage(domain.SessionMessageRequest{ThreadID: "thread-1", Path: path, EntryID: "user-2"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"id":"assistant-1"`) || strings.Contains(text, `"id":"user-2"`) || strings.Contains(text, `"id":"assistant-2"`) {
+		t.Fatalf("replayed session=%s", data)
+	}
+	if runtime.command["type"] != "switch_session" || runtime.command["sessionPath"] != canonicalTestPath(t, path) {
+		t.Fatalf("unexpected switch command: %#v", runtime.command)
+	}
+	files, err := filepath.Glob(filepath.Join(directory, "*.jsonl"))
+	if err != nil || len(files) != 1 || files[0] != path {
+		t.Fatalf("replay created another session: files=%#v error=%v", files, err)
+	}
+}
+
 func TestAgentServiceRemovesAssistantForkWhenPiCannotSwitch(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "project")

@@ -17,6 +17,10 @@ export function DeleteSession(request: domain$0.DeleteSessionRequest): $Cancella
     return $Call.ByID(3884599674, request);
 }
 
+export function DeleteWorkspaceSessions(request: domain$0.WorkspaceRequest): $CancellablePromise<void> {
+    return $Call.ByID(982674982, request);
+}
+
 export function GetDesktopState(): $CancellablePromise<domain$0.DesktopState> {
     return $Call.ByID(3825154050);
 }

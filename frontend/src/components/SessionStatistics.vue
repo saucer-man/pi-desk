@@ -49,18 +49,15 @@ onMounted(() => { void refresh(); });
 </script>
 
 <template>
-  <div class="settings-content runtime-settings-content session-statistics" :class="ui.settingsContent">
-    <div class="settings-content-header" :class="ui.settingsHeader">
-      <div><h3>{{ tr("settings.sessionStatistics") }}</h3><span>{{ tr("settings.sessionStatisticsHelp") }}</span></div>
-      <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('settings.refreshStatistics')" :disabled="loading" @click="void refresh()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-    </div>
-    <div class="statistics-scope" role="tablist" :aria-label="tr('settings.statisticsScope')">
-      <button type="button" role="tab" :aria-selected="scope === 'all'" @click="void changeScope('all')">{{ tr("settings.allSessions") }}</button>
-      <button type="button" role="tab" :aria-selected="scope === 'workspace'" :disabled="!workspacePath" @click="void changeScope('workspace')">{{ tr("settings.currentWorkspace") }}</button>
-    </div>
-    <p v-if="scope === 'workspace' && workspacePath" class="statistics-path" :title="workspacePath">{{ workspacePath }}</p>
-    <div v-if="loading && !usage" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingStatistics") }}</span></div>
-    <div v-else-if="usage" class="statistics-content">
+  <div class="settings-content model-config-content runtime-settings-content session-statistics" :class="ui.settingsContent">
+    <div class="settings-fill-body">
+      <div class="statistics-scope" role="tablist" :aria-label="tr('settings.statisticsScope')">
+        <button type="button" role="tab" :aria-selected="scope === 'all'" @click="void changeScope('all')">{{ tr("settings.allSessions") }}</button>
+        <button type="button" role="tab" :aria-selected="scope === 'workspace'" :disabled="!workspacePath" @click="void changeScope('workspace')">{{ tr("settings.currentWorkspace") }}</button>
+      </div>
+      <p v-if="scope === 'workspace' && workspacePath" class="statistics-path" :title="workspacePath">{{ workspacePath }}</p>
+      <div v-if="loading && !usage" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingStatistics") }}</span></div>
+      <div v-else-if="usage" class="statistics-content">
       <div class="statistics-grid">
         <section><span>{{ tr("settings.statSessions") }}</span><strong>{{ formatTokens(usage.sessions) }}</strong></section>
         <section><span>{{ tr("settings.statMessages") }}</span><strong>{{ formatTokens(usage.messages) }}</strong><small>{{ usage.userMessages }} / {{ usage.assistantMessages }} / {{ usage.toolResults }}</small></section>
@@ -88,7 +85,8 @@ onMounted(() => { void refresh(); });
         </div>
         <div v-else class="settings-empty compact" :class="ui.empty"><BarChart3 :size="17" /><span>{{ tr("settings.noUsage") }}</span></div>
       </section>
+      </div>
+      <p v-if="error" class="form-error">{{ error }}</p>
     </div>
-    <p v-if="error" class="form-error">{{ error }}</p>
   </div>
 </template>

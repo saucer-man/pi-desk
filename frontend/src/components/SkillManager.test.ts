@@ -58,6 +58,12 @@ describe("SkillManager", () => {
     const wrapper = mount(SkillManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    expect(wrapper.get(".skill-config-content").classes()).toContain("model-config-content");
+    expect(wrapper.get("textarea").classes()).toEqual(expect.arrayContaining(["h-full", "min-h-0", "resize-none"]));
+    expect(wrapper.find("textarea + small").exists()).toBe(false);
+    const actionButtons = wrapper.findAll("footer button");
+    expect(actionButtons.map((button) => button.text())).toEqual(["Delete skill", "Save skill"]);
     expect(wrapper.text()).toContain("code-review");
     await wrapper.get("textarea").setValue("---\nname: code-review\ndescription: Review code\n---\n\n# Updated\n");
     await wrapper.get("form").trigger("submit");
@@ -69,7 +75,7 @@ describe("SkillManager", () => {
     expect(wrapper.text()).toContain("Skill saved.");
   });
 
-  it("shows merged global roots and project availability without scope controls", async () => {
+  it("shows project availability without scope controls", async () => {
     skillMocks.list.mockResolvedValue({
       globalDirectory: piSkillRoot,
       globalDirectories: [piSkillRoot, sharedSkillRoot],
@@ -87,7 +93,6 @@ describe("SkillManager", () => {
     const wrapper = mount(SkillManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    expect(wrapper.text()).toContain(sharedSkillRoot);
     expect(wrapper.find("select").exists()).toBe(false);
     expect(wrapper.text()).toContain("Project skills require a trusted workspace.");
     expect(wrapper.get(".runtime-resource-scope").text()).toContain("/package-skill");

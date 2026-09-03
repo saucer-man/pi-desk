@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
 import { ArrowUp, BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { ExecutionStep, TimelineMessage } from "../stores/app";
 import { useAppStore } from "../stores/app";
 import type { PreparedImage } from "../utils/imageAttachments";
@@ -25,7 +25,39 @@ const previewImage = ref<PreparedImage>();
 const executionOpen = ref(props.message.streaming);
 const editBox = ref<HTMLTextAreaElement>();
 const skillInvocation = computed(() => props.message.role === "user" ? parseSkillInvocation(props.message.text) : undefined);
-const visibleMessageText = computed(() => skillInvocation.value?.userMessage ?? props.message.text);
+
+function splitTaggedThinking(text: string): { text: string; thinking: string; open: boolean } {
+  const thoughts: string[] = [];
+  let visible = "";
+  let cursor = 0;
+  const opening = /<think(?:\s[^>]*)?>/gi;
+  const closing = /<\/think\s*>/gi;
+  while (true) {
+    opening.lastIndex = cursor;
+    const start = opening.exec(text);
+    if (!start) {
+      visible += text.slice(cursor);
+      return { text: visible, thinking: thoughts.filter(Boolean).join("\n\n"), open: false };
+    }
+    visible += text.slice(cursor, start.index);
+    const contentStart = start.index + start[0].length;
+    closing.lastIndex = contentStart;
+    const end = closing.exec(text);
+    if (!end) {
+      thoughts.push(text.slice(contentStart).trim());
+      return { text: visible, thinking: thoughts.filter(Boolean).join("\n\n"), open: true };
+    }
+    thoughts.push(text.slice(contentStart, end.index).trim());
+    cursor = end.index + end[0].length;
+  }
+}
+
+const taggedThinking = computed(() => (
+  props.message.role === "assistant"
+    ? splitTaggedThinking(props.message.text)
+    : { text: props.message.text, thinking: "", open: false }
+));
+const visibleMessageText = computed(() => skillInvocation.value?.userMessage ?? taggedThinking.value.text);
 const actionable = computed(() => (
   (props.message.role === "user" || props.message.role === "assistant")
   && Boolean(visibleMessageText.value.trim())
@@ -57,6 +89,19 @@ const runNotice = computed(() => {
     : undefined);
   return notice?.status === "recovered" ? undefined : notice;
 });
+const retryNow = ref(Date.now());
+let retryTimer: number | undefined;
+watch(() => [runNotice.value?.status, runNotice.value?.retryAt], () => {
+  if (retryTimer !== undefined) window.clearInterval(retryTimer);
+  retryTimer = undefined;
+  retryNow.value = Date.now();
+  if (runNotice.value?.status === "retrying" && runNotice.value.retryAt !== undefined) {
+    retryTimer = window.setInterval(() => { retryNow.value = Date.now(); }, 250);
+  }
+}, { immediate: true });
+onBeforeUnmount(() => {
+  if (retryTimer !== undefined) window.clearInterval(retryTimer);
+});
 const runNoticeLabel = computed(() => {
   const notice = runNotice.value;
   if (!notice) return "";
@@ -64,10 +109,14 @@ const runNoticeLabel = computed(() => {
     const attempt = notice.attempt ?? 0;
     const maxAttempts = notice.maxAttempts ?? 0;
     if (attempt > 0 && maxAttempts > 0) {
-      const delayMs = Math.max(0, notice.delayMs ?? 0);
-      const delay = delayMs < 1000
-        ? `${Math.round(delayMs)}ms`
-        : `${(delayMs / 1000).toFixed(delayMs % 1000 === 0 ? 0 : 1)}s`;
+      const delayMs = notice.retryAt === undefined
+        ? Math.max(0, notice.delayMs ?? 0)
+        : Math.max(0, notice.retryAt - retryNow.value);
+      const delay = notice.retryAt === undefined
+        ? delayMs < 1000
+          ? `${Math.round(delayMs)}ms`
+          : `${(delayMs / 1000).toFixed(delayMs % 1000 === 0 ? 0 : 1)}s`
+        : `${Math.ceil(delayMs / 1000)}s`;
       return tr("conversation.requestRetrying", {
         delay,
         attempt,
@@ -79,12 +128,18 @@ const runNoticeLabel = computed(() => {
   if (notice.status === "retried") return tr("conversation.requestRetried");
   return tr(notice.status === "recovered" ? "conversation.requestRecovered" : "conversation.requestFailed");
 });
-const executionSteps = computed(() => props.message.executionSteps ?? [
+const executionSteps = computed(() => [
+  ...(taggedThinking.value.thinking ? [{
+    id: `${props.message.id}-tagged-thinking`, kind: "thinking" as const, text: taggedThinking.value.thinking,
+    active: props.message.streaming && taggedThinking.value.open,
+  }] : []),
+  ...(props.message.executionSteps ?? [
   ...(props.message.thinking ? [{
     id: `${props.message.id}-thinking`, kind: "thinking" as const, text: props.message.thinking,
     active: props.message.streaming && props.message.activeExecution === "thinking",
   }] : []),
   ...(props.message.tools.length ? [{ id: `${props.message.id}-tools`, kind: "tools" as const, tools: props.message.tools }] : []),
+  ]),
 ]);
 const toolCount = computed(() => executionSteps.value.reduce((count, step) => count + (step.tools?.length ?? 0), 0));
 const thinkingCount = computed(() => executionSteps.value.filter((step) => step.kind === "thinking").length);
@@ -177,7 +232,7 @@ function stepThinking(step: ExecutionStep): string {
   <article
     class="message-row"
     :class="[ui.root, {
-      'message-row--compact': Boolean(message.thinking || message.tools.length),
+      'message-row--compact': executionSteps.length > 0,
       'message-row--editing': editing,
       'message-row--compaction': Boolean(message.compaction),
       'message-row--search-active': searchActive,

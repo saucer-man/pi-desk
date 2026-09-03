@@ -31,6 +31,8 @@ describe("SessionStatistics", () => {
     const wrapper = mount(SessionStatistics, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    expect(wrapper.find(".settings-fill-body").exists()).toBe(true);
     expect(catalogMocks.getSessionUsage).toHaveBeenCalledWith(undefined);
     expect(wrapper.text()).toContain("4,240");
     expect(wrapper.text()).toContain("$1.2500");

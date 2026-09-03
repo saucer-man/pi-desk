@@ -568,6 +568,10 @@ func (service *AgentService) EditSessionMessage(request domain.SessionMessageReq
 	})
 }
 
+func (service *AgentService) ReplaySessionMessage(request domain.SessionMessageRequest) (domain.CommandResult, error) {
+	return service.mutateSessionMessage(request, service.index.RewindBefore)
+}
+
 func (service *AgentService) DeleteSessionMessage(request domain.SessionMessageRequest) (domain.CommandResult, error) {
 	return service.mutateSessionMessage(request, service.index.DeleteMessage)
 }

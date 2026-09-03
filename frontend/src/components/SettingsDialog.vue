@@ -45,6 +45,15 @@ const resourceCounts = computed(() => ({
 }));
 const runtimeReady = computed(() => appStore.bootstrap?.runtime.state === "ready");
 const runtimeMissing = computed(() => appStore.bootstrap?.runtime.state === "missing");
+const currentProjectPath = computed(() => {
+  const thread = appStore.activeThread;
+  return thread?.workspacePath || appStore.workspaces.find((workspace) => workspace.id === thread?.workspaceId)?.path || "";
+});
+const visibleSettingsError = computed(() => (
+  appStore.settingsError.trim().toLocaleLowerCase() === "workspace is not registered"
+    ? ""
+    : appStore.settingsError
+));
 
 async function copyRuntimePath() {
   const path = appStore.bootstrap?.runtime.command;
@@ -52,24 +61,6 @@ async function copyRuntimePath() {
   await navigator.clipboard.writeText(path);
   copied.value = true;
   window.setTimeout(() => { copied.value = false; }, 1200);
-}
-
-async function refreshRuntimeResources() {
-  const thread = appStore.activeThread;
-  if (!thread?.started || runtimeLoading.value) return;
-  runtimeLoading.value = true;
-  runtimeError.value = "";
-  try {
-    await Promise.all([
-      appStore.refreshModels(thread.id),
-      appStore.refreshThinkingLevels(thread.id),
-      appStore.refreshCommands(thread.id),
-    ]);
-  } catch (cause) {
-    runtimeError.value = cause instanceof Error ? cause.message : String(cause);
-  } finally {
-    runtimeLoading.value = false;
-  }
 }
 
 async function checkForUpdates() {
@@ -149,18 +140,6 @@ function sourceIcon(source: SlashCommand["source"]) {
   return FileText;
 }
 
-function settingsSectionLabel(value: SettingsSection) {
-  switch (value) {
-    case "general": return tr("settings.general");
-    case "modelManagement": return tr("settings.modelManagement");
-    case "promptManagement": return tr("settings.promptManagement");
-    case "skillManagement": return tr("settings.skillManagement");
-    case "extensionManagement": return tr("settings.extensionManagement");
-    case "mcpManagement": return tr("settings.mcpManagement");
-    case "statistics": return tr("settings.statistics");
-    case "resources": return tr("settings.runtimeResources");
-  }
-}
 </script>
 
 <template>
@@ -177,8 +156,7 @@ function settingsSectionLabel(value: SettingsSection) {
       <header :class="ui.dialogHeader">
         <div class="settings-title-path">
           <h2 id="settings-title">{{ tr("settings.title") }}</h2>
-          <span aria-hidden="true">/</span>
-          <strong>{{ settingsSectionLabel(section) }}</strong>
+          <span class="settings-project-path" :title="currentProjectPath || tr('settings.noCurrentProject')">{{ tr("settings.currentProjectPath", { path: currentProjectPath || tr("settings.noCurrentProject") }) }}</span>
         </div>
         <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('settings.close')" @click="appStore.closeSettings()"><X :size="17" /></button>
       </header>
@@ -302,7 +280,6 @@ function settingsSectionLabel(value: SettingsSection) {
                 @change="void updateRuntimeBehavior(() => appStore.setAutoRetry(($event.target as HTMLInputElement).checked))"
               />
             </label>
-            <p v-if="!appStore.activeThread?.started" class="setting-status">{{ tr("settings.startForRuntime") }}</p>
           </section>
           <section>
             <h3>{{ tr("settings.desktop") }}</h3>
@@ -310,17 +287,16 @@ function settingsSectionLabel(value: SettingsSection) {
               <span><strong>{{ tr("settings.notifications") }}</strong><small>{{ tr("settings.notificationsHelp") }}</small></span>
               <input v-model="appStore.notificationsEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
-            <label class="setting-row" :class="ui.row">
+            <div data-testid="update-check-row" class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.updates") }}</strong><small>{{ tr("settings.updatesHelp") }}</small></span>
-              <input v-model="appStore.updateChecksEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
-            </label>
-            <div class="settings-actions update-actions">
-              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
-              <a v-if="appStore.updateCheckResult?.url" class="text-button" :class="ui.button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
+              <div class="flex shrink-0 items-center gap-2">
+                <button data-testid="check-updates-now" class="text-button" :class="ui.button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
+                <small class="whitespace-nowrap" :class="{ 'text-[var(--amber)]': appStore.updateCheckResult?.status === 'available', 'text-[var(--red)]': appStore.updateCheckResult?.status === 'error' }">{{ updateMessage() }}</small>
+                <a v-if="appStore.updateCheckResult?.url" class="text-button" :class="ui.button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
+              </div>
             </div>
-            <p class="setting-status" :class="{ 'is-warning': appStore.updateCheckResult?.status === 'available', 'is-error': appStore.updateCheckResult?.status === 'error' }">{{ updateMessage() }}</p>
           </section>
-          <p v-if="appStore.settingsError" class="form-error">{{ appStore.settingsError }}</p>
+          <p v-if="visibleSettingsError" class="form-error">{{ visibleSettingsError }}</p>
         </div>
 
         <ModelManager v-else-if="section === 'modelManagement'" />
@@ -335,28 +311,26 @@ function settingsSectionLabel(value: SettingsSection) {
 
         <SessionStatistics v-else-if="section === 'statistics'" />
 
-        <div v-else class="settings-content runtime-settings-content">
-          <div class="settings-content-header" :class="ui.settingsHeader">
-            <div><h3>{{ tr("settings.runtimeResources") }}</h3><span>{{ tr("settings.runtimeResourcesHelp") }}</span></div>
-            <button class="icon-button" :class="ui.iconButton" type="button" title="Refresh resources" :disabled="!appStore.activeThread?.started || runtimeLoading" @click="void refreshRuntimeResources()"><RefreshCw :size="14" :class="{ 'is-spinning': runtimeLoading }" /></button>
-          </div>
-          <div class="resource-filters" role="tablist" aria-label="Resource type">
-            <button v-for="source in (['all', 'skill', 'extension', 'prompt'] as const)" :key="source" :class="ui.tab" type="button" role="tab" :aria-selected="resourceSource === source" @click="resourceSource = source">
-              {{ source === "all" ? tr("settings.all") : source === "skill" ? tr("settings.skills") : source === "extension" ? tr("settings.extensions") : tr("settings.prompts") }}
-              <span>{{ resourceCounts[source] }}</span>
-            </button>
-          </div>
-          <label class="resource-search"><Search :size="14" /><input :class="ui.input" v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
-          <div v-if="!appStore.activeThread?.started" class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.piNotRunning") }}</span></div>
-          <div v-else-if="filteredResources.length" class="resource-list">
-            <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row" :class="ui.listItem">
-              <component :is="sourceIcon(resource.source)" :size="15" />
-              <span><strong>/{{ resource.name }}</strong><small>{{ resource.description || resource.source }}</small><code v-if="resource.path" :title="resource.path">{{ resource.path }}</code></span>
-              <em>{{ resource.location || resource.source }}</em>
+        <div v-else class="settings-content model-config-content runtime-settings-content">
+          <div class="settings-fill-body runtime-resources-body">
+            <div class="resource-filters" role="tablist" aria-label="Resource type">
+              <button v-for="source in (['all', 'skill', 'extension', 'prompt'] as const)" :key="source" :class="ui.tab" type="button" role="tab" :aria-selected="resourceSource === source" @click="resourceSource = source">
+                {{ source === "all" ? tr("settings.all") : source === "skill" ? tr("settings.skills") : source === "extension" ? tr("settings.extensions") : tr("settings.prompts") }}
+                <span>{{ resourceCounts[source] }}</span>
+              </button>
             </div>
+            <label class="resource-search"><Search :size="14" /><input :class="ui.input" v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
+            <div v-if="!appStore.activeThread?.started" class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.piNotRunning") }}</span></div>
+            <div v-else-if="filteredResources.length" class="resource-list">
+              <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row" :class="ui.listItem">
+                <component :is="sourceIcon(resource.source)" :size="15" />
+                <span><strong>/{{ resource.name }}</strong><small>{{ resource.description || resource.source }}</small><code v-if="resource.path" :title="resource.path">{{ resource.path }}</code></span>
+                <em>{{ resource.location || resource.source }}</em>
+              </div>
+            </div>
+            <div v-else class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.noResources") }}</span></div>
+            <p v-if="runtimeError" class="form-error">{{ runtimeError }}</p>
           </div>
-          <div v-else class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.noResources") }}</span></div>
-          <p v-if="runtimeError" class="form-error">{{ runtimeError }}</p>
         </div>
       </div>
     </section>

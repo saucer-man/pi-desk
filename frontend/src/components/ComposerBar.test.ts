@@ -70,6 +70,7 @@ describe("ComposerBar", () => {
     expect(wrapper.text()).toContain("Inspect logs");
     expect(wrapper.text()).toContain("Run tests");
     expect(wrapper.text()).toContain("Retry 2 of 4");
+    expect(wrapper.find(".retry-banner .is-spinning").exists()).toBe(false);
     expect(wrapper.get(".retry-banner").element.nextElementSibling).toBe(wrapper.get(".composer-input-stack").element);
     expect(wrapper.get(".queue-panel").element.nextElementSibling).toBe(wrapper.get(".composer").element);
     expect(wrapper.get(".queue-text").attributes("title")).toBe("Inspect logs");

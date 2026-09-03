@@ -57,6 +57,8 @@ describe("ExtensionManager", () => {
     const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    expect(wrapper.find(".settings-fill-body").exists()).toBe(true);
     expect(wrapper.text()).toContain("Pi Desk Todo");
     expect(wrapper.text()).toContain("Legacy PiDeck Todo");
     expect(wrapper.text()).toContain("local");

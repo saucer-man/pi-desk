@@ -679,14 +679,20 @@
   display: flex;
   min-width: 0;
   align-items: baseline;
-  gap: 7px;
+  gap: 16px;
 }
 
-.settings-title-path > span,
-.settings-title-path > strong {
+.settings-title-path > span {
   color: var(--text-muted);
   font-size: calc(11.5px + var(--font-size-delta));
   font-weight: 500;
+}
+
+.settings-title-path > .settings-project-path {
+  max-width: min(48vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dialog-body.settings-layout {

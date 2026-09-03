@@ -33,6 +33,7 @@ describe("McpManager", () => {
     const wrapper = mount(McpManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
     expect(wrapper.text()).toContain("docs");
     const json = wrapper.get("textarea");
     await json.setValue('{\n  "url": "https://example.test/v2/mcp",\n  "headers": {"X-Test": "value"}\n}\n');

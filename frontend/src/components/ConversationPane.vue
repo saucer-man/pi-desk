@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
 
       <ConversationMessage v-else v-for="message in messages" :key="message.id" :message="message" :search-query="searchQuery" :search-active="message.id === activeSearchMessageId" />
       <div
-        v-if="appStore.activeWaitingForOutput"
+        v-if="appStore.activeWaitingForOutput && !appStore.activeRetry"
         class="waiting-for-output mt-3 inline-flex size-8 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-raised)] text-[var(--text-secondary)] shadow-sm"
         role="status"
         aria-live="polite"

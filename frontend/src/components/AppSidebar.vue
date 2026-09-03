@@ -24,6 +24,7 @@ import {
 } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import RuntimeBadge from "./RuntimeBadge.vue";
+import RemoveWorkspaceDialog from "./RemoveWorkspaceDialog.vue";
 import { useAppStore } from "../stores/app";
 import { tr } from "../i18n";
 
@@ -38,6 +39,7 @@ const workspaceRenameOpen = ref(false);
 const workspaceRenameID = ref("");
 const workspaceRenameValue = ref("");
 const workspaceRenameInput = ref<HTMLInputElement>();
+const workspaceRemovalID = ref("");
 const taskRenameOpen = ref(false);
 const taskRenameID = ref("");
 const taskRenameValue = ref("");
@@ -51,6 +53,7 @@ const taskMenuWorkspace = computed(() => {
     : comparablePath(workspace.path) === comparablePath(thread.workspacePath));
 });
 const workspaceMenuItem = computed(() => appStore.workspaces.find((workspace) => workspace.id === workspaceMenu.value.workspaceID));
+const workspaceRemovalItem = computed(() => appStore.workspaces.find((workspace) => workspace.id === workspaceRemovalID.value));
 
 function comparablePath(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "").replaceAll("\\", "/");
@@ -198,7 +201,7 @@ function openWorkspaceMenu(event: MouseEvent, workspaceID: string) {
   };
 }
 
-async function runWorkspaceAction(action: "newTask" | "open" | "disconnect" | "remove") {
+async function runWorkspaceAction(action: "newTask" | "open" | "disconnect") {
   const workspace = workspaceMenuItem.value;
   closeWorkspaceMenu();
   if (!workspace || workspaceActionID.value) return;
@@ -210,8 +213,36 @@ async function runWorkspaceAction(action: "newTask" | "open" | "disconnect" | "r
       else await appStore.createThread(workspace.path, workspace.trust);
       if (appStore.activeThreadId) appStore.startThreadInBackground(appStore.activeThreadId);
     } else if (action === "open") await appStore.openWorkspace(workspace.id);
-    else if (action === "disconnect") await appStore.disconnectRemoteWorkspace(workspace.id);
-    else await appStore.removeWorkspace(workspace.id);
+    else await appStore.disconnectRemoteWorkspace(workspace.id);
+  } catch (error) {
+    workspaceActionError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    workspaceActionID.value = "";
+  }
+}
+
+function openWorkspaceRemoval() {
+  const workspace = workspaceMenuItem.value;
+  closeWorkspaceMenu();
+  if (!workspace || workspaceActionID.value) return;
+  workspaceActionError.value = "";
+  workspaceRemovalID.value = workspace.id;
+}
+
+function closeWorkspaceRemoval() {
+  if (workspaceActionID.value) return;
+  workspaceRemovalID.value = "";
+  workspaceActionError.value = "";
+}
+
+async function confirmWorkspaceRemoval(deleteSessions: boolean) {
+  const workspace = workspaceRemovalItem.value;
+  if (!workspace || workspaceActionID.value) return;
+  workspaceActionID.value = workspace.id;
+  workspaceActionError.value = "";
+  try {
+    await appStore.removeWorkspace(workspace.id, deleteSessions);
+    workspaceRemovalID.value = "";
   } catch (error) {
     workspaceActionError.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -399,7 +430,7 @@ onBeforeUnmount(() => {
       <button v-if="workspaceMenuItem.kind !== 'ssh'" type="button" role="menuitem" @click="void runWorkspaceAction('open')"><FolderOpen :size="15" />{{ tr("sidebar.openWorkspace") }}</button>
       <button v-else-if="appStore.remoteWorkspaceHasConnection(workspaceMenuItem.id)" type="button" role="menuitem" @click="void runWorkspaceAction('disconnect')"><Unplug :size="15" />{{ tr("sidebar.disconnectRemote") }}</button>
       <button type="button" role="menuitem" @click="void openWorkspaceRename()"><Pencil :size="15" />{{ tr("sidebar.renameWorkspace") }}</button>
-      <button type="button" role="menuitem" class="danger" @click="void runWorkspaceAction('remove')"><Trash2 :size="15" />{{ tr("sidebar.removeWorkspace") }}</button>
+      <button type="button" role="menuitem" class="danger" @click="openWorkspaceRemoval"><Trash2 :size="15" />{{ tr("sidebar.removeWorkspace") }}</button>
     </div>
     <form
       v-if="!appStore.sidebarCollapsed && workspaceRenameOpen"
@@ -418,5 +449,14 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="Boolean(workspaceActionID)" @click="closeWorkspaceRename">{{ tr("common.cancel") }}</button>
       </div>
     </form>
+    <RemoveWorkspaceDialog
+      v-if="workspaceRemovalItem"
+      :workspace-name="workspaceRemovalItem.name"
+      :busy="workspaceActionID === workspaceRemovalItem.id"
+      :error="workspaceActionError"
+      @cancel="closeWorkspaceRemoval"
+      @remove="void confirmWorkspaceRemoval(false)"
+      @delete="void confirmWorkspaceRemoval(true)"
+    />
   </aside>
 </template>

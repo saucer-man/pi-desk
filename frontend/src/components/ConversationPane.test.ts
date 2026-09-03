@@ -85,6 +85,10 @@ describe("ConversationPane", () => {
     expect(status.find("svg.is-spinning").exists()).toBe(true);
     expect(wrapper.get(".timeline").element.lastElementChild?.classList.contains("waiting-for-output")).toBe(true);
 
+    store.retryByThread["thread-1"] = { attempt: 1, maxAttempts: 3, delayMs: 4000 };
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".waiting-for-output").exists()).toBe(false);
+
     store.waitingForOutputByThread["thread-1"] = false;
     await wrapper.vm.$nextTick();
     expect(wrapper.find(".waiting-for-output").exists()).toBe(false);

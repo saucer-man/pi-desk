@@ -110,6 +110,53 @@ func (service *CatalogService) RemoveWorkspace(request domain.WorkspaceRequest) 
 	return service.catalog.Remove(id)
 }
 
+func (service *CatalogService) DeleteWorkspaceSessions(request domain.WorkspaceRequest) error {
+	record, err := service.catalog.ResolveID(strings.TrimSpace(request.ID))
+	if err != nil {
+		return err
+	}
+	workspacePath := ""
+	if record.Location.Kind == workspace.KindLocal {
+		workspacePath = record.Path
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionListTimeout)
+	defer cancel()
+	summaries, err := service.index.List(ctx, workspacePath)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		belongs := record.Location.Kind == workspace.KindSSH &&
+			summary.SSHAnchor && summary.AnchorWorkspaceID == record.ID
+		if record.Location.Kind == workspace.KindLocal {
+			belongs = !summary.SSHAnchor && sessionPathKey(summary.CWD) == sessionPathKey(record.Path)
+		}
+		if !belongs {
+			continue
+		}
+		validated, resolveErr := service.index.Resolve(summary.Path)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		validatedBelongs := record.Location.Kind == workspace.KindSSH &&
+			validated.SSHAnchor && validated.AnchorWorkspaceID == record.ID
+		if record.Location.Kind == workspace.KindLocal {
+			validatedBelongs = !validated.SSHAnchor && sessionPathKey(validated.CWD) == sessionPathKey(record.Path)
+		}
+		if !validatedBelongs {
+			return errors.New("workspace session changed during permanent deletion")
+		}
+		paths = append(paths, validated.Path)
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("permanently delete workspace session: %w", err)
+		}
+	}
+	return nil
+}
+
 func (service *CatalogService) OpenWorkspace(request domain.WorkspaceRequest) error {
 	if service.openWorkspace == nil {
 		return errors.New("desktop file manager is unavailable")

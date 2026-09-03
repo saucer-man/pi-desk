@@ -45,6 +45,32 @@ describe("ConversationMessage", () => {
     expect(details.get(".thinking-block .thinking-icon").attributes("aria-hidden")).toBe("true");
   });
 
+  it("renders GPT think tags through the existing reasoning UI", async () => {
+    const pinia = createPinia();
+    const wrapper = mount(ConversationMessage, {
+      props: {
+        message: {
+          id: "assistant-tagged-thinking", role: "assistant",
+          text: "<think>Inspect the existing UI</think>Final answer", thinking: "",
+          timestamp: "10:00", streaming: false, tools: [],
+        },
+      },
+      global: { plugins: [pinia] },
+    });
+
+    expect(wrapper.get(".markdown-body").text()).toBe("Final answer");
+    expect(wrapper.text()).not.toContain("<think>");
+    expect(wrapper.get(".execution-process").attributes("open")).toBeUndefined();
+    await wrapper.get(".execution-process > summary").trigger("click");
+    expect(wrapper.get(".thinking-block pre").text()).toBe("Inspect the existing UI");
+
+    await wrapper.setProps({ message: {
+      ...wrapper.props("message"), text: "<think>Still inspecting", streaming: true,
+    } });
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
+    expect(wrapper.get(".thinking-block pre").text()).toBe("Still inspecting");
+  });
+
   it("renders Todo, reasoning, and other tools as peers in one execution grid", () => {
     const pinia = createPinia();
     const wrapper = mount(ConversationMessage, {
@@ -428,6 +454,33 @@ describe("ConversationMessage", () => {
     expect(failed.text()).toContain("this run stopped");
     expect(failed.text()).toContain("Request timed out.");
     expect(failed.attributes("role")).toBe("alert");
+  });
+
+  it("counts down to the automatic retry deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-02T12:00:00Z"));
+    try {
+      const wrapper = mount(ConversationMessage, {
+        props: {
+          message: {
+            id: "assistant-retry-countdown", role: "assistant" as const, text: "Partial output", thinking: "",
+            timestamp: "10:05", streaming: false, tools: [],
+            runNotice: {
+              status: "retrying" as const, attempt: 2, maxAttempts: 3, delayMs: 4000,
+              retryAt: Date.now() + 4000,
+            },
+          },
+        },
+        global: { plugins: [createPinia()] },
+      });
+
+      expect(wrapper.get(".message-run-notice").text()).toContain("Retrying in 4s");
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(wrapper.get(".message-run-notice").text()).toContain("Retrying in 3s");
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders expanded skill context as a compact invocation and preserves it when editing", async () => {

@@ -43,6 +43,21 @@ describe("PromptTemplateManager", () => {
     const wrapper = mount(PromptTemplateManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
+    const globalGroup = wrapper.get('[data-testid="global-prompt-group"]');
+    const projectGroup = wrapper.get('[data-testid="project-prompt-group"]');
+    expect(globalGroup.classes()).toContain("grid");
+    expect(projectGroup.classes()).toContain("grid");
+    expect(projectGroup.classes()).not.toContain("min-h-10");
+    expect(wrapper.get(".prompt-config-content").classes()).toContain("model-config-content");
+    expect(wrapper.find(".prompt-reload-note").exists()).toBe(false);
+    expect(wrapper.find('[role="tooltip"]').text()).toContain("$ARGUMENTS");
+    expect(wrapper.find('[role="tooltip"]').text()).toContain("${@:N:L}");
+    expect(wrapper.get('[aria-describedby="prompt-usage-tooltip"]').attributes("aria-label")).toBe("How Pi prompt templates work");
+    expect(wrapper.get('button[type="submit"]').element.previousElementSibling?.classList).toContain("group");
+    expect(wrapper.get('input[placeholder]').attributes("placeholder")).toBe("Supports letters, numbers, hyphens, and underscores");
+    expect(wrapper.find('input + small').exists()).toBe(false);
+    expect(wrapper.get("textarea").classes()).toEqual(expect.arrayContaining(["h-full", "min-h-0", "resize-none"]));
     expect(wrapper.text()).toContain("/review");
     await wrapper.get('textarea').setValue("---\ndescription: Review changes\n---\nReview changed files\n");
     await wrapper.get('form').trigger("submit");

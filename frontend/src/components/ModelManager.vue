@@ -3,8 +3,6 @@ import { ui } from "../ui/classes";
 import {
   CheckCircle2,
   CircleDollarSign,
-  Copy,
-  Database,
   Download,
   FlaskConical,
   Plus,
@@ -52,7 +50,6 @@ const quotaDialogOpen = ref(false);
 const quotaResult = ref<ModelQuotaResult>();
 const selectedKey = ref("");
 const deleteArmed = ref(false);
-const copied = ref(false);
 const savedFingerprint = ref("");
 const providerMenu = ref({ open: false, providerId: "", x: 0, y: 0, confirming: false });
 
@@ -598,13 +595,6 @@ function onProviderMenuKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") closeProviderMenu();
 }
 
-async function copyPath() {
-  if (!snapshot.value?.path) return;
-  await navigator.clipboard.writeText(snapshot.value.path);
-  copied.value = true;
-  window.setTimeout(() => { copied.value = false; }, 1200);
-}
-
 onMounted(() => {
   void loadConfig();
   document.addEventListener("pointerdown", onProviderMenuPointerDown);
@@ -618,19 +608,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="settings-content model-config-content" :class="ui.settingsContent">
-    <div class="settings-content-header model-config-header" :class="ui.settingsHeader">
-      <div>
-        <h3>{{ tr("settings.modelManagement") }}</h3>
-        <button v-if="snapshot?.path" class="model-config-path" type="button" :title="snapshot.path" @click="void copyPath()">
-          <Database :size="12" /><span>{{ snapshot.path }}</span><Copy :size="12" />
-        </button>
-      </div>
-      <div class="settings-actions">
-        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.refresh')" :disabled="loading" @click="void loadConfig()"><RefreshCw :size="14" :class="{ 'is-spinning': loading }" /></button>
-        <button class="text-button" :class="ui.button" type="button" @click="startNewModel"><Plus :size="14" />{{ tr("settings.addModel") }}</button>
-      </div>
-    </div>
-    <p v-if="copied" class="setting-status">{{ tr("settings.copied") }}</p>
     <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingModelsConfig") }}</span></div>
     <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
     <div v-else class="model-manager-layout" :class="ui.managerLayout">

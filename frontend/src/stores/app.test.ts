@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getConfiguredModels: vi.fn(),
   addWorkspace: vi.fn(),
   removeWorkspace: vi.fn(),
+  deleteWorkspaceSessions: vi.fn(),
   pickWorkspace: vi.fn(),
   deleteSession: vi.fn(),
   getDesktopState: vi.fn(),
@@ -38,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   forkSession: vi.fn(),
   forkSessionAt: vi.fn(),
   editSessionMessage: vi.fn(),
+  replaySessionMessage: vi.fn(),
   deleteSessionMessage: vi.fn(),
   exportSession: vi.fn(),
   setModel: vi.fn(),
@@ -78,6 +80,7 @@ vi.mock("../services/catalog", () => ({
     getSessionSnapshot: mocks.getSessionSnapshot,
     addWorkspace: mocks.addWorkspace,
     removeWorkspace: mocks.removeWorkspace,
+    deleteWorkspaceSessions: mocks.deleteWorkspaceSessions,
     pickWorkspace: mocks.pickWorkspace,
     deleteSession: mocks.deleteSession,
     getDesktopState: mocks.getDesktopState,
@@ -110,6 +113,7 @@ vi.mock("../services/agent", () => ({
     forkSession: mocks.forkSession,
     forkSessionAt: mocks.forkSessionAt,
     editSessionMessage: mocks.editSessionMessage,
+    replaySessionMessage: mocks.replaySessionMessage,
     deleteSessionMessage: mocks.deleteSessionMessage,
     exportSession: mocks.exportSession,
     setModel: mocks.setModel,
@@ -1114,6 +1118,17 @@ describe("app store", () => {
     expect(store.activeThreadId).toBe("");
   });
 
+  it("permanently deletes workspace sessions before removing its registration", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-1", name: "repo", path: "D:\\work\\repo", trust: "deny" }];
+
+    await store.removeWorkspace("workspace-1", true);
+
+    expect(mocks.deleteWorkspaceSessions).toHaveBeenCalledWith("workspace-1");
+    expect(mocks.removeWorkspace).toHaveBeenCalledWith("workspace-1");
+    expect(mocks.deleteWorkspaceSessions.mock.invocationCallOrder[0]).toBeLessThan(mocks.removeWorkspace.mock.invocationCallOrder[0]);
+  });
+
   it("selects a model before Pi starts and applies it after startup", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");
@@ -1870,6 +1885,7 @@ describe("app store", () => {
       attempt: 1,
       maxAttempts: 3,
       delayMs: 1000,
+      retryAt: expect.any(Number),
     });
     expect(store.activeMessages[0].error).not.toContain("sk-1234567890abcdefghijkl");
 
@@ -2939,7 +2955,7 @@ describe("app store", () => {
     expect(store.activeDraft).toBe("Inspect runtime");
   });
 
-  it("forks before the latest user message and immediately sends its edited text", async () => {
+  it("replays the latest user message in the existing session", async () => {
     mocks.listSessions.mockResolvedValueOnce([{
       id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
       firstMessage: "Inspect runtime", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z", messageCount: 2,
@@ -2950,8 +2966,7 @@ describe("app store", () => {
         { role: "assistant", content: "Old response", piDeskEntryId: "entry-2" },
       ] })
       .mockResolvedValueOnce({ messages: [] });
-    mocks.forkSessionAt.mockResolvedValueOnce({ cancelled: false, text: "Inspect runtime" });
-    mocks.getState.mockResolvedValueOnce({ sessionId: "session-2", sessionFile: "C:\\sessions\\fork.jsonl", isStreaming: false });
+    mocks.replaySessionMessage.mockResolvedValueOnce({});
     const store = useAppStore();
     await store.initialize();
     await store.loadThreadTranscript(store.activeThreadId);
@@ -2959,9 +2974,12 @@ describe("app store", () => {
 
     expect(await store.resendEditedMessage(userMessage.id, "Inspect the updated runtime")).toBe(true);
 
-    expect(mocks.forkSessionAt).toHaveBeenCalledWith({
-      threadId: "session-session-1", path: "C:\\sessions\\one.jsonl", entryId: "entry-1", before: true,
+    expect(mocks.replaySessionMessage).toHaveBeenCalledWith({
+      threadId: "session-session-1", path: "C:\\sessions\\one.jsonl", entryId: "entry-1",
     });
+    expect(mocks.forkSessionAt).not.toHaveBeenCalled();
+    expect(store.activeThread?.sessionFile).toBe("C:\\sessions\\one.jsonl");
+    expect(store.threads).toHaveLength(1);
     expect(mocks.sendPrompt).toHaveBeenCalledWith({
       threadId: "session-session-1", message: "Inspect the updated runtime", streamingBehavior: undefined,
     });

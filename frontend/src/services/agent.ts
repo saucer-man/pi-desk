@@ -109,6 +109,9 @@ export const agentService = {
   editSessionMessage<T>(request: SessionMessageRequest): Promise<T> {
     return AgentService.EditSessionMessage(request).then(parseResult<T>);
   },
+  replaySessionMessage<T>(request: SessionMessageRequest): Promise<T> {
+    return AgentService.ReplaySessionMessage(request).then(parseResult<T>);
+  },
   deleteSessionMessage<T>(request: SessionMessageRequest): Promise<T> {
     return AgentService.DeleteSessionMessage(request).then(parseResult<T>);
   },

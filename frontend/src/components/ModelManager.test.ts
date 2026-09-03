@@ -79,6 +79,7 @@ describe("ModelManager", () => {
     const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
     await flushPromises();
 
+    expect(wrapper.find(".settings-content-header").exists()).toBe(false);
     expect(wrapper.text()).toContain("GPT Test");
     expect(wrapper.get('input[placeholder="sk-... / $API_KEY"]').element).toHaveProperty("value", "sk-visible-local-key");
     expect(wrapper.findAll('[data-testid="provider-header-row"]')).toHaveLength(2);

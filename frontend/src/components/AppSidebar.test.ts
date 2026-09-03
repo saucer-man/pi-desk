@@ -313,7 +313,15 @@ describe("AppSidebar", () => {
 
     await wrapper.get('button[aria-label="Actions for pi-desk"]').trigger("click", { clientX: 20, clientY: 20 });
     await wrapper.get(".workspace-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Remove workspace")!.trigger("click");
-    expect(store.removeWorkspace).toHaveBeenCalledWith("workspace-1");
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain("Delete permanently");
+    expect(store.removeWorkspace).not.toHaveBeenCalled();
+    await wrapper.get('[role="alertdialog"]').findAll("button").find((item) => item.text() === "Remove from Pi Desk")!.trigger("click");
+    expect(store.removeWorkspace).toHaveBeenCalledWith("workspace-1", false);
+
+    await wrapper.get('button[aria-label="Actions for pi-desk"]').trigger("click", { clientX: 20, clientY: 20 });
+    await wrapper.get(".workspace-context-menu").findAll('[role="menuitem"]').find((item) => item.text() === "Remove workspace")!.trigger("click");
+    await wrapper.get('[role="alertdialog"]').findAll("button").find((item) => item.text() === "Delete permanently")!.trigger("click");
+    expect(store.removeWorkspace).toHaveBeenCalledWith("workspace-1", true);
   });
 
   it("filters tasks from the search control", async () => {
