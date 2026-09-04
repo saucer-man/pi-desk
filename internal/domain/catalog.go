@@ -200,6 +200,29 @@ type DesktopThreadState struct {
 	Unread        bool   `json:"unread,omitempty"`
 }
 
+type ScheduledTaskState struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Prompt        string `json:"prompt"`
+	WorkspaceID   string `json:"workspaceId"`
+	ModelProvider string `json:"modelProvider,omitempty"`
+	ModelID       string `json:"modelId,omitempty"`
+	ModelName     string `json:"modelName,omitempty"`
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+	Frequency     string `json:"frequency"`
+	Time          string `json:"time,omitempty"`
+	Weekday       int    `json:"weekday,omitempty"`
+	RunAt         string `json:"runAt,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	NextRunAt     string `json:"nextRunAt,omitempty"`
+	LastRunAt     string `json:"lastRunAt,omitempty"`
+	LastThreadID  string `json:"lastThreadId,omitempty"`
+	LastStatus    string `json:"lastStatus,omitempty"`
+	LastError     string `json:"lastError,omitempty"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
+}
+
 type DesktopPreferences struct {
 	Appearance           string `json:"appearance"`
 	Language             string `json:"language"`
@@ -223,5 +246,6 @@ type DesktopPreferences struct {
 type DesktopState struct {
 	ActiveThreadID string               `json:"activeThreadId,omitempty"`
 	Threads        []DesktopThreadState `json:"threads"`
+	ScheduledTasks []ScheduledTaskState `json:"scheduledTasks,omitempty"`
 	Preferences    *DesktopPreferences  `json:"preferences,omitempty"`
 }

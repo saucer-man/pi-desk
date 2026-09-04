@@ -1,6 +1,7 @@
 package appservice
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,9 +9,22 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"pi-desk/internal/domain"
 )
+
+type blockingModelTestDoer struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (doer *blockingModelTestDoer) Do(request *http.Request) (*http.Response, error) {
+	close(doer.started)
+	<-request.Context().Done()
+	close(doer.stopped)
+	return nil, request.Context().Err()
+}
 
 func TestDiscoverModelsFetchesAndParsesOpenAIList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -128,7 +142,7 @@ func TestDirectModelTestSupportsOfficialPiAPIs(t *testing.T) {
 			defer server.Close()
 			service := newModelConfigService("", server.Client())
 
-			result, err := service.TestModel(domain.TestModelConfigRequest{
+			result, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 				BaseURL: server.URL, API: test.api, APIKey: "direct-key", ModelID: "gemini-test", Prompt: "Confirm this model works",
 			})
 			if err != nil {
@@ -154,11 +168,40 @@ func TestDirectModelTestResolvesEnvironmentCredential(t *testing.T) {
 	defer server.Close()
 	service := newModelConfigService("", server.Client())
 
-	result, err := service.TestModel(domain.TestModelConfigRequest{
+	result, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 		BaseURL: server.URL, API: "openai-completions", APIKey: "$PI_DESK_TEST_KEY", ModelID: "test", Prompt: "Confirm availability",
 	})
 	if err != nil || !result.OK {
 		t.Fatalf("unexpected result: result=%#v err=%v", result, err)
+	}
+}
+
+func TestDirectModelTestStopsWhenBindingCallIsCancelled(t *testing.T) {
+	doer := &blockingModelTestDoer{started: make(chan struct{}), stopped: make(chan struct{})}
+	service := newModelConfigService("", doer)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan domain.ModelTestResult, 1)
+	go func() {
+		result, _ := service.TestModel(ctx, domain.TestModelConfigRequest{
+			BaseURL: "https://example.test", API: "openai-responses", ModelID: "test", Prompt: "Confirm availability",
+		})
+		done <- result
+	}()
+
+	<-doer.started
+	cancel()
+	select {
+	case result := <-done:
+		if result.Error == "" {
+			t.Fatal("expected cancellation to stop the model request")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("model request did not stop after cancellation")
+	}
+	select {
+	case <-doer.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("provider request context was not cancelled")
 	}
 }
 
@@ -246,7 +289,7 @@ func TestCustomProviderHeadersReachAllDirectRequestsAndOverrideDefaults(t *testi
 	}); err != nil {
 		t.Fatalf("DiscoverModels returned an error: %v", err)
 	}
-	testResult, err := service.TestModel(domain.TestModelConfigRequest{
+	testResult, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 		BaseURL: server.URL + "/v1", API: "openai-responses", APIKey: "automatic-key", Headers: headers,
 		ModelID: "test-model", Prompt: "Confirm availability",
 	})
@@ -263,7 +306,7 @@ func TestCustomProviderHeadersReachAllDirectRequestsAndOverrideDefaults(t *testi
 
 func TestDirectModelTestRequiresPrompt(t *testing.T) {
 	service := newModelConfigService("", nil)
-	_, err := service.TestModel(domain.TestModelConfigRequest{
+	_, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 		BaseURL: "https://example.test/v1", API: "openai-completions", ModelID: "test",
 	})
 	if err == nil || !strings.Contains(err.Error(), "prompt is required") {
@@ -273,7 +316,7 @@ func TestDirectModelTestRequiresPrompt(t *testing.T) {
 
 func TestDirectModelTestRejectsCommandCredential(t *testing.T) {
 	service := newModelConfigService("", nil)
-	_, err := service.TestModel(domain.TestModelConfigRequest{
+	_, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 		BaseURL: "https://example.test/v1", API: "openai-completions", APIKey: "!secret-command", ModelID: "test", Prompt: "Confirm availability",
 	})
 	if err == nil || !strings.Contains(err.Error(), "do not execute !command") {
@@ -289,7 +332,7 @@ func TestDirectModelTestRedactsProviderError(t *testing.T) {
 	defer server.Close()
 	service := newModelConfigService("", server.Client())
 
-	result, err := service.TestModel(domain.TestModelConfigRequest{
+	result, err := service.TestModel(context.Background(), domain.TestModelConfigRequest{
 		BaseURL: server.URL, API: "openai-responses", APIKey: "direct-secret-value", ModelID: "test", Prompt: "Confirm availability",
 	})
 	if err != nil {

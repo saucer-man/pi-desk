@@ -360,3 +360,75 @@ func TestCatalogResolvesOnlyRegisteredWorkspacePaths(t *testing.T) {
 		t.Fatal("expected an unregistered workspace to fail")
 	}
 }
+
+func TestCatalogPersistsScheduledTasksForTrustedLocalWorkspaces(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	catalog := NewCatalog(statePath)
+	record, err := catalog.Add(t.TempDir(), "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	task := ScheduledTaskRecord{
+		ID: "schedule-1", Name: "Daily review", Prompt: "Review open changes.", WorkspaceID: record.ID,
+		ModelProvider: "openai", ModelID: "gpt-5.6", ModelName: "GPT 5.6", ThinkingLevel: "high",
+		Frequency: "daily", Time: "09:00", Enabled: true, NextRunAt: now.Add(time.Hour).Format(time.RFC3339),
+		CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339),
+	}
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{task}}); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewCatalog(statePath).Desktop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.ScheduledTasks) != 1 || reloaded.ScheduledTasks[0].Prompt != task.Prompt || reloaded.ScheduledTasks[0].ModelID != task.ModelID || reloaded.ScheduledTasks[0].ThinkingLevel != task.ThinkingLevel {
+		t.Fatalf("scheduled tasks = %#v", reloaded.ScheduledTasks)
+	}
+	if err := catalog.Remove(record.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterRemoval, err := catalog.Desktop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterRemoval.ScheduledTasks) != 0 {
+		t.Fatalf("removed workspace left scheduled tasks: %#v", afterRemoval.ScheduledTasks)
+	}
+}
+
+func TestCatalogRejectsInvalidScheduledTasks(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	catalog := NewCatalog(statePath)
+	record, err := catalog.Add(t.TempDir(), "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	invalid := ScheduledTaskRecord{
+		ID: "schedule-1", Name: "Broken", Prompt: "Run", WorkspaceID: record.ID,
+		ModelProvider: "openai", ModelID: "gpt-5.6", ThinkingLevel: "high",
+		Frequency: "weekly", Time: "25:00", Weekday: 8, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{invalid}}); err == nil {
+		t.Fatal("SaveDesktop accepted an invalid scheduled task")
+	}
+	invalid.Frequency, invalid.Time, invalid.Weekday = "daily", "09:00", 0
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{invalid}}); err == nil {
+		t.Fatal("SaveDesktop accepted an enabled scheduled task without a next run time")
+	}
+	invalid.WorkspaceID = "missing"
+	invalid.NextRunAt = now
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{invalid}}); err == nil {
+		t.Fatal("SaveDesktop accepted an unknown scheduled task workspace")
+	}
+	invalid.WorkspaceID, invalid.ModelProvider = record.ID, ""
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{invalid}}); err == nil {
+		t.Fatal("SaveDesktop accepted a partial scheduled task model")
+	}
+	invalid.ModelProvider, invalid.ThinkingLevel = "openai", "turbo"
+	if err := catalog.SaveDesktop(DesktopRecord{ScheduledTasks: []ScheduledTaskRecord{invalid}}); err == nil {
+		t.Fatal("SaveDesktop accepted an invalid scheduled task thinking level")
+	}
+}

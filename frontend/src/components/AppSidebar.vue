@@ -2,6 +2,7 @@
 import { ui } from "../ui/classes";
 import {
   Copy,
+  CalendarClock,
   Download,
   FileSearch,
   Folder,
@@ -290,6 +291,18 @@ onBeforeUnmount(() => {
       <button v-if="!appStore.sidebarCollapsed" class="new-task-button flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
         <SquarePen :size="17" />
         <span>{{ tr("sidebar.newTask") }}</span>
+      </button>
+      <button
+        v-if="!appStore.sidebarCollapsed"
+        class="flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:border-[var(--border)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--text)]"
+        type="button"
+        :title="tr('sidebar.scheduledTasks')"
+        :aria-label="tr('sidebar.scheduledTasks')"
+        :aria-pressed="appStore.activePage === 'scheduledTasks'"
+        @click="appStore.openScheduledTasks"
+      >
+        <CalendarClock :size="16" />
+        <span>{{ tr("sidebar.scheduledTasks") }}</span>
       </button>
       <div class="primary-nav-row flex min-w-0 items-center">
         <button v-if="!appStore.sidebarCollapsed" class="primary-nav-search flex h-9 w-full min-w-0 items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.openSearch')" :aria-label="tr('sidebar.openSearch')" :aria-pressed="appStore.searchOpen" @click="toggleSearch">

@@ -1,5 +1,14 @@
 [
   {
+    "date": "2026-09-03",
+    "scope": "app-page",
+    "macrostructure": "Workbench",
+    "theme": "locked-pi-desk-neutral",
+    "enrichment": "none",
+    "variation": "scheduler queue + modal editor; no split pane or inspector",
+    "brief": "Pi Desk scheduled tasks"
+  },
+  {
     "date": "2026-08-29",
     "scope": "app",
     "macrostructure": "Workbench",

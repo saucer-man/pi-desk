@@ -29,7 +29,7 @@ describe("responsive workbench layout", () => {
   it("keeps the reading and composer axes bounded", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/--conversation-content-width:\s*960px/);
-    expect(css).toMatch(/--composer-overlay-reserve:\s*164px/);
+    expect(css).toMatch(/--composer-overlay-reserve:\s*0px/);
     expect(css).toMatch(/\.conversation-scroll-region\s*{[^}]*grid-column:\s*1[^}]*grid-row:\s*1 \/ -1/s);
     expect(css).toMatch(/\.timeline\s*{[^}]*width:\s*100%[^}]*padding:\s*36px var\(--conversation-inline-space\) calc\(var\(--composer-overlay-reserve\) \+ 28px\)[^}]*scroll-padding-bottom:\s*var\(--composer-overlay-reserve\)/s);
     expect(css).toMatch(/\.composer-wrap\s*{[^}]*--composer-max-width:\s*var\(--conversation-content-width\)[^}]*--composer-stack-total-inset:\s*24px[^}]*--conversation-inline-space:/s);
@@ -46,6 +46,13 @@ describe("responsive workbench layout", () => {
     expect(css).toMatch(/\.app-shell\.is-inspector-open \.timeline\s*{[^}]*--inspector-width\) - 18px[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ 18px \+ var\(--conversation-inline-space\)\)/s);
     expect(css).toMatch(/\.app-shell\.is-inspector-open \.composer-wrap\s*{[^}]*--inspector-width\) - 18px[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ 18px \+ var\(--conversation-inline-space\)\)/s);
     expect(css).toMatch(/\.composer,[^}]*pointer-events:\s*auto/s);
+  });
+
+  it("restores hit testing for queue and todo panels while keeping the outer scrollbar accessible", async () => {
+    const css = await workbenchText();
+    expect(css).toMatch(/\.composer-wrap\s*{[^}]*pointer-events:\s*none/s);
+    expect(css).toMatch(/\.composer-stack-panel\s*{[^}]*pointer-events:\s*auto/s);
+    expect(css).toMatch(/@media \(max-width: 760px\)[\s\S]*\.timeline\s*{[^}]*padding:\s*26px 16px calc\(var\(--composer-overlay-reserve\) \+ 18px\)/);
   });
 
   it("defines inspector drawer and compact sidebar breakpoints", async () => {

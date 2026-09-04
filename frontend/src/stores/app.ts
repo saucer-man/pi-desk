@@ -9,11 +9,18 @@ import { onTerminalEvent, type TerminalEvent } from "../services/terminal";
 import { modelConfigService } from "../services/modelconfig";
 import { BATCH_ASK_PLACEHOLDER, parseBatchAskEnvelope, type BatchAskQuestion } from "../utils/batchAsk";
 import { formatFileMention } from "../utils/fileMentions";
-import type { PreparedImage } from "../utils/imageAttachments";
+import { MAX_ATTACHED_IMAGES, MAX_SOURCE_IMAGE_BYTES, type PreparedImage } from "../utils/imageAttachments";
 import { skillInvocationCommandText, skillInvocationTitleText } from "../utils/skillInvocation";
 import { runtimeErrorText } from "../utils/runtimeError";
 import { buildToolDiff } from "../utils/toolDiff";
 import { setAppLanguage, tr } from "../i18n";
+import {
+  localDateTimeToISO,
+  nextScheduledRun,
+  scheduledTaskThinkingLevels,
+  type ScheduledTask,
+  type ScheduledTaskDraft,
+} from "../utils/scheduledTasks";
 
 export type ThreadStatus = "idle" | "starting" | "running" | "attention";
 export type InspectorTab = "changes" | "context" | "terminal";
@@ -22,6 +29,7 @@ export type QueueMode = "all" | "one-at-a-time";
 export type Appearance = "dark" | "light" | "system";
 export type Language = "zh-CN" | "en";
 export type InterfaceFont = "default" | "system" | "serif" | "mono";
+export type AppPage = "task" | "scheduledTasks";
 type RemoteReconnectIntent = "start" | "prompt" | "bash" | "terminal";
 export type RemoteReconnectProgressStatus = "pending" | "active" | "complete" | "error";
 export interface RemoteReconnectProgressStep {
@@ -268,6 +276,9 @@ interface CommandsResponse {
 
 interface ForkResponse {
   text?: string;
+  images?: unknown[];
+  sessionFile?: string;
+  sessionId?: string;
   cancelled: boolean;
 }
 
@@ -319,6 +330,7 @@ let localSequence = 0;
 let desktopSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let piStartQueue: Promise<void> = Promise.resolve();
 const piStartPromises = new Map<string, Promise<void>>();
+const modelApplicationPromises = new Map<string, Promise<void>>();
 const piStartingGenerationFloor = new Map<string, number>();
 const piExitedGenerationByThread = new Map<string, number>();
 const remoteTargetProjectionEpochByID = new Map<string, number>();
@@ -330,6 +342,8 @@ function isCurrentPiRequest(threads: ThreadSummary[], thread: ThreadSummary | un
 }
 const settledReloadPromises = new Map<string, Promise<void>>();
 const pendingPromptDispatchThreads = new Set<string>();
+let scheduledTaskTimer: ReturnType<typeof setInterval> | undefined;
+let scheduledTaskTicking = false;
 const TOOL_OUTPUT_LIMIT = 256 << 10;
 const TOOL_OUTPUT_TRUNCATION_MARKER = "\n\n... output truncated by Pi Desk ...\n\n";
 
@@ -705,6 +719,7 @@ function copyMessages(messages: TimelineMessage[]): TimelineMessage[] {
 export const useAppStore = defineStore("app", {
   state: () => ({
     sidebarCollapsed: false,
+    activePage: "task" as AppPage,
     sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     inspectorOpen: true,
     inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
@@ -751,6 +766,8 @@ export const useAppStore = defineStore("app", {
     workspaceApplication: "" as string,
     workspaceApplicationError: "",
     threads: [] as ThreadSummary[],
+    scheduledTasks: [] as ScheduledTask[],
+    scheduledTaskRunningByID: {} as Record<string, boolean>,
     activeThreadId: "",
     messagesByThread: {} as Record<string, TimelineMessage[]>,
     searchBodyTextByThread: {} as Record<string, string>,
@@ -772,6 +789,7 @@ export const useAppStore = defineStore("app", {
     knownRuntimeModels: [] as PiModel[],
     pendingModelByThread: {} as Record<string, PiModel | undefined>,
     modelSelectionGenerationByThread: {} as Record<string, number>,
+    sessionStateRefreshGenerationByThread: {} as Record<string, number>,
     modelCatalogError: "",
     thinkingLevelsByThread: {} as Record<string, string[]>,
     thinkingLevelsRefreshGenerationByThread: {} as Record<string, number>,
@@ -864,6 +882,14 @@ export const useAppStore = defineStore("app", {
       const current = state.sessionStateByThread[state.activeThreadId]?.model;
       return mergeModels(
         thread.started ? state.modelsByThread[state.activeThreadId] ?? [] : state.knownRuntimeModels,
+        state.configuredModels,
+        current ? [current] : [],
+      );
+    },
+    scheduledTaskModels(state): PiModel[] {
+      const current = state.sessionStateByThread[state.activeThreadId]?.model;
+      return mergeModels(
+        state.knownRuntimeModels,
         state.configuredModels,
         current ? [current] : [],
       );
@@ -1124,6 +1150,7 @@ export const useAppStore = defineStore("app", {
     },
     selectThread(threadId: string) {
       if (this.threads.some((thread) => thread.id === threadId)) {
+        this.activePage = "task";
         this.branchPanelOpen = false;
         this.activeThreadId = threadId;
         if (this.activeThread) this.activeThread.unread = false;
@@ -1246,6 +1273,7 @@ export const useAppStore = defineStore("app", {
       await catalogService.removeWorkspace(id);
       for (const thread of removedThreads) this.removeThreadState(thread.id);
       this.workspaces = this.workspaces.filter((item) => item.id !== id);
+      this.scheduledTasks = this.scheduledTasks.filter((task) => task.workspaceId !== id);
       delete this.remoteReadyByWorkspace[id];
       this.scheduleDesktopStateSave();
     },
@@ -1403,13 +1431,18 @@ export const useAppStore = defineStore("app", {
     async loadThreadTranscript(threadId: string) {
       const thread = this.threads.find((item) => item.id === threadId);
       const state = this.transcriptStateByThread[threadId];
-      if (!thread?.sessionFile || state === "loading" || state === "loaded") return;
+      if (!thread?.sessionFile || this.sessionOperationByThread[threadId] || state === "loading" || state === "loaded") return;
+      const sessionFile = thread.sessionFile;
+      const generation = (this.transcriptReloadGenerationByThread[threadId] ?? 0) + 1;
+      this.transcriptReloadGenerationByThread[threadId] = generation;
       this.transcriptStateByThread[threadId] = "loading";
       try {
-        const snapshot = await catalogService.getSessionSnapshot(thread.sessionFile);
+        const snapshot = await catalogService.getSessionSnapshot(sessionFile);
+        if (thread.sessionFile !== sessionFile || this.transcriptReloadGenerationByThread[threadId] !== generation) return;
         this.applySessionSnapshot(thread, snapshot);
         this.transcriptStateByThread[threadId] = "loaded";
       } catch (error) {
+        if (thread.sessionFile !== sessionFile || this.transcriptReloadGenerationByThread[threadId] !== generation) return;
         thread.status = "attention";
         thread.error = errorMessage(error);
         this.messagesByThread[thread.id] = [];
@@ -1586,6 +1619,34 @@ export const useAppStore = defineStore("app", {
         this.repositoryDiffErrorByWorkspace[repositoryKey(thread)] = errorMessage(error);
       }
     },
+    async readComposerClipboard(threadId: string): Promise<{ references: string[]; images: File[] }> {
+      const thread = this.threads.find((item) => item.id === threadId);
+      if (!thread) return { references: [], images: [] };
+      const reference = repositoryReference(thread);
+      const files = await repositoryService.clipboardFiles(reference);
+      if (!files.length) return { references: [], images: [] };
+      const references = files.map((file) => formatFileMention(file.path));
+      if (files.length > MAX_ATTACHED_IMAGES || !files.every((file) => /\.(png|jpe?g|gif|webp)$/i.test(file.path))) {
+        return { references, images: [] };
+      }
+      // All-image copies use the existing bounded preview reader and attachment
+      // preparation. Mixed selections remain references, preserving every file.
+      try {
+        const images: File[] = [];
+        for (const file of files) {
+          const preview = await repositoryService.previewFile(reference, file.path);
+          if (!preview.dataUrl || preview.truncated || preview.size > MAX_SOURCE_IMAGE_BYTES
+            || !/^image\/(png|jpeg|gif|webp)$/.test(preview.mediaType ?? "")) {
+            return { references, images: [] };
+          }
+          const data = atob(preview.dataUrl.slice(preview.dataUrl.indexOf(",") + 1));
+          images.push(new File([Uint8Array.from(data, (char) => char.charCodeAt(0))], file.name, { type: preview.mediaType }));
+        }
+        return { references: [], images };
+      } catch {
+        return { references, images: [] };
+      }
+    },
     addActiveAttachments(images: PreparedImage[]) {
       if (!this.activeThreadId || images.length === 0) return;
       const current = this.attachmentsByThread[this.activeThreadId] ?? [];
@@ -1747,7 +1808,7 @@ export const useAppStore = defineStore("app", {
       const thread = this.activeThread;
       const message = this.activeDraft.trim();
       const attachments = this.activeAttachments.map((image) => ({ ...image }));
-      if (!thread || (!message && attachments.length === 0)) return;
+      if (!thread || this.sessionOperationByThread[thread.id] || (!message && attachments.length === 0)) return;
       if (this.requestRemoteReconnect(thread, "prompt")) return;
 
       if (thread.sessionFile && this.transcriptStateByThread[thread.id] !== "loaded") {
@@ -1763,9 +1824,16 @@ export const useAppStore = defineStore("app", {
         return;
       }
 
+      if (this.sessionOperationByThread[thread.id]) return;
+      const originalDraft = this.draftsByThread[thread.id];
+      const originalAttachments = this.attachmentsByThread[thread.id];
       this.draftsByThread[thread.id] = "";
       this.attachmentsByThread[thread.id] = [];
-      await this.deliverPrompt(thread, message, attachments, thread.status === "running" && behavior === "steer" ? "steer" : undefined);
+      const sent = await this.deliverPrompt(thread, message, attachments, thread.status === "running" && behavior === "steer" ? "steer" : undefined);
+      if (!sent && !this.draftsByThread[thread.id] && !this.attachmentsByThread[thread.id]?.length) {
+        this.draftsByThread[thread.id] = originalDraft ?? message;
+        this.attachmentsByThread[thread.id] = originalAttachments ?? [];
+      }
     },
     async deliverPrompt(
       thread: ThreadSummary,
@@ -1774,8 +1842,10 @@ export const useAppStore = defineStore("app", {
       streamingBehavior?: StreamingBehavior,
       retainFailedMessage = true,
     ): Promise<boolean> {
+      if (this.sessionOperationByThread[thread.id]) return false;
       const wasRunning = thread.status === "running";
       if (!wasRunning) await this.waitForSettledReload(thread.id);
+      if (this.sessionOperationByThread[thread.id]) return false;
       const messages = this.messagesByThread[thread.id] ?? (this.messagesByThread[thread.id] = []);
       const timelineMessage: TimelineMessage = {
         id: createID("user"), role: "user", text: message, thinking: "", timestamp: nowLabel(), timestampMs: Date.now(), streaming: false,
@@ -1792,6 +1862,8 @@ export const useAppStore = defineStore("app", {
 
       try {
         await this.ensureSession(thread);
+        await this.applyPendingModel(thread);
+        if (this.sessionOperationByThread[thread.id]) throw new Error("Session history operation is in progress");
         if (!wasRunning) thread.status = "running";
         if (!wasRunning) this.waitingForOutputByThread[thread.id] = true;
         await agentService.sendPrompt({
@@ -1837,21 +1909,21 @@ export const useAppStore = defineStore("app", {
       }
     },
     async dispatchNextPendingPrompt(threadId: string) {
-      if (pendingPromptDispatchThreads.has(threadId)) return;
+      if (pendingPromptDispatchThreads.has(threadId) || this.sessionOperationByThread[threadId]) return;
       const thread = this.threads.find((candidate) => candidate.id === threadId);
       const queue = this.pendingPromptsByThread[threadId];
       if (!thread || thread.status !== "idle" || !queue?.length) return;
       pendingPromptDispatchThreads.add(threadId);
       try {
         await this.waitForSettledReload(threadId);
-        if (thread.status !== "idle") return;
+        if (thread.status !== "idle" || this.sessionOperationByThread[threadId]) return;
         const prompt = this.pendingPromptsByThread[threadId]?.shift();
         if (!prompt) return;
         const delivered = await this.deliverPrompt(thread, prompt.text, prompt.images, undefined, false);
         if (!delivered) this.pendingPromptsByThread[threadId].unshift(prompt);
       } finally {
         pendingPromptDispatchThreads.delete(threadId);
-        if (thread.status === "idle" && this.pendingPromptsByThread[threadId]?.length) {
+        if (thread.status === "idle" && !this.sessionOperationByThread[threadId] && this.pendingPromptsByThread[threadId]?.length) {
           void this.dispatchNextPendingPrompt(threadId);
         }
       }
@@ -1868,7 +1940,7 @@ export const useAppStore = defineStore("app", {
     async sendActiveBash() {
       const thread = this.activeThread;
       const raw = this.activeDraft.trim();
-      if (!thread || !raw.startsWith("!") || this.activeAttachments.length || this.bashRunningByThread[thread.id]) return;
+      if (!thread || this.sessionOperationByThread[thread.id] || !raw.startsWith("!") || this.activeAttachments.length || this.bashRunningByThread[thread.id]) return;
       const excludeFromContext = raw.startsWith("!!");
       const command = raw.slice(excludeFromContext ? 2 : 1).trim();
       if (!command || thread.status === "running") return;
@@ -2073,6 +2145,7 @@ export const useAppStore = defineStore("app", {
         this.extensionWidgetsByThread, this.extensionTitleByThread, this.transcriptStateByThread,
         this.sessionBranchesByThread, this.sessionBranchesErrorByThread, this.sessionOperationByThread, this.pendingModelByThread,
         this.modelSelectionGenerationByThread,
+        this.sessionStateRefreshGenerationByThread,
         this.repositoryFilePreviewByThread, this.repositoryFilePreviewPathByThread, this.repositoryFilePreviewLineByThread,
         this.repositoryFilePreviewLoadingByThread, this.repositoryFilePreviewGenerationByThread, this.repositoryFilePreviewErrorByThread,
         this.terminalGenerationByThread,
@@ -2114,7 +2187,8 @@ export const useAppStore = defineStore("app", {
           before: message.role === "user",
         }));
         if (result?.cancelled) return false;
-        await this.completeSessionReplacement(thread, previous, "fork", message.role === "user" ? result?.text || message.text : "");
+        const images = message.role === "user" ? result?.images ? contentImages(result.images) : message.images ?? [] : [];
+        await this.completeSessionReplacement(thread, previous, "fork", message.role === "user" ? result?.text ?? message.text : "", images, result);
         return true;
       } catch (error) {
         thread.status = "attention";
@@ -2125,6 +2199,175 @@ export const useAppStore = defineStore("app", {
         this.sessionOperationByThread[thread.id] = undefined;
       }
     },
+    openScheduledTasks() {
+      this.activePage = "scheduledTasks";
+      this.searchOpen = false;
+      this.searchQuery = "";
+    },
+    startScheduledTaskScheduler() {
+      if (scheduledTaskTimer) return;
+      scheduledTaskTimer = setInterval(() => void this.checkScheduledTasks(), 30_000);
+    },
+    stopScheduledTaskScheduler() {
+      if (!scheduledTaskTimer) return;
+      clearInterval(scheduledTaskTimer);
+      scheduledTaskTimer = undefined;
+    },
+    saveScheduledTask(draft: ScheduledTaskDraft, taskID = "") {
+      const workspace = this.workspaces.find((item) => item.id === draft.workspaceId);
+      if (!workspace || workspace.kind === "ssh" || workspace.trust !== "approve") {
+        throw new Error(tr("scheduledTasks.errors.workspace"));
+      }
+      const name = draft.name.trim();
+      const prompt = draft.prompt.trim();
+      if (!name || !prompt) throw new Error(tr("scheduledTasks.errors.required"));
+      const modelProvider = draft.modelProvider.trim();
+      const modelId = draft.modelId.trim();
+      if (!modelProvider || !modelId) throw new Error(tr("scheduledTasks.errors.model"));
+      const thinkingLevel = draft.thinkingLevel.trim();
+      if (!scheduledTaskThinkingLevels.includes(thinkingLevel as (typeof scheduledTaskThinkingLevels)[number])) {
+        throw new Error(tr("scheduledTasks.errors.thinkingLevel"));
+      }
+      const now = nowISO();
+      const existing = this.scheduledTasks.find((task) => task.id === taskID);
+      const schedule = {
+        frequency: draft.frequency,
+        time: draft.frequency === "once" ? undefined : draft.time,
+        weekday: draft.frequency === "weekly" ? draft.weekday : undefined,
+        runAt: draft.frequency === "once" ? localDateTimeToISO(draft.runAt) : undefined,
+      } as const;
+      const nextRunAt = nextScheduledRun(schedule);
+      if (!nextRunAt) throw new Error(tr("scheduledTasks.errors.future"));
+      const task: ScheduledTask = {
+        ...(existing ?? {
+          id: createID("schedule"),
+          enabled: true,
+          createdAt: now,
+        }),
+        ...schedule,
+        name,
+        prompt,
+        workspaceId: workspace.id,
+        modelProvider,
+        modelId,
+        modelName: draft.modelName.trim() || undefined,
+        thinkingLevel,
+        nextRunAt,
+        updatedAt: now,
+      };
+      if (existing) Object.assign(existing, task);
+      else this.scheduledTasks.unshift(task);
+      this.scheduleDesktopStateSave();
+      return task;
+    },
+    deleteScheduledTask(taskID: string): ScheduledTask | undefined {
+      const index = this.scheduledTasks.findIndex((task) => task.id === taskID);
+      if (index < 0) return undefined;
+      const [removed] = this.scheduledTasks.splice(index, 1);
+      this.scheduleDesktopStateSave();
+      return removed;
+    },
+    restoreScheduledTask(task: ScheduledTask) {
+      if (this.scheduledTasks.some((item) => item.id === task.id)) return;
+      this.scheduledTasks.unshift({
+        ...task,
+        enabled: Boolean(task.enabled && task.modelProvider && task.modelId && task.thinkingLevel),
+        updatedAt: nowISO(),
+      });
+      this.scheduleDesktopStateSave();
+    },
+    toggleScheduledTask(taskID: string) {
+      const task = this.scheduledTasks.find((item) => item.id === taskID);
+      if (!task) return;
+      if (!task.enabled && (!task.modelProvider || !task.modelId || !task.thinkingLevel)) return;
+      task.enabled = !task.enabled;
+      task.updatedAt = nowISO();
+      task.nextRunAt = task.enabled ? nextScheduledRun(task) : undefined;
+      if (task.enabled && !task.nextRunAt) task.enabled = false;
+      this.scheduleDesktopStateSave();
+    },
+    async runScheduledTask(taskID: string, manual = true): Promise<string | undefined> {
+      const task = this.scheduledTasks.find((item) => item.id === taskID);
+      if (!task || this.scheduledTaskRunningByID[taskID]) return undefined;
+      this.scheduledTaskRunningByID[taskID] = true;
+      const startedAt = nowISO();
+      let threadID: string | undefined;
+      try {
+        const workspace = this.workspaces.find((item) => item.id === task.workspaceId);
+        if (!workspace || workspace.kind === "ssh" || workspace.trust !== "approve") {
+          throw new Error(tr("scheduledTasks.errors.workspace"));
+        }
+        if (!task.modelProvider || !task.modelId) throw new Error(tr("scheduledTasks.errors.model"));
+        if (!task.thinkingLevel) throw new Error(tr("scheduledTasks.errors.thinkingLevel"));
+        threadID = createID("thread");
+        const thread: ThreadSummary = {
+          id: threadID,
+          title: task.name,
+          workspace: workspace.name,
+          workspaceId: workspace.id,
+          workspacePath: workspace.path,
+          trust: "approve",
+          status: "idle",
+          started: false,
+          generation: 0,
+          createdAt: startedAt,
+          modifiedAt: startedAt,
+          unread: true,
+        };
+        this.threads.unshift(thread);
+        this.messagesByThread[threadID] = [];
+        this.draftsByThread[threadID] = "";
+        this.transcriptEntriesByThread[threadID] = [];
+        this.transcriptStateByThread[threadID] = "loaded";
+        const scheduledModel: PiModel = { provider: task.modelProvider, id: task.modelId, name: task.modelName };
+        this.pendingModelByThread[threadID] = scheduledModel;
+        this.sessionStateByThread[threadID] = { model: scheduledModel };
+        await this.ensureSession(thread);
+        const appliedModel = this.sessionStateByThread[threadID]?.model;
+        if (!appliedModel || modelKey(appliedModel) !== modelKey(scheduledModel)) {
+          throw new Error(thread.error || tr("scheduledTasks.errors.modelApply"));
+        }
+        const availableThinkingLevels = this.thinkingLevelsByThread[threadID] ?? [];
+        if (!availableThinkingLevels.includes(task.thinkingLevel)) {
+          throw new Error(tr("scheduledTasks.errors.thinkingLevelUnavailable", { level: task.thinkingLevel }));
+        }
+        await agentService.setThinkingLevel({ threadId: threadID, level: task.thinkingLevel });
+        await this.refreshState(threadID);
+        if (this.sessionStateByThread[threadID]?.thinkingLevel !== task.thinkingLevel) {
+          throw new Error(tr("scheduledTasks.errors.thinkingLevelApply"));
+        }
+        const delivered = await this.deliverPrompt(thread, task.prompt, []);
+        if (!delivered) throw new Error(thread.error || tr("scheduledTasks.errors.start"));
+        task.lastStatus = "started";
+        task.lastError = undefined;
+        task.lastThreadId = threadID;
+        return threadID;
+      } catch (error) {
+        task.lastStatus = "failed";
+        task.lastError = errorMessage(error);
+        task.lastThreadId = threadID;
+        return undefined;
+      } finally {
+        task.lastRunAt = startedAt;
+        task.updatedAt = nowISO();
+        if (!manual) {
+          task.nextRunAt = task.frequency === "once" ? undefined : nextScheduledRun(task);
+          if (task.frequency === "once") task.enabled = false;
+        }
+        this.scheduledTaskRunningByID[taskID] = false;
+        this.scheduleDesktopStateSave();
+      }
+    },
+    async checkScheduledTasks(now = new Date()) {
+      if (scheduledTaskTicking || !this.catalogReady) return;
+      scheduledTaskTicking = true;
+      try {
+        const due = this.scheduledTasks.filter((task) => task.enabled && task.nextRunAt && Date.parse(task.nextRunAt) <= now.getTime());
+        for (const task of due) await this.runScheduledTask(task.id, false);
+      } finally {
+        scheduledTaskTicking = false;
+      }
+    },
     async resendEditedMessage(messageId: string, text: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && item.role === "user");
@@ -2132,10 +2375,14 @@ export const useAppStore = defineStore("app", {
       if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       const images = message.images?.map((image) => ({ ...image })) ?? [];
       this.sessionOperationByThread[thread.id] = "Replaying message";
+      this.invalidateSessionReads(thread.id);
       try {
         await this.callWithSession(thread, () => agentService.replaySessionMessage({
           threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
         }));
+        this.draftsByThread[thread.id] = text;
+        this.attachmentsByThread[thread.id] = images;
+        this.scheduleDesktopStateSave();
         await this.reloadSessionTranscript(thread, false);
       } catch (error) {
         thread.status = "attention";
@@ -2145,16 +2392,20 @@ export const useAppStore = defineStore("app", {
         delete this.sessionOperationByThread[thread.id];
       }
       if (this.activeThreadId !== thread.id) return false;
-      this.updateDraft(text);
-      this.attachmentsByThread[thread.id] = images;
-      await this.sendActivePrompt();
-      return true;
+      const replayAttachments = this.attachmentsByThread[thread.id];
+      const sent = await this.deliverPrompt(thread, text, images);
+      if (sent && this.draftsByThread[thread.id] === text) {
+        this.draftsByThread[thread.id] = "";
+        if (this.attachmentsByThread[thread.id] === replayAttachments) this.attachmentsByThread[thread.id] = [];
+      }
+      return sent;
     },
     async editMessage(messageId: string, text: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
       if (!thread?.sessionFile || !message?.entryId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Editing message";
+      this.invalidateSessionReads(thread.id);
       try {
         await this.callWithSession(thread, () => agentService.editSessionMessage({
           threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!, text,
@@ -2174,6 +2425,7 @@ export const useAppStore = defineStore("app", {
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
       if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Deleting message";
+      this.invalidateSessionReads(thread.id);
       try {
         await this.callWithSession(thread, () => agentService.deleteSessionMessage({
           threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
@@ -2188,13 +2440,32 @@ export const useAppStore = defineStore("app", {
         delete this.sessionOperationByThread[thread.id];
       }
     },
+    invalidateSessionReads(threadId: string) {
+      this.sessionStateRefreshGenerationByThread[threadId] = (this.sessionStateRefreshGenerationByThread[threadId] ?? 0) + 1;
+      this.transcriptReloadGenerationByThread[threadId] = (this.transcriptReloadGenerationByThread[threadId] ?? 0) + 1;
+      if (this.transcriptStateByThread[threadId] === "loading") this.transcriptStateByThread[threadId] = "idle";
+    },
     async reloadSessionTranscript(thread: ThreadSummary, preserveLoadedHistory = true) {
+      if (preserveLoadedHistory && this.sessionOperationByThread[thread.id]) return;
+      if (!preserveLoadedHistory) this.invalidateSessionReads(thread.id);
       const sessionFile = thread.sessionFile;
       if (!sessionFile) return;
       const generation = (this.transcriptReloadGenerationByThread[thread.id] ?? 0) + 1;
       this.transcriptReloadGenerationByThread[thread.id] = generation;
       const existingEntries = preserveLoadedHistory ? this.transcriptEntriesByThread[thread.id] ?? [] : [];
-      const snapshot = await catalogService.getSessionSnapshot(sessionFile);
+      if (!preserveLoadedHistory) {
+        this.messagesByThread[thread.id] = [];
+        this.transcriptEntriesByThread[thread.id] = [];
+        this.transcriptStateByThread[thread.id] = "loading";
+      }
+      let snapshot: Awaited<ReturnType<typeof catalogService.getSessionSnapshot>>;
+      try {
+        snapshot = await catalogService.getSessionSnapshot(sessionFile);
+      } catch (error) {
+        if (thread.sessionFile !== sessionFile || this.transcriptReloadGenerationByThread[thread.id] !== generation) return;
+        this.transcriptStateByThread[thread.id] = "error";
+        throw error;
+      }
       if (thread.sessionFile !== sessionFile || this.transcriptReloadGenerationByThread[thread.id] !== generation) return;
       if (thread.status === "running" || thread.status === "starting") return;
 
@@ -2234,7 +2505,7 @@ export const useAppStore = defineStore("app", {
           threadId: thread.id, path: thread.sessionFile!, entryId, before: true,
         }));
         if (result?.cancelled) return;
-        await this.completeSessionReplacement(thread, previous, "fork", result?.text || fallbackText);
+        await this.completeSessionReplacement(thread, previous, "fork", result?.text ?? fallbackText, contentImages(result?.images), result);
       } catch (error) {
         thread.status = "attention";
         thread.error = errorMessage(error);
@@ -2243,8 +2514,15 @@ export const useAppStore = defineStore("app", {
         this.sessionOperationByThread[thread.id] = undefined;
       }
     },
-    async completeSessionReplacement(thread: ThreadSummary, previous: ThreadSummary, kind: "copy" | "fork", draft = "") {
-      const state = await agentService.getState<PiSessionState>(thread.id);
+    async completeSessionReplacement(thread: ThreadSummary, previous: ThreadSummary, kind: "copy" | "fork", draft = "", images: PreparedImage[] = [], replacement?: ForkResponse) {
+      const generation = thread.generation;
+      const wasStarted = thread.started;
+      const state: PiSessionState = replacement?.sessionFile && replacement.sessionId
+        ? { ...this.sessionStateByThread[thread.id], sessionFile: replacement.sessionFile, sessionId: replacement.sessionId, isStreaming: false }
+        : await agentService.getState<PiSessionState>(thread.id);
+      if (!isCurrentPiRequest(this.threads, thread, generation, wasStarted) || thread.sessionFile !== previous.sessionFile) {
+        throw new Error("Pi session changed while replacing history; reload the task");
+      }
       if (!state.sessionFile || !previous.sessionFile || pathKey(state.sessionFile) === pathKey(previous.sessionFile)) {
         throw new Error("Pi did not create a new session file");
       }
@@ -2264,7 +2542,8 @@ export const useAppStore = defineStore("app", {
       this.messagesByThread[sourceID] = copyMessages(this.messagesByThread[thread.id] ?? []);
       this.transcriptEntriesByThread[sourceID] = [...(this.transcriptEntriesByThread[thread.id] ?? [])];
       this.transcriptReloadGenerationByThread[sourceID] = this.transcriptReloadGenerationByThread[thread.id] ?? 0;
-      this.draftsByThread[sourceID] = "";
+      this.draftsByThread[sourceID] = this.draftsByThread[thread.id] ?? "";
+      this.attachmentsByThread[sourceID] = (this.attachmentsByThread[thread.id] ?? []).map((image) => ({ ...image }));
       this.transcriptStateByThread[sourceID] = this.transcriptStateByThread[thread.id] ?? "idle";
       this.sessionStateByThread[sourceID] = {
         ...(this.sessionStateByThread[thread.id] ?? {}),
@@ -2278,13 +2557,16 @@ export const useAppStore = defineStore("app", {
       thread.title = newTitle;
       thread.sessionId = state.sessionId;
       thread.sessionFile = state.sessionFile;
+      this.invalidateSessionReads(thread.id);
       thread.parentSessionFile = previous.sessionFile;
       thread.modifiedAt = nowISO();
       thread.status = "idle";
       thread.error = undefined;
       this.sessionStateByThread[thread.id] = state;
-      await this.reloadSessionTranscript(thread, false);
       this.draftsByThread[thread.id] = skillInvocationCommandText(draft);
+      this.attachmentsByThread[thread.id] = images.map((image) => ({ ...image }));
+      this.scheduleDesktopStateSave();
+      await this.reloadSessionTranscript(thread, false);
       this.sessionBranchesByThread[thread.id] = undefined;
       this.sessionBranchesErrorByThread[thread.id] = "";
       this.branchPanelOpen = false;
@@ -2294,6 +2576,7 @@ export const useAppStore = defineStore("app", {
         this.appendSystem(thread.id, `New session created, but naming failed: ${errorMessage(error)}`, errorMessage(error));
       }
       await this.refreshStats(thread.id).catch(() => undefined);
+      if (replacement?.sessionFile) await this.refreshState(thread.id).catch(() => undefined);
       this.scheduleDesktopStateSave();
     },
     async openBranchPanel() {
@@ -2343,15 +2626,19 @@ export const useAppStore = defineStore("app", {
       this.modelSelectionGenerationByThread[thread.id] = selectionGeneration;
       this.thinkingLevelsByThread[thread.id] = [];
       this.thinkingLevelsRefreshGenerationByThread[thread.id] = (this.thinkingLevelsRefreshGenerationByThread[thread.id] ?? 0) + 1;
+      this.pendingModelByThread[thread.id] = { ...model };
       if (!thread.started) {
-        this.pendingModelByThread[thread.id] = { ...model };
         this.sessionStateByThread[thread.id] = { ...(this.sessionStateByThread[thread.id] ?? {}), model: { ...model } };
         return;
       }
-      delete this.pendingModelByThread[thread.id];
-      await agentService.setModel({ threadId: thread.id, provider: model.provider, modelId: model.id });
-      if (this.modelSelectionGenerationByThread[thread.id] !== selectionGeneration) return;
-      await this.refreshState(thread.id);
+      try {
+        await this.applyPendingModel(thread);
+      } catch (error) {
+        if (this.modelSelectionGenerationByThread[thread.id] === selectionGeneration) {
+          this.appendSystem(thread.id, `Unable to apply selected model: ${errorMessage(error)}`, errorMessage(error));
+        }
+        return;
+      }
       if (this.modelSelectionGenerationByThread[thread.id] !== selectionGeneration) return;
       await this.refreshThinkingLevels(thread.id);
     },
@@ -2419,9 +2706,9 @@ export const useAppStore = defineStore("app", {
       if (remoteWorkspace && !this.remoteReadyByWorkspace[remoteWorkspace.id]) {
         throw new Error("SSH workspace must be reconnected before starting Pi");
       }
-      if (thread.started) return;
       const existing = piStartPromises.get(thread.id);
       if (existing) return existing;
+      if (thread.started) return;
       thread.status = "starting";
       thread.error = undefined;
       const generationFloor = thread.generation;
@@ -2441,6 +2728,15 @@ export const useAppStore = defineStore("app", {
       try {
         return await operation();
       } catch (error) {
+        if (errorMessage(error).includes("outcome-unknown")) {
+          // Do not transparently replay a disk mutation whose switch response was lost.
+          thread.started = false;
+          this.invalidateSessionReads(thread.id);
+          this.messagesByThread[thread.id] = [];
+          this.transcriptEntriesByThread[thread.id] = [];
+          this.transcriptStateByThread[thread.id] = "error";
+          throw error;
+        }
         if (!isThreadNotRunningError(error)) throw error;
         thread.started = false;
         thread.status = "idle";
@@ -2525,10 +2821,16 @@ export const useAppStore = defineStore("app", {
     },
     async refreshState(threadId: string) {
       const thread = this.threads.find((item) => item.id === threadId);
+      const sessionFile = thread?.sessionFile;
       const generation = thread?.generation;
       const wasStarted = thread?.started;
+      const selection = this.modelSelectionGenerationByThread[threadId];
+      const request = (this.sessionStateRefreshGenerationByThread[threadId] ?? 0) + 1;
+      this.sessionStateRefreshGenerationByThread[threadId] = request;
       const state = await agentService.getState<PiSessionState>(threadId);
       if (!isCurrentPiRequest(this.threads, thread, generation, wasStarted)) return;
+      if (this.sessionStateRefreshGenerationByThread[threadId] !== request || this.modelSelectionGenerationByThread[threadId] !== selection) return;
+      if (thread?.sessionFile !== sessionFile) return;
       this.sessionStateByThread[threadId] = state;
     },
     async refreshModels(threadId: string) {
@@ -2550,32 +2852,29 @@ export const useAppStore = defineStore("app", {
       }
     },
     async applyPendingModel(thread: ThreadSummary) {
-      const pending = this.pendingModelByThread[thread.id];
-      if (!pending || !thread.started) return;
-      const generation = thread.generation;
-      const current = this.sessionStateByThread[thread.id]?.model;
-      let clearPending = true;
-      try {
-        if (!current || modelKey(current) !== modelKey(pending)) {
+      const existing = modelApplicationPromises.get(thread.id);
+      if (existing) return existing;
+      if (!this.pendingModelByThread[thread.id]) return;
+      const operation = (async () => {
+        while (this.pendingModelByThread[thread.id]) {
+          const pending = this.pendingModelByThread[thread.id]!;
+          const generation = thread.generation;
+          if (!thread.started) throw new Error("Pi stopped before applying the selected model");
           await agentService.setModel({ threadId: thread.id, provider: pending.provider, modelId: pending.id });
-          if (!thread.started || thread.generation !== generation) {
-            clearPending = false;
-            return;
-          }
+          if (!thread.started || thread.generation !== generation) throw new Error(thread.error || "Pi process exited during model selection");
           await this.refreshState(thread.id);
+          if (!thread.started || thread.generation !== generation) throw new Error(thread.error || "Pi process exited during model selection");
+          if (this.pendingModelByThread[thread.id] !== pending) continue;
+          const applied = this.sessionStateByThread[thread.id]?.model;
+          if (!applied || modelKey(applied) !== modelKey(pending)) throw new Error("Pi did not confirm the selected model; message was not sent");
+          delete this.pendingModelByThread[thread.id];
         }
-        if (!thread.started || thread.generation !== generation) clearPending = false;
-      } catch (error) {
-        if (!thread.started || thread.generation !== generation || isThreadNotRunningError(error)) {
-          clearPending = false;
-          return;
-        }
-        const message = errorMessage(error);
-        thread.status = "attention";
-        thread.error = message;
-        this.appendSystem(thread.id, `Unable to apply selected model: ${message}`, message);
+      })();
+      modelApplicationPromises.set(thread.id, operation);
+      try {
+        await operation;
       } finally {
-        if (clearPending && this.pendingModelByThread[thread.id] === pending) delete this.pendingModelByThread[thread.id];
+        if (modelApplicationPromises.get(thread.id) === operation) modelApplicationPromises.delete(thread.id);
       }
     },
     async refreshThinkingLevels(threadId: string) {
@@ -3246,6 +3545,16 @@ export const useAppStore = defineStore("app", {
           }
         }
         this.threads = historicalThreads;
+        this.scheduledTasks = (desktop.scheduledTasks ?? []).map((task) => {
+          const hasExecutionSettings = Boolean(task.modelProvider && task.modelId && task.thinkingLevel);
+          return {
+            ...task,
+            enabled: Boolean(task.enabled && hasExecutionSettings),
+            nextRunAt: hasExecutionSettings ? task.nextRunAt : undefined,
+            frequency: task.frequency as ScheduledTask["frequency"],
+            lastStatus: task.lastStatus as ScheduledTask["lastStatus"],
+          };
+        });
         for (const thread of this.threads) {
           this.messagesByThread[thread.id] ??= [];
           this.transcriptEntriesByThread[thread.id] ??= [];
@@ -3339,6 +3648,7 @@ export const useAppStore = defineStore("app", {
       if (!this.catalogReady) return;
       const state: DesktopState = {
         activeThreadId: this.activeThreadId || undefined,
+        scheduledTasks: this.scheduledTasks,
         preferences: {
           appearance: this.appearance,
           language: this.language,

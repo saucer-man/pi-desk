@@ -1,8 +1,14 @@
 # Pi Desk
 
-Pi Desk 是 Pi coding agent 的 Wails v3 桌面客户端。Pi 继续负责 agent runtime，Pi Desk 提供桌面 UI、workspace/session 管理、Repository、Terminal，以及受信任的远程 SSH workspace。
+Pi Desk 是 Pi coding agent 的 Wails v3 桌面客户端。Pi 继续负责 agent runtime，Pi Desk 提供桌面 UI、workspace/session 管理、定时任务、Repository、Terminal，以及受信任的远程 SSH workspace。
 
 Repository 支持模糊文件检索和只读多标签预览（文本、Markdown、常见图片/音频与 PDF）；Extensions 可通过 Pi 官方 CLI 管理全局及受信任本地 workspace 的 package，包括安装、更新、移除和资源启停。
+
+定时任务支持一次、每小时、每天、工作日和每周计划。任务会保存明确的 provider/model 和思考强度；新建时优先使用当前 Pi task 的模型与思考强度，无法确定时必须手动选择。任务仅能绑定已信任的本地 workspace；Pi Desk 运行时，到点会创建普通 Pi task，应用并验证保存的执行参数，然后发送提示词；错过多个周期只补跑一次。
+
+输入区的队列支持编辑、删除、立即追加和滚动。正文会按输入框、队列与 Todo 的实际高度预留空间；停留在底部时保持最后一条消息可见，查看历史消息时保留滚动位置。
+
+Windows 支持从资源管理器复制当前已信任本地 workspace 内的文件，再粘贴到输入框或队列编辑框。普通文件插入 `@相对路径` 引用，支持多文件、中文和空格；全部为 PNG/JPEG/GIF/WebP 图片时复用图片附件流程，混合选择按文件引用处理。文件引用不会复制或上传源文件；文件夹、工作区外文件和向 SSH 会话粘贴本机文件会被拒绝。macOS/Linux 保留现有文本与图片粘贴。
 
 ## 运行模型
 
@@ -45,5 +51,3 @@ wails3 task verify:windows-smoke
 # 使用本机已安装的 Pi CLI 验证 RPC、runtime、terminal 和 session
 wails3 task verify:pi-live
 ```
-
-Linux/macOS 且 Docker 可用时，运行 `wails3 task verify:ssh-live`。该任务会创建隔离密钥、`known_hosts`、SSH 配置和容器拓扑，覆盖认证拒绝、ProxyJump、helper 安装、只读目录、断线、lease/generation 撤销与 `outcome-unknown`。CI 会强制执行 SSH live matrix；Windows CI 会在打包后执行真实窗口渲染验收并保留失败截图。

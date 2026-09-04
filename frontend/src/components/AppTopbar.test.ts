@@ -104,4 +104,16 @@ describe("AppTopbar", () => {
     expect(wrapper.find('button[title="Session branches"]').exists()).toBe(false);
     expect(wrapper.find(".inspector-toggle").exists()).toBe(true);
   });
+
+  it("shows the scheduled-task context without repository controls", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.activePage = "scheduledTasks";
+    const wrapper = mount(AppTopbar, { global: { plugins: [pinia] } });
+
+    expect(wrapper.get(".topbar-title-group").text()).toContain("Scheduled tasks");
+    expect(wrapper.find(".workspace-application-anchor").exists()).toBe(false);
+    expect(wrapper.find(".inspector-toggle").exists()).toBe(false);
+  });
 });

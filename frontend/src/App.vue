@@ -13,8 +13,10 @@ import InspectorPanel from "./components/InspectorPanel.vue";
 import NewTaskDialog from "./components/NewTaskDialog.vue";
 import OrphanSessionsDialog from "./components/OrphanSessionsDialog.vue";
 import RemoteReconnectDialog from "./components/RemoteReconnectDialog.vue";
+import ScheduledTasksPage from "./components/ScheduledTasksPage.vue";
 import PaneResizer from "./components/PaneResizer.vue";
 import WindowControls from "./components/WindowControls.vue";
+import { tr } from "./i18n";
 import {
   MAX_INSPECTOR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -26,7 +28,9 @@ import {
 const appStore = useAppStore();
 const SettingsDialog = defineAsyncComponent(() => import("./components/SettingsDialog.vue"));
 const isWindows = ref(System.IsWindows());
-const windowTitle = computed(() => appStore.activeExtensionTitle || appStore.activeThread?.title || "Pi Desk");
+const windowTitle = computed(() => appStore.activePage === "scheduledTasks"
+  ? tr("scheduledTasks.title")
+  : appStore.activeExtensionTitle || appStore.activeThread?.title || "Pi Desk");
 
 async function detectWindows() {
   if (isWindows.value) return;
@@ -55,6 +59,8 @@ function syncDocumentFontSize(size: number) {
 
 async function initializeDesktop() {
   await appStore.initialize();
+  appStore.startScheduledTaskScheduler();
+  void appStore.checkScheduledTasks();
   if (window.innerWidth < 1280) appStore.inspectorOpen = false;
 }
 
@@ -66,6 +72,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", persistDesktopState);
+  appStore.stopScheduledTaskScheduler();
   persistDesktopState();
 });
 
@@ -103,8 +110,8 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
     :class="{
       'is-windows': isWindows,
       'is-sidebar-collapsed': appStore.sidebarCollapsed,
-      'is-inspector-closed': !appStore.inspectorOpen,
-      'is-inspector-open': appStore.inspectorOpen,
+      'is-inspector-closed': !appStore.inspectorOpen || appStore.activePage === 'scheduledTasks',
+      'is-inspector-open': appStore.inspectorOpen && appStore.activePage === 'task',
       '[grid-template-columns:56px_minmax(0,1fr)]': appStore.sidebarCollapsed,
       '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]': !appStore.sidebarCollapsed,
     }"
@@ -122,11 +129,12 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
       @commit="appStore.setSidebarWidth($event, true)"
     />
     <main class="workspace-shell relative z-0 col-start-2 row-start-2 grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-[var(--bg-workspace)]">
-      <ConversationPane />
+      <ScheduledTasksPage v-if="appStore.activePage === 'scheduledTasks'" />
+      <ConversationPane v-else />
     </main>
-    <InspectorPanel v-if="appStore.inspectorOpen" />
+    <InspectorPanel v-if="appStore.inspectorOpen && appStore.activePage === 'task'" />
     <PaneResizer
-      v-if="appStore.inspectorOpen"
+      v-if="appStore.inspectorOpen && appStore.activePage === 'task'"
       side="right"
       :value="appStore.inspectorWidth"
       :min="MIN_INSPECTOR_WIDTH"

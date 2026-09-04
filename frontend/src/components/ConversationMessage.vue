@@ -6,6 +6,7 @@ import type { ExecutionStep, TimelineMessage } from "../stores/app";
 import { useAppStore } from "../stores/app";
 import type { PreparedImage } from "../utils/imageAttachments";
 import { parseSkillInvocation, replaceSkillInvocationUserMessage, skillInvocationCommandText } from "../utils/skillInvocation";
+import { splitTaggedThinking } from "../utils/taggedThinking";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
 import MarkdownBody from "./MarkdownBody.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
@@ -19,38 +20,14 @@ const props = defineProps<{
 const appStore = useAppStore();
 const editing = ref(false);
 const editText = ref("");
+const editError = ref("");
+const editSubmitting = ref(false);
 const confirmingDelete = ref(false);
 const copied = ref(false);
 const previewImage = ref<PreparedImage>();
 const executionOpen = ref(props.message.streaming);
 const editBox = ref<HTMLTextAreaElement>();
 const skillInvocation = computed(() => props.message.role === "user" ? parseSkillInvocation(props.message.text) : undefined);
-
-function splitTaggedThinking(text: string): { text: string; thinking: string; open: boolean } {
-  const thoughts: string[] = [];
-  let visible = "";
-  let cursor = 0;
-  const opening = /<think(?:\s[^>]*)?>/gi;
-  const closing = /<\/think\s*>/gi;
-  while (true) {
-    opening.lastIndex = cursor;
-    const start = opening.exec(text);
-    if (!start) {
-      visible += text.slice(cursor);
-      return { text: visible, thinking: thoughts.filter(Boolean).join("\n\n"), open: false };
-    }
-    visible += text.slice(cursor, start.index);
-    const contentStart = start.index + start[0].length;
-    closing.lastIndex = contentStart;
-    const end = closing.exec(text);
-    if (!end) {
-      thoughts.push(text.slice(contentStart).trim());
-      return { text: visible, thinking: thoughts.filter(Boolean).join("\n\n"), open: true };
-    }
-    thoughts.push(text.slice(contentStart, end.index).trim());
-    cursor = end.index + end[0].length;
-  }
-}
 
 const taggedThinking = computed(() => (
   props.message.role === "assistant"
@@ -60,7 +37,7 @@ const taggedThinking = computed(() => (
 const visibleMessageText = computed(() => skillInvocation.value?.userMessage ?? taggedThinking.value.text);
 const actionable = computed(() => (
   (props.message.role === "user" || props.message.role === "assistant")
-  && Boolean(visibleMessageText.value.trim())
+  && Boolean(visibleMessageText.value.trim() || props.message.images?.length)
 ));
 const sessionBusy = computed(() => (
   props.message.streaming
@@ -112,6 +89,9 @@ const runNoticeLabel = computed(() => {
       const delayMs = notice.retryAt === undefined
         ? Math.max(0, notice.delayMs ?? 0)
         : Math.max(0, notice.retryAt - retryNow.value);
+      if (delayMs === 0) {
+        return tr("conversation.requestRetryInProgress", { attempt, maxAttempts });
+      }
       const delay = notice.retryAt === undefined
         ? delayMs < 1000
           ? `${Math.round(delayMs)}ms`
@@ -197,26 +177,31 @@ async function copyMessage() {
 async function beginEdit() {
   if (persistedActionsDisabled.value) return;
   editText.value = visibleMessageText.value;
+  editError.value = "";
   editing.value = true;
   confirmingDelete.value = false;
   await nextTick();
   editBox.value?.focus();
 }
 
-async function saveEdit() {
-  if (!editText.value.trim()) return;
-  const text = replaceSkillInvocationUserMessage(props.message.text, editText.value);
-  if (await appStore.editMessage(props.message.id, text)) editing.value = false;
-}
-
 async function submitEdit() {
-  if (!latestUserMessage.value) {
-    await saveEdit();
-    return;
-  }
-  if (!editText.value.trim()) return;
+  if (!editText.value.trim() || editSubmitting.value || persistedActionsDisabled.value) return;
+  const thread = appStore.activeThread;
   const text = replaceSkillInvocationUserMessage(props.message.text, editText.value);
-  if (await appStore.resendEditedMessage(props.message.id, text)) editing.value = false;
+  editSubmitting.value = true;
+  editError.value = "";
+  if (thread) thread.error = undefined;
+  try {
+    const saved = latestUserMessage.value
+      ? await appStore.resendEditedMessage(props.message.id, text)
+      : await appStore.editMessage(props.message.id, text);
+    if (saved) editing.value = false;
+    else editError.value = thread?.error || tr("conversation.editFailed");
+  } catch (error) {
+    editError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    editSubmitting.value = false;
+  }
 }
 
 async function deleteMessage() {
@@ -305,11 +290,12 @@ function stepThinking(step: ExecutionStep): string {
         <textarea :class="ui.textarea" ref="editBox" v-model="editText" rows="3" @keydown.ctrl.enter.prevent="void submitEdit()" @keydown.meta.enter.prevent="void submitEdit()" @keydown.escape.prevent="editing = false" />
         <div class="message-edit-actions">
           <button class="message-edit-button" type="button" :title="tr('common.cancel')" @click="editing = false"><X :size="14" /></button>
-          <button class="message-edit-button message-edit-button--primary" type="button" :title="tr(latestUserMessage ? 'conversation.sendEdit' : 'conversation.save')" :disabled="!editText.trim() || persistedActionsDisabled" @click="void submitEdit()">
+          <button class="message-edit-button message-edit-button--primary" type="button" :title="tr(latestUserMessage ? 'conversation.sendEdit' : 'conversation.save')" :disabled="!editText.trim() || persistedActionsDisabled || editSubmitting" :aria-busy="editSubmitting" @click="void submitEdit()">
             <ArrowUp v-if="latestUserMessage" :size="14" />
             <Save v-else :size="14" />
           </button>
         </div>
+        <p v-if="editError" class="error-text" role="alert">{{ tr("conversation.editFailed") }} {{ editError === tr("conversation.editFailed") ? '' : editError }}</p>
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>
       <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" :search-query="searchQuery" :search-active="searchActive" />

@@ -24,14 +24,14 @@ const responseText = computed(() => {
 });
 
 function close() {
-  if (!props.testing) emit("close");
+  emit("close");
 }
 
 function updatePrompt(event: Event) {
   emit("update:prompt", (event.target as HTMLTextAreaElement).value);
 }
 
-useModalFocus(dialog, close, { canClose: () => !props.testing });
+useModalFocus(dialog, close);
 </script>
 
 <template>
@@ -50,7 +50,7 @@ useModalFocus(dialog, close, { canClose: () => !props.testing });
             <h2 id="model-test-title">{{ tr("settings.modelTestTitle") }}</h2>
             <small>{{ tr("settings.modelTestDescription", { model: props.modelName }) }}</small>
           </div>
-          <button class="icon-button" :class="ui.iconButton" type="button" :disabled="props.testing" :title="tr('common.close')" @click="close">
+          <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" @click="close">
             <X :size="16" aria-hidden="true" />
           </button>
         </header>
@@ -90,7 +90,7 @@ useModalFocus(dialog, close, { canClose: () => !props.testing });
         </div>
 
         <footer :class="ui.dialogFooter">
-          <button class="text-button" :class="ui.button" type="button" :disabled="props.testing" @click="close">{{ tr("common.cancel") }}</button>
+          <button class="text-button" :class="ui.button" type="button" @click="close">{{ tr("common.cancel") }}</button>
           <button
             class="text-button primary-button model-test-submit" :class="ui.buttonPrimary"
             type="button"

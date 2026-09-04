@@ -1209,6 +1209,106 @@ describe("app store", () => {
     expect(store.activeThinkingLevels).toEqual(["low", "medium", "high"]);
   });
 
+  it("waits for model selection before sending and keeps the latest selection", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 1;
+    const glm = { provider: "custom", id: "glm-5.3" };
+    const newer = { provider: "custom", id: "newer" };
+    store.sessionStateByThread[thread.id] = { model: { provider: "custom", id: "gpt" } };
+    let finish!: () => void;
+    mocks.setModel.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.getState.mockResolvedValueOnce({ model: glm }).mockResolvedValueOnce({ model: newer });
+    const selection = store.chooseModel(glm);
+    const latest = store.chooseModel(newer);
+    const sending = store.deliverPrompt(thread, "hello", []);
+    await vi.waitFor(() => expect(mocks.setModel).toHaveBeenCalledTimes(1));
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([selection, latest, sending]);
+    expect(mocks.setModel).toHaveBeenLastCalledWith({ threadId: thread.id, provider: newer.provider, modelId: newer.id });
+    expect(store.activeSessionState?.model).toEqual(newer);
+    expect(mocks.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(store.pendingModelByThread[thread.id]).toBeUndefined();
+  });
+
+  it("blocks an immediate send when an in-flight model switch fails, then allows an explicit retry", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    const glm = { provider: "custom", id: "glm-5.3" };
+    let fail!: (error: Error) => void;
+    mocks.setModel.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+    const selection = store.chooseModel(glm);
+    const sending = store.deliverPrompt(thread, "hello", []);
+    await vi.waitFor(() => expect(store.messagesByThread[thread.id]).toHaveLength(1));
+    fail(new Error("selection failed"));
+    await selection;
+    expect(await sending).toBe(false);
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.pendingModelByThread[thread.id]).toEqual(glm);
+    mocks.getState.mockResolvedValueOnce({ model: glm });
+    expect(await store.deliverPrompt(thread, "retry", [])).toBe(true);
+    expect(store.pendingModelByThread[thread.id]).toBeUndefined();
+    expect(mocks.sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["rejected", "unconfirmed"])("blocks sending when startup model selection is %s and retains the choice", async (failure) => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    const glm = { provider: "custom", id: "glm-5.3" };
+    const gpt = { provider: "custom", id: "gpt-5.6-sol" };
+    await store.chooseModel(glm);
+    mocks.startSession.mockResolvedValueOnce({ threadId: thread.id, generation: 1, stateJson: JSON.stringify({ model: gpt }) });
+    if (failure === "rejected") mocks.setModel.mockRejectedValueOnce(new Error("selection failed"));
+    else mocks.getState.mockResolvedValueOnce({ model: gpt });
+    expect(await store.deliverPrompt(thread, "hello", [])).toBe(false);
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.pendingModelByThread[thread.id]).toEqual(glm);
+    expect(thread.status).toBe("attention");
+  });
+
+  it("waits for background startup model application even after the process is marked started", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    const glm = { provider: "custom", id: "glm-5.3" };
+    await store.chooseModel(glm);
+    mocks.startSession.mockResolvedValueOnce({ threadId: thread.id, generation: 1, stateJson: JSON.stringify({ model: { provider: "custom", id: "gpt" } }) });
+    let finish!: () => void;
+    mocks.setModel.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.getState.mockResolvedValueOnce({ model: glm });
+    const startup = store.ensureSession(thread);
+    await vi.waitFor(() => expect(mocks.setModel).toHaveBeenCalledTimes(1));
+    expect(thread.started).toBe(true);
+    const sending = store.deliverPrompt(thread, "hello", []);
+    await Promise.resolve();
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([startup, sending]);
+    expect(mocks.setModel).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores older state responses after selecting a new model", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    const glm = { provider: "custom", id: "glm-5.3" };
+    let finish!: (value: unknown) => void;
+    mocks.getState.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; })).mockResolvedValueOnce({ model: glm });
+    const oldRefresh = store.refreshState(thread.id);
+    await store.chooseModel(glm);
+    finish({ model: { provider: "custom", id: "gpt" } });
+    await oldRefresh;
+    expect(store.activeSessionState?.model).toEqual(glm);
+  });
+
   it("ignores a thinking-level response requested for a previously selected model", async () => {
     const store = useAppStore();
     const gpt = { provider: "openai", id: "gpt-5.6-sol", reasoning: true };
@@ -2955,6 +3055,155 @@ describe("app store", () => {
     expect(store.activeDraft).toBe("Inspect runtime");
   });
 
+  it("blocks prompts during history operations without consuming the draft", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    store.updateDraft("Keep this message");
+    store.sessionOperationByThread[thread.id] = "Deleting message";
+    await store.sendActivePrompt();
+    expect(await store.deliverPrompt(thread, "No race", [])).toBe(false);
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.activeDraft).toBe("Keep this message");
+    expect(store.activeMessages).toHaveLength(0);
+  });
+
+  it.each(["message", "branch-panel"])("forks an image-only prompt from %s without stealing the original draft", async (source) => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    const originalImage = { id: "draft-image", name: "Draft", data: "ZHJhZnQ=", mimeType: "image/png", previewUrl: "data:image/png;base64,ZHJhZnQ=" };
+    store.draftsByThread[thread.id] = "Unsent original draft";
+    store.attachmentsByThread[thread.id] = [originalImage];
+    store.messagesByThread[thread.id] = [{ id: "photo", entryId: "photo-entry", role: "user", text: "", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.forkSessionAt.mockResolvedValueOnce({ cancelled: false, text: "", images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }] });
+    mocks.getState.mockResolvedValueOnce({ sessionId: "fork", sessionFile: "C:\\sessions\\fork.jsonl" });
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
+    if (source === "message") expect(await store.forkFromMessage("photo")).toBe(true);
+    else await store.forkActiveSession("photo-entry", "Do not insert fallback text for an image-only prompt");
+    expect(store.activeDraft).toBe("");
+    expect(store.activeAttachments).toHaveLength(1);
+    expect(store.activeAttachments[0].data).toBe("aW1hZ2U=");
+    const original = store.threads.find((candidate) => candidate.sessionFile === "C:\\sessions\\one.jsonl")!;
+    expect(store.draftsByThread[original.id]).toBe("Unsent original draft");
+    expect(store.attachmentsByThread[original.id]).toEqual([originalImage]);
+  });
+
+  it("binds the confirmed fork even when the subsequent state query fails", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.messagesByThread[thread.id] = [{ id: "user", entryId: "entry", role: "user", text: "Prompt", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.forkSessionAt.mockResolvedValueOnce({ cancelled: false, text: "Prompt", sessionFile: "C:\\sessions\\fork.jsonl", sessionId: "fork-id" });
+    mocks.getState.mockRejectedValueOnce(new Error("state read timed out"));
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
+    expect(await store.forkFromMessage("user")).toBe(true);
+    expect(thread.sessionFile).toBe("C:\\sessions\\fork.jsonl");
+    expect(thread.sessionId).toBe("fork-id");
+    expect(store.activeMessages).toHaveLength(0);
+    expect(store.activeDraft).toBe("Prompt");
+  });
+
+  it("ignores a pre-fork state response from the same Pi generation", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\original.jsonl";
+    let finish!: (value: unknown) => void;
+    mocks.getState.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const pending = store.refreshState(thread.id);
+    thread.sessionFile = "C:\\sessions\\fork.jsonl";
+    store.sessionStateByThread[thread.id] = { sessionId: "fork", sessionFile: thread.sessionFile };
+    finish({ sessionId: "original", sessionFile: "C:\\sessions\\original.jsonl" });
+    await pending;
+    expect(store.activeSessionState?.sessionId).toBe("fork");
+  });
+
+  it("does not keep original message IDs when loading a new fork fails", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.forkSessionAt.mockResolvedValueOnce({ cancelled: false, text: "Continue" });
+    mocks.getState.mockResolvedValueOnce({ sessionId: "fork", sessionFile: "C:\\sessions\\fork.jsonl" });
+    mocks.getSessionSnapshot.mockRejectedValueOnce(new Error("snapshot failed"));
+    expect(await store.forkFromMessage("latest")).toBe(false);
+    expect(thread.sessionFile).toBe("C:\\sessions\\fork.jsonl");
+    expect(store.activeMessages.some((message) => message.entryId === "entry")).toBe(false);
+    expect(store.transcriptStateByThread[thread.id]).toBe("error");
+    expect(store.activeDraft).toBe("Continue");
+  });
+
+  it("keeps a replay draft on its original task when navigating away", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    let finish!: () => void;
+    mocks.replaySessionMessage.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
+    const pending = store.resendEditedMessage("latest", "Recover this edit");
+    await vi.waitFor(() => expect(mocks.replaySessionMessage).toHaveBeenCalled());
+    store.activeThreadId = "another-task";
+    finish();
+    expect(await pending).toBe(false);
+    expect(store.draftsByThread[thread.id]).toBe("Recover this edit");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("rejects an old initial history load after a session replacement", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.transcriptStateByThread[thread.id] = "idle";
+    let finish!: (value: unknown) => void;
+    mocks.getSessionSnapshot.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const pending = store.loadThreadTranscript(thread.id);
+    thread.sessionFile = "C:\\sessions\\fork.jsonl";
+    store.invalidateSessionReads(thread.id);
+    finish({ messages: [{ role: "user", content: "Old branch", piDeskEntryId: "old-entry" }] });
+    await pending;
+    expect(store.activeMessages.some((message) => message.entryId === "old-entry")).toBe(false);
+  });
+
+  it("never repeats a mutation with an unknown outcome, even if Pi is no longer running", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    const operation = vi.fn().mockRejectedValue(new Error("outcome-unknown: thread is not running"));
+    await expect(store.callWithSession(thread, operation)).rejects.toThrow("outcome-unknown");
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(mocks.startSession).not.toHaveBeenCalled();
+    expect(thread.started).toBe(false);
+    expect(store.transcriptStateByThread[thread.id]).toBe("error");
+  });
+
+  it("does not reload intermediate history or dispatch queued prompts during a mutation", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.sessionOperationByThread[thread.id] = "Deleting message";
+    store.pendingPromptsByThread[thread.id] = [{ id: "queued", text: "Keep queued", images: [], createdAt: "" }];
+    await store.reloadSessionTranscript(thread);
+    await store.dispatchNextPendingPrompt(thread.id);
+    expect(mocks.getSessionSnapshot).not.toHaveBeenCalled();
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.pendingPromptsByThread[thread.id]).toHaveLength(1);
+  });
+
   it("replays the latest user message in the existing session", async () => {
     mocks.listSessions.mockResolvedValueOnce([{
       id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
@@ -2985,6 +3234,23 @@ describe("app store", () => {
     });
     expect(store.activeMessages.at(-1)?.text).toBe("Inspect the updated runtime");
     expect(store.activeDraft).toBe("");
+  });
+
+  it("reports a failed resend after rewind and keeps the edited draft for recovery", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.replaySessionMessage.mockResolvedValueOnce({});
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
+    mocks.sendPrompt.mockRejectedValueOnce(new Error("send failed"));
+    expect(await store.resendEditedMessage("latest", "Continue again")).toBe(false);
+    expect(store.activeDraft).toBe("Continue again");
+    expect(thread.error).toBe("send failed");
+    expect(store.activeMessages.some((message) => message.error === "send failed")).toBe(true);
+    expect(mocks.forkSessionAt).not.toHaveBeenCalled();
   });
 
   it("forks after an assistant entry and keeps the composer empty", async () => {
@@ -3087,5 +3353,91 @@ describe("app store", () => {
     expect(mocks.deleteSession).not.toHaveBeenCalled();
     expect(store.threads).toHaveLength(1);
     expect(store.deleteSessionError).toBe("process busy");
+  });
+
+  it("runs a due one-time task in the background and keeps the scheduled-task page open", async () => {
+    const store = useAppStore();
+    store.$patch({
+      catalogReady: true,
+      activePage: "scheduledTasks",
+      workspaces: [{ id: "workspace-1", name: "repo", path: "D:\\work\\repo", trust: "approve" }],
+      scheduledTasks: [{
+        id: "schedule-1",
+        name: "Dependency review",
+        prompt: "Review dependency updates.",
+        workspaceId: "workspace-1",
+        modelProvider: "openai",
+        modelId: "gpt-5.6",
+        modelName: "GPT 5.6",
+        thinkingLevel: "medium",
+        frequency: "once",
+        runAt: "2026-09-03T01:00:00.000Z",
+        enabled: true,
+        nextRunAt: "2026-09-03T01:00:00.000Z",
+        createdAt: "2026-09-02T01:00:00.000Z",
+        updatedAt: "2026-09-02T01:00:00.000Z",
+      }],
+    });
+    mocks.getState
+      .mockResolvedValueOnce({ sessionId: "session-1", model: { provider: "openai", id: "gpt-5.6", name: "GPT 5.6" }, isStreaming: false })
+      .mockResolvedValueOnce({ sessionId: "session-1", model: { provider: "openai", id: "gpt-5.6", name: "GPT 5.6" }, thinkingLevel: "medium", isStreaming: false });
+
+    await store.checkScheduledTasks(new Date("2026-09-03T02:00:00.000Z"));
+
+    expect(mocks.setModel).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", modelId: "gpt-5.6" }));
+    expect(mocks.setThinkingLevel).toHaveBeenCalledWith(expect.objectContaining({ level: "medium" }));
+    expect(mocks.setModel.mock.invocationCallOrder[0]).toBeLessThan(mocks.setThinkingLevel.mock.invocationCallOrder[0]);
+    expect(mocks.setThinkingLevel.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendPrompt.mock.invocationCallOrder[0]);
+    expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "Review dependency updates." }));
+    expect(store.threads[0].title).toBe("Dependency review");
+    expect(store.activePage).toBe("scheduledTasks");
+    expect(store.scheduledTasks[0]).toMatchObject({ enabled: false, lastStatus: "started", nextRunAt: undefined });
+  });
+
+  it("persists scheduled tasks with desktop state", async () => {
+    const store = useAppStore();
+    store.catalogReady = true;
+    store.workspaces = [{ id: "workspace-1", name: "repo", path: "D:\\work\\repo", trust: "approve" }];
+    store.configuredModels = [{ provider: "openai", id: "gpt-5.6", name: "GPT 5.6" }];
+    store.saveScheduledTask({
+      name: "Daily review",
+      prompt: "Review open changes.",
+      workspaceId: "workspace-1",
+      modelProvider: "openai",
+      modelId: "gpt-5.6",
+      modelName: "GPT 5.6",
+      thinkingLevel: "high",
+      frequency: "daily",
+      time: "09:00",
+      weekday: 1,
+      runAt: "",
+    });
+
+    await store.persistDesktopState();
+
+    expect(mocks.saveDesktopState).toHaveBeenCalledWith(expect.objectContaining({
+      scheduledTasks: [expect.objectContaining({ name: "Daily review", frequency: "daily", modelProvider: "openai", modelId: "gpt-5.6", thinkingLevel: "high" })],
+    }));
+  });
+
+  it("does not send a scheduled prompt when the saved thinking level is unavailable", async () => {
+    const store = useAppStore();
+    store.$patch({
+      workspaces: [{ id: "workspace-1", name: "repo", path: "D:\\work\\repo", trust: "approve" }],
+      scheduledTasks: [{
+        id: "schedule-unsupported", name: "Deep review", prompt: "Review deeply.", workspaceId: "workspace-1",
+        modelProvider: "openai", modelId: "gpt-5.6", thinkingLevel: "max", frequency: "daily", time: "09:00",
+        enabled: true, nextRunAt: "2026-09-04T01:00:00.000Z", createdAt: "2026-09-03T01:00:00.000Z", updatedAt: "2026-09-03T01:00:00.000Z",
+      }],
+    });
+    mocks.getAvailableThinkingLevels.mockResolvedValueOnce({ levels: ["off", "medium"] });
+    mocks.getState.mockResolvedValueOnce({ model: { provider: "openai", id: "gpt-5.6" }, isStreaming: false });
+
+    await store.runScheduledTask("schedule-unsupported");
+
+    expect(mocks.setThinkingLevel).not.toHaveBeenCalled();
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(store.scheduledTasks[0]).toMatchObject({ lastStatus: "failed" });
+    expect(store.scheduledTasks[0].lastError).toContain("max");
   });
 });

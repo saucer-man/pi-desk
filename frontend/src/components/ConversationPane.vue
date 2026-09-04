@@ -13,6 +13,8 @@ import { tr } from "../i18n";
 
 const appStore = useAppStore();
 const timeline = ref<HTMLElement>();
+const composerBar = ref<ComponentPublicInstance>();
+const composerHeight = ref(0);
 const searchInput = ref<HTMLInputElement>();
 const searchOpen = ref(false);
 const searchQuery = ref("");
@@ -227,6 +229,32 @@ function onDocumentKeydown(event: KeyboardEvent) {
   }
 }
 
+watch(() => composerBar.value?.$el, (element, _previous, onCleanup) => {
+  if (!(element instanceof HTMLElement)) {
+    composerHeight.value = 0;
+    return;
+  }
+  const measureComposer = () => {
+    const height = Math.ceil(element.getBoundingClientRect().height);
+    if (height === composerHeight.value) return;
+    composerHeight.value = height;
+    void nextTick().then(() => {
+      if (composerBar.value?.$el === element && stickToBottom.value) scrollToBottom();
+    });
+  };
+  let resizeFrame = 0;
+  const observer = new ResizeObserver(() => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(measureComposer);
+  });
+  observer.observe(element);
+  measureComposer();
+  onCleanup(() => {
+    observer.disconnect();
+    cancelAnimationFrame(resizeFrame);
+  });
+}, { flush: "post" });
+
 watch(() => appStore.activeThreadId, async () => {
   activeNavigationId.value = navigationItems.value[0]?.messageId ?? "";
   stickToBottom.value = true;
@@ -262,7 +290,6 @@ watch(searchQuery, () => {
 
 watch(searchMatches, (matches) => {
   activeSearchMatch.value = matches.length ? Math.min(activeSearchMatch.value, matches.length - 1) : 0;
-  if (searchOpen.value) void nextTick().then(scrollToSearchMatch);
 }, { flush: "post" });
 
 onMounted(async () => {
@@ -277,7 +304,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="conversation-pane relative grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-[var(--bg-workspace)]" :class="ui.root" :aria-label="tr('conversation.label')">
+  <section class="conversation-pane relative grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-[var(--bg-workspace)]" :class="ui.root" :style="{ '--composer-overlay-reserve': `${composerHeight}px` }" :aria-label="tr('conversation.label')">
     <div v-if="searchOpen" class="conversation-search absolute right-4 top-3 z-20 w-[min(360px,calc(100%_-_32px))] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-raised)] shadow-lg" role="search" :aria-label="tr('conversation.search')">
       <div class="conversation-search-main flex min-h-10 items-center gap-2 px-2 text-[var(--text-muted)]">
         <Search :size="17" aria-hidden="true" />
@@ -390,6 +417,6 @@ onBeforeUnmount(() => {
       </div>
       </div>
     </div>
-    <ComposerBar v-if="appStore.activeThread" />
+    <ComposerBar v-if="appStore.activeThread" ref="composerBar" />
   </section>
 </template>

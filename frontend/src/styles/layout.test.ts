@@ -66,6 +66,12 @@ describe("conversation scroll rail", () => {
 });
 
 describe("message editor theme colors", () => {
+  it("restores Markdown list markers after the global CSS reset", async () => {
+    const layout = await layoutText();
+    expect(firstRuleBody(layout, ".markdown-body ol")).toMatch(/list-style-type:\s*decimal/);
+    expect(firstRuleBody(layout, ".markdown-body ul")).toMatch(/list-style-type:\s*disc/);
+  });
+
   it("uses defined foreground and background tokens in light and dark themes", async () => {
     const layout = await layoutText();
     expect(firstRuleBody(layout, ".message-edit textarea")).toMatch(/background:\s*var\(--bg-raised\)/);
@@ -137,6 +143,8 @@ describe("composer todo and queue stack", () => {
     expect(queue).toMatch(/border-bottom:\s*0/);
     expect(queue).toMatch(/box-shadow:\s*none/);
     expect(firstRuleBody(layout, ".retry-banner")).toMatch(/margin-bottom:\s*8px/);
+    expect(ruleBodies(layout, ".retry-banner").find((body) => body.includes("align-items"))).toMatch(/align-items:\s*center/);
+    expect(firstRuleBody(layout, ".retry-banner button")).toMatch(/align-self:\s*center/);
     expect(firstRuleBody(layout, ".extension-widget")).toMatch(/margin-bottom:\s*8px/);
   });
 

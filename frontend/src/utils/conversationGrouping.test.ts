@@ -30,6 +30,23 @@ describe("groupConversationTurns", () => {
     }]);
   });
 
+  it.each(["think", "thinking"])("classifies %s tags in intermediate assistant messages as reasoning", (tag) => {
+    const grouped = groupConversationTurns([
+      message({ id: "user", role: "user", text: "Inspect", timestampMs: 1000 }),
+      message({
+        id: "work", role: "assistant",
+        text: `<${tag}>Inspecting files</${tag}>Progress update`, timestampMs: 1500,
+      }),
+      message({ id: "final", role: "assistant", text: "Done", timestampMs: 2000 }),
+    ]);
+
+    expect(grouped[1]).toMatchObject({ text: "Done", thinkingCount: 1 });
+    expect(grouped[1].executionSteps).toEqual([
+      { id: "work-tagged-thinking", kind: "thinking", text: "Inspecting files", active: false },
+      { id: "work-message", kind: "message", text: "Progress update" },
+    ]);
+  });
+
   it("drops a recovered retry that produced no standalone content", () => {
     const grouped = groupConversationTurns([
       message({ id: "user", role: "user", text: "Retry", timestampMs: 1000 }),

@@ -104,6 +104,7 @@ export interface DesktopPreferences {
 export interface DesktopState {
     "activeThreadId"?: string;
     "threads": DesktopThreadState[] | null;
+    "scheduledTasks"?: ScheduledTaskState[] | null;
     "preferences"?: DesktopPreferences | null;
 }
 
@@ -663,6 +664,29 @@ export enum RuntimeState {
     RuntimeMissing = "missing",
     RuntimeError = "error",
 };
+
+export interface ScheduledTaskState {
+    "id": string;
+    "name": string;
+    "prompt": string;
+    "workspaceId": string;
+    "modelProvider"?: string;
+    "modelId"?: string;
+    "modelName"?: string;
+    "thinkingLevel"?: string;
+    "frequency": string;
+    "time"?: string;
+    "weekday"?: number;
+    "runAt"?: string;
+    "enabled": boolean;
+    "nextRunAt"?: string;
+    "lastRunAt"?: string;
+    "lastThreadId"?: string;
+    "lastStatus"?: string;
+    "lastError"?: string;
+    "createdAt": string;
+    "updatedAt": string;
+}
 
 /**
  * SelectableModel is the credential-free subset exposed outside model management.

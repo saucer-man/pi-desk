@@ -8,7 +8,7 @@
   --sidebar-collapsed-width: 56px;
   --inspector-width: 320px;
   --conversation-content-width: 960px;
-  --composer-overlay-reserve: 164px;
+  --composer-overlay-reserve: 0px;
   --topbar-height: 52px;
   --app-menu-height: 0px;
   --window-controls-width: 138px;
@@ -612,6 +612,10 @@
   padding-right: calc(var(--inspector-width) + 18px + var(--conversation-inline-space));
 }
 
+.composer-stack-panel {
+  pointer-events: auto;
+}
+
 .composer,
 .retry-banner,
 .extension-widget,
@@ -990,7 +994,7 @@
 
   .timeline {
     width: 100%;
-    padding: 26px 16px 18px;
+    padding: 26px 16px calc(var(--composer-overlay-reserve) + 18px);
   }
 
   .message-content p,

@@ -113,7 +113,7 @@ func (service *ModelConfigService) fetchModels(ctx context.Context, endpoint *ur
 	return models, nil
 }
 
-func (service *ModelConfigService) TestModel(request domain.TestModelConfigRequest) (domain.ModelTestResult, error) {
+func (service *ModelConfigService) TestModel(parent context.Context, request domain.TestModelConfigRequest) (domain.ModelTestResult, error) {
 	request.BaseURL = strings.TrimSpace(request.BaseURL)
 	request.API = strings.TrimSpace(request.API)
 	request.APIKey = strings.TrimSpace(request.APIKey)
@@ -141,7 +141,7 @@ func (service *ModelConfigService) TestModel(request domain.TestModelConfigReque
 		return domain.ModelTestResult{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
+	ctx, cancel := context.WithTimeout(parent, modelProbeTimeout)
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
 	if err != nil {

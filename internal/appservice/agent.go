@@ -75,12 +75,14 @@ type AgentService struct {
 	remoteLifecycle *RemoteWorkspaceLifecycle
 	anchorRoot      string
 
-	mu             sync.RWMutex
-	mutationMu     sync.Mutex
-	maintenanceMu  sync.RWMutex
-	runtime        agentRuntime
-	remoteSessions map[string]remoteAgentSession
-	remoteThreads  map[string]string
+	mu sync.RWMutex
+	// ponytail: one non-blocking history gate; use per-thread gates if cross-task contention matters.
+	mutationMu        sync.RWMutex
+	historyStopFailed bool // Protected by mutationMu; fail closed until the host restarts.
+	maintenanceMu     sync.RWMutex
+	runtime           agentRuntime
+	remoteSessions    map[string]remoteAgentSession
+	remoteThreads     map[string]string
 }
 
 func NewAgentService(locator *piruntime.Locator, index *sessionindex.Index, remoteLifecycle *RemoteWorkspaceLifecycle, anchorRoot string) *AgentService {
@@ -123,6 +125,13 @@ func (service *AgentService) ServiceShutdown() error {
 }
 
 func (service *AgentService) StartSession(request domain.StartSessionRequest) (domain.LiveSession, error) {
+	if !service.mutationMu.TryRLock() {
+		return domain.LiveSession{}, errors.New("session history operation is in progress")
+	}
+	defer service.mutationMu.RUnlock()
+	if service.historyStopFailed {
+		return domain.LiveSession{}, errors.New("Pi could not be stopped safely; restart Pi Desk before continuing")
+	}
 	service.maintenanceMu.RLock()
 	defer service.maintenanceMu.RUnlock()
 	runtime, err := service.getRuntime()
@@ -577,54 +586,50 @@ func (service *AgentService) DeleteSessionMessage(request domain.SessionMessageR
 }
 
 func (service *AgentService) ForkSessionAt(request domain.SessionMessageRequest) (domain.CommandResult, error) {
-	service.mutationMu.Lock()
+	if !service.mutationMu.TryLock() {
+		return domain.CommandResult{}, errors.New("wait for the current Pi command to finish")
+	}
 	defer service.mutationMu.Unlock()
+	if service.historyStopFailed {
+		return domain.CommandResult{}, errors.New("Pi could not be stopped safely; restart Pi Desk before continuing")
+	}
 	path, entryID, err := service.editableSession(request)
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
-	forked := ""
-	selectedText := ""
-	if request.Before {
-		forkedResult, forkErr := service.index.ForkBefore(path, entryID)
-		if forkErr != nil {
-			return domain.CommandResult{}, forkErr
-		}
-		forked, selectedText = forkedResult.Path, forkedResult.Text
-	} else {
-		forked, err = service.index.ForkAt(path, entryID)
-		if err != nil {
-			return domain.CommandResult{}, err
-		}
-	}
-	result, err := service.callWithTimeout(request.ThreadID, map[string]any{"type": "switch_session", "sessionPath": forked}, longCommandTimeout)
+	forked, err := service.index.ForkMessage(path, entryID, request.Before)
 	if err != nil {
-		_ = os.Remove(forked)
 		return domain.CommandResult{}, err
 	}
-	if request.Before {
-		var payload map[string]any
-		if result.DataJSON == "" {
-			payload = make(map[string]any)
-		} else if err := json.Unmarshal([]byte(result.DataJSON), &payload); err != nil {
-			return domain.CommandResult{}, fmt.Errorf("decode Pi session switch response: %w", err)
-		}
-		if payload == nil {
-			payload = make(map[string]any)
-		}
-		payload["text"] = selectedText
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return domain.CommandResult{}, fmt.Errorf("encode fork response: %w", err)
-		}
-		result.DataJSON = string(data)
+	result, cancelled, err := service.reloadMutatedSession(request.ThreadID, forked.Path)
+	if err != nil {
+		return domain.CommandResult{}, err
 	}
+	if cancelled {
+		if err := os.Remove(forked.Path); err != nil {
+			return domain.CommandResult{}, fmt.Errorf("remove cancelled fork: %w", err)
+		}
+		return domain.CommandResult{}, errors.New("Pi cancelled the session switch; fork was not created")
+	}
+	data, err := json.Marshal(map[string]any{
+		"cancelled": false, "sessionFile": forked.Path, "sessionId": forked.SessionID,
+		"text": forked.Text, "images": forked.Images,
+	})
+	if err != nil {
+		return domain.CommandResult{}, fmt.Errorf("encode fork response: %w", err)
+	}
+	result.DataJSON = string(data)
 	return result, nil
 }
 
 func (service *AgentService) mutateSessionMessage(request domain.SessionMessageRequest, mutate func(string, string) (sessionindex.Mutation, error)) (domain.CommandResult, error) {
-	service.mutationMu.Lock()
+	if !service.mutationMu.TryLock() {
+		return domain.CommandResult{}, errors.New("wait for the current Pi command to finish")
+	}
 	defer service.mutationMu.Unlock()
+	if service.historyStopFailed {
+		return domain.CommandResult{}, errors.New("Pi could not be stopped safely; restart Pi Desk before continuing")
+	}
 	path, entryID, err := service.editableSession(request)
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -633,15 +638,40 @@ func (service *AgentService) mutateSessionMessage(request domain.SessionMessageR
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
-	result, err := service.callWithTimeout(request.ThreadID, map[string]any{"type": "switch_session", "sessionPath": path}, longCommandTimeout)
-	if err == nil {
-		return result, nil
+	result, cancelled, err := service.reloadMutatedSession(request.ThreadID, path)
+	if err != nil || !cancelled {
+		return result, err
 	}
 	if restoreErr := service.index.RestoreMutation(mutation); restoreErr != nil {
-		return domain.CommandResult{}, fmt.Errorf("reload edited session: %v; restore backup: %w", err, restoreErr)
+		return domain.CommandResult{}, service.stopUncertainSession(request.ThreadID, restoreErr)
 	}
-	_, _ = service.callWithTimeout(request.ThreadID, map[string]any{"type": "switch_session", "sessionPath": path}, longCommandTimeout)
-	return domain.CommandResult{}, fmt.Errorf("reload edited session: %w", err)
+	return domain.CommandResult{}, errors.New("Pi cancelled the session switch; history was restored")
+}
+
+// Caller owns the history gate. A lost response is not permission to undo disk writes:
+// Pi may already be using the new leaf. Stop it and keep both the file and backup.
+func (service *AgentService) reloadMutatedSession(threadID, path string) (domain.CommandResult, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), longCommandTimeout)
+	defer cancel()
+	result, err := service.callRuntime(ctx, threadID, map[string]any{"type": "switch_session", "sessionPath": path})
+	var response struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(result.DataJSON), &response)
+	}
+	if err != nil {
+		return domain.CommandResult{}, false, service.stopUncertainSession(threadID, err)
+	}
+	return result, response.Cancelled, nil
+}
+
+func (service *AgentService) stopUncertainSession(threadID string, cause error) error {
+	if err := service.stopThreadIfRunning(threadID); err != nil {
+		service.historyStopFailed = true
+		return fmt.Errorf("outcome-unknown: session files retained; stop Pi failed: %v; session switch: %w", err, cause)
+	}
+	return fmt.Errorf("outcome-unknown: Pi stopped; session files and backups retained; reload history before continuing: %w", cause)
 }
 
 func (service *AgentService) editableSession(request domain.SessionMessageRequest) (string, string, error) {
@@ -661,19 +691,24 @@ func (service *AgentService) editableSession(request domain.SessionMessageReques
 		return "", "", err
 	}
 	var current struct {
-		SessionFile  string `json:"sessionFile"`
-		IsStreaming  bool   `json:"isStreaming"`
-		IsCompacting bool   `json:"isCompacting"`
+		SessionFile         string `json:"sessionFile"`
+		IsStreaming         bool   `json:"isStreaming"`
+		IsCompacting        bool   `json:"isCompacting"`
+		PendingMessageCount int    `json:"pendingMessageCount"`
 	}
 	if err := json.Unmarshal([]byte(state.DataJSON), &current); err != nil {
 		return "", "", errors.New("Pi returned an invalid session state")
 	}
-	if current.IsStreaming || current.IsCompacting {
+	if current.IsStreaming || current.IsCompacting || current.PendingMessageCount > 0 {
 		return "", "", errors.New("wait for the current Pi turn to finish")
 	}
 	currentPath, err := service.index.ValidatePath(current.SessionFile)
 	if err != nil || !sameSessionPath(currentPath, path) {
 		return "", "", errors.New("message does not belong to the active Pi session")
+	}
+	// get_state does not expose retry waits. Pi's abort drains them and waits for idle.
+	if _, err := service.Abort(domain.ThreadRequest{ThreadID: request.ThreadID}); err != nil {
+		return "", "", fmt.Errorf("settle Pi before changing history: %w", err)
 	}
 	return path, entryID, nil
 }
@@ -793,6 +828,22 @@ func (service *AgentService) callWithTimeout(threadID string, command map[string
 }
 
 func (service *AgentService) callWithContext(ctx context.Context, threadID string, command map[string]any) (domain.CommandResult, error) {
+	// Read/abort commands remain available while history is changing. All other
+	// RPC commands may write session entries or cause the runtime to append them.
+	kind, _ := command["type"].(string)
+	if !strings.HasPrefix(kind, "get_") && kind != "abort" && kind != "abort_retry" && kind != "abort_bash" {
+		if !service.mutationMu.TryRLock() {
+			return domain.CommandResult{}, errors.New("session history operation is in progress")
+		}
+		defer service.mutationMu.RUnlock()
+		if service.historyStopFailed {
+			return domain.CommandResult{}, errors.New("Pi could not be stopped safely; restart Pi Desk before continuing")
+		}
+	}
+	return service.callRuntime(ctx, threadID, command)
+}
+
+func (service *AgentService) callRuntime(ctx context.Context, threadID string, command map[string]any) (domain.CommandResult, error) {
 	runtime, err := service.getRuntime()
 	if err != nil {
 		return domain.CommandResult{}, err

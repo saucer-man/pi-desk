@@ -75,6 +75,10 @@ describe("AppSidebar", () => {
     expect(newTask.classes()).not.toContain("bg-[var(--text)]");
     await newTask.trigger("click");
     expect(store.newTaskOpen).toBe(true);
+    const scheduledTasks = wrapper.get('button[aria-label="Scheduled tasks"]');
+    await scheduledTasks.trigger("click");
+    expect(store.activePage).toBe("scheduledTasks");
+    expect(scheduledTasks.attributes("aria-pressed")).toBe("true");
     expect(wrapper.get(".runtime-badge").text()).toContain("Current Pi version 0.83.0");
   });
 
@@ -341,7 +345,7 @@ describe("AppSidebar", () => {
     });
     const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
 
-    await wrapper.get('button[aria-pressed="false"]').trigger("click");
+    await wrapper.get('button[aria-label="Open task search"]').trigger("click");
     const search = wrapper.get('input[type="search"]');
     expect(search.classes()).toContain("h-full");
     expect(search.classes()).not.toContain("min-h-11");

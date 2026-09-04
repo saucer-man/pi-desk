@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
+import { CalendarClock, Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { tr } from "../i18n";
@@ -81,20 +81,21 @@ onBeforeUnmount(() => {
 
     <div class="topbar-task flex min-w-0 items-center justify-between gap-4">
       <div class="topbar-title-group flex min-w-0 items-center gap-2.5">
-        <strong class="min-w-0 max-w-[min(42vw,540px)] truncate font-display text-[calc(15px+var(--font-size-delta))] font-semibold tracking-[-0.01em] text-[var(--text)]" :title="appStore.activeThread?.title || 'Pi Desk'">{{ appStore.activeThread?.title || "Pi Desk" }}</strong>
-        <span v-if="appStore.activeExtensionTitle" class="extension-window-title min-w-0 truncate text-xs text-[var(--text-secondary)]" :title="appStore.activeExtensionTitle">{{ appStore.activeExtensionTitle }}</span>
-        <span v-if="appStore.activeThread" class="workspace-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] shadow-sm" :title="appStore.activeThread.workspacePath">
+        <CalendarClock v-if="appStore.activePage === 'scheduledTasks'" :size="17" class="text-[var(--text-muted)]" />
+        <strong class="min-w-0 max-w-[min(42vw,540px)] truncate font-display text-[calc(15px+var(--font-size-delta))] font-semibold tracking-[-0.01em] text-[var(--text)]" :title="appStore.activePage === 'scheduledTasks' ? tr('scheduledTasks.title') : appStore.activeThread?.title || 'Pi Desk'">{{ appStore.activePage === "scheduledTasks" ? tr("scheduledTasks.title") : appStore.activeThread?.title || "Pi Desk" }}</strong>
+        <span v-if="appStore.activePage === 'task' && appStore.activeExtensionTitle" class="extension-window-title min-w-0 truncate text-xs text-[var(--text-secondary)]" :title="appStore.activeExtensionTitle">{{ appStore.activeExtensionTitle }}</span>
+        <span v-if="appStore.activePage === 'task' && appStore.activeThread" class="workspace-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] shadow-sm" :title="appStore.activeThread.workspacePath">
           <FolderGit2 :size="14" />
           <span>{{ appStore.activeThread.workspace }}</span>
         </span>
-        <span v-if="activeBranch" class="branch-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 font-mono text-[calc(11px+var(--font-size-delta))] text-[var(--text-secondary)] shadow-sm" :title="activeBranch">
+        <span v-if="appStore.activePage === 'task' && activeBranch" class="branch-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 font-mono text-[calc(11px+var(--font-size-delta))] text-[var(--text-secondary)] shadow-sm" :title="activeBranch">
           <GitBranch :size="14" />
           <span>{{ activeBranch }}</span>
         </span>
       </div>
 
       <div class="topbar-actions flex shrink-0 items-center gap-1">
-        <div v-if="appStore.activeThread && !appStore.workspaceApplicationsLoading && activeWorkspaceApplication" class="menu-anchor topbar-menu-anchor workspace-application-anchor relative">
+        <div v-if="appStore.activePage === 'task' && appStore.activeThread && !appStore.workspaceApplicationsLoading && activeWorkspaceApplication" class="menu-anchor topbar-menu-anchor workspace-application-anchor relative">
           <div class="workspace-application-split inline-flex h-8 items-stretch overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-sm">
             <button
               class="icon-button workspace-application-primary inline-grid size-[30px] place-items-center rounded-none border-0 bg-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -139,6 +140,7 @@ onBeforeUnmount(() => {
           <p v-else-if="appStore.workspaceApplicationError" class="workspace-application-error absolute right-0 top-[calc(100%+8px)] z-50 m-0 w-64 rounded-lg border border-[color-mix(in_srgb,var(--red)_45%,var(--border))] bg-[var(--bg-menu)] px-3 py-2 text-xs leading-relaxed text-[var(--red)] shadow-xl" role="alert">{{ appStore.workspaceApplicationError }}</p>
         </div>
         <button
+          v-if="appStore.activePage === 'task'"
           class="icon-button inspector-toggle inline-grid size-8 shrink-0 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--text)] max-[520px]:hidden"
           type="button"
           :title="appStore.inspectorOpen ? tr('topbar.closeInspector') : tr('topbar.openInspector')"

@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConversationMessage from "./ConversationMessage.vue";
 import { useAppStore } from "../stores/app";
+import { groupConversationTurns } from "../utils/conversationGrouping";
 
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
@@ -11,6 +12,21 @@ vi.mock("../services/repository", () => ({ repositoryService: {} }));
 
 describe("ConversationMessage", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it("allows deleting and forking an image-only persisted message", async () => {
+    const store = useAppStore();
+    store.forkFromMessage = vi.fn().mockResolvedValue(true);
+    const wrapper = mount(ConversationMessage, { props: { message: {
+      id: "photo", entryId: "photo-entry", role: "user", text: "", thinking: "", timestamp: "", streaming: false, tools: [],
+      images: [{ id: "image", name: "Image", data: "aW1hZ2U=", mimeType: "image/png", previewUrl: "data:image/png;base64,aW1hZ2U=" }],
+    } } });
+    const fork = wrapper.findAll("button.message-action").find((button) => button.attributes("title")?.toLowerCase().includes("fork"))!;
+    const remove = wrapper.findAll("button.message-action").find((button) => button.attributes("title")?.toLowerCase().includes("delete"))!;
+    expect(remove.attributes("disabled")).toBeUndefined();
+    await fork.trigger("click");
+    expect(store.forkFromMessage).toHaveBeenCalledWith("photo");
+    wrapper.unmount();
+  });
 
   it("shows time above the response and collapses completed execution", async () => {
     const pinia = createPinia();
@@ -45,13 +61,13 @@ describe("ConversationMessage", () => {
     expect(details.get(".thinking-block .thinking-icon").attributes("aria-hidden")).toBe("true");
   });
 
-  it("renders GPT think tags through the existing reasoning UI", async () => {
+  it.each(["think", "thinking"])("renders GPT %s tags through the existing reasoning UI", async (tag) => {
     const pinia = createPinia();
     const wrapper = mount(ConversationMessage, {
       props: {
         message: {
           id: "assistant-tagged-thinking", role: "assistant",
-          text: "<think>Inspect the existing UI</think>Final answer", thinking: "",
+          text: `<${tag}>Inspect the existing UI</${tag}>Final answer`, thinking: "",
           timestamp: "10:00", streaming: false, tools: [],
         },
       },
@@ -59,16 +75,48 @@ describe("ConversationMessage", () => {
     });
 
     expect(wrapper.get(".markdown-body").text()).toBe("Final answer");
-    expect(wrapper.text()).not.toContain("<think>");
+    expect(wrapper.text()).not.toContain(`<${tag}>`);
     expect(wrapper.get(".execution-process").attributes("open")).toBeUndefined();
     await wrapper.get(".execution-process > summary").trigger("click");
     expect(wrapper.get(".thinking-block pre").text()).toBe("Inspect the existing UI");
 
     await wrapper.setProps({ message: {
-      ...wrapper.props("message"), text: "<think>Still inspecting", streaming: true,
+      ...wrapper.props("message"), text: `<${tag}>Still inspecting`, streaming: true,
     } });
     expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
     expect(wrapper.get(".thinking-block pre").text()).toBe("Still inspecting");
+    await wrapper.setProps({ message: {
+      ...wrapper.props("message"), text: `<${tag}>Still inspecting</${tag}>Done`, streaming: true,
+    } });
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeUndefined();
+    expect(wrapper.get(".markdown-body").text()).toBe("Done");
+  });
+
+  it("renders tagged reasoning from JSONL snapshots after merging assistant fragments", () => {
+    const store = useAppStore();
+    const thread = {
+      id: "tagged-history", title: "History", workspace: "repo", workspacePath: "D:/repo",
+      trust: "deny" as const, status: "idle" as const, started: false, generation: 0,
+    };
+    store.threads = [thread];
+    store.activeThreadId = thread.id;
+    store.applySessionSnapshot(thread, { messages: [
+      { role: "assistant", piDeskEntryId: "work", content: [
+        { type: "text", text: "<thinking>**Inspecting cleanupLogs panic and applying bounds fix****Checking logcleanup source**</thinking>\n\n" },
+        { type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
+      ] },
+      { role: "assistant", piDeskEntryId: "final", content: [
+        { type: "text", text: "<think>**Planning changes****Checking results**</think>\n\nDone" },
+      ] },
+    ], messageCount: 2 });
+
+    const [message] = groupConversationTurns(store.activeMessages);
+    const wrapper = mount(ConversationMessage, { props: { message }, global: { stubs: { ToolCallPanel: true } } });
+    expect(wrapper.findAll(".thinking-block")).toHaveLength(2);
+    expect(wrapper.get(".execution-process > summary").text()).toContain("2 thoughts");
+    expect(wrapper.findAll(".markdown-body").map(body => body.text()).filter(Boolean)).toEqual(["Done"]);
+    expect(wrapper.text()).not.toContain("<think>");
+    wrapper.unmount();
   });
 
   it("renders Todo, reasoning, and other tools as peers in one execution grid", () => {
@@ -390,6 +438,27 @@ describe("ConversationMessage", () => {
     expect(wrapper.find("textarea").exists()).toBe(false);
   });
 
+  it("shows replay errors beside the retained editor and allows retry without changing text", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    const message = { id: "latest", entryId: "entry", role: "user" as const, text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] };
+    store.$patch({ threads: [{ id: "replay", title: "Replay", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: true, generation: 1 }], activeThreadId: "replay", messagesByThread: { replay: [message] } });
+    store.resendEditedMessage = vi.fn().mockImplementationOnce(async () => {
+      store.activeThread!.error = "session transcript contains malformed JSON at line 1028";
+      return false;
+    }).mockResolvedValueOnce(true);
+    const wrapper = mount(ConversationMessage, { props: { message }, global: { plugins: [pinia] } });
+    await wrapper.get('button[title="Edit message"]').trigger("click");
+    await wrapper.get('button[title="Send edited message"]').trigger("click");
+    expect(wrapper.get('[role="alert"]').text()).toContain("line 1028");
+    expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Continue");
+    await wrapper.get('button[title="Send edited message"]').trigger("click");
+    expect(store.resendEditedMessage).toHaveBeenLastCalledWith("latest", "Continue");
+    expect(wrapper.find("textarea").exists()).toBe(false);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
   it("renders retry, continued retry, recovery, and terminal failure on an assistant fragment", async () => {
     const pinia = createPinia();
     const baseMessage = {
@@ -477,6 +546,20 @@ describe("ConversationMessage", () => {
       expect(wrapper.get(".message-run-notice").text()).toContain("Retrying in 4s");
       await vi.advanceTimersByTimeAsync(1100);
       expect(wrapper.get(".message-run-notice").text()).toContain("Retrying in 3s");
+      await vi.advanceTimersByTimeAsync(2900);
+      expect(wrapper.get(".message-run-notice").text()).toContain("waiting for the model response (2/3)");
+      expect(wrapper.get(".message-run-notice").text()).not.toContain("Retrying in 0s");
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(wrapper.get(".message-run-notice").text()).toContain("waiting for the model response (2/3)");
+      await wrapper.setProps({ message: {
+        ...wrapper.props("message"),
+        runNotice: { status: "retrying", attempt: 3, maxAttempts: 3, delayMs: 8000, retryAt: Date.now() + 8000 },
+      } });
+      expect(wrapper.get(".message-run-notice").text()).toContain("Retrying in 8s (3/3)");
+      await wrapper.setProps({ message: {
+        ...wrapper.props("message"), runNotice: { status: "recovered" },
+      } });
+      expect(wrapper.find(".message-run-notice").exists()).toBe(false);
       wrapper.unmount();
     } finally {
       vi.useRealTimers();

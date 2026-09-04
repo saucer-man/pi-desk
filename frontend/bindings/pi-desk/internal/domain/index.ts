@@ -95,6 +95,7 @@ export type {
     RepositorySnapshot,
     RestoreOrphanSessionRequest,
     ResumeRemoteWorkspaceRequest,
+    ScheduledTaskState,
     SelectableModel,
     SessionBranchEntry,
     SessionBranches,

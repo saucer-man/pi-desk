@@ -13,7 +13,7 @@ import MarkdownEditor from "./MarkdownEditor.vue";
 import PiDeskTodoPanel from "./PiDeskTodoPanel.vue";
 
 const appStore = useAppStore();
-const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void }>();
+const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void; handlesEnter(): boolean; captureTextInsertion(): (text: string, separate?: boolean) => boolean }>();
 const commandMenu = ref<HTMLElement>();
 const commandButton = ref<HTMLElement>();
 const composer = ref<HTMLElement>();
@@ -34,6 +34,8 @@ const mentionDismissed = ref(false);
 const attachmentError = ref("");
 const previewImage = ref<PreparedImage>();
 const processingImages = ref(false);
+const pastingFiles = ref(false);
+let pasteEpoch = 0;
 const dragActive = ref(false);
 const editingPromptId = ref("");
 const editingPromptText = ref("");
@@ -63,10 +65,10 @@ const matchingFiles = computed(() => {
   return rankFuzzy(appStore.activeRepository?.files ?? [], query, (file) => [file.name, file.path]).slice(0, 8);
 });
 const mentionMenuOpen = computed(() => !commandButtonOpen.value && !modelMenuOpen.value && !accessMenuOpen.value && !mentionDismissed.value && Boolean(mentionMatch.value) && matchingFiles.value.length > 0);
-const currentModel = computed(() => appStore.activeSessionState?.model);
+const currentModel = computed(() => appStore.pendingModelByThread[appStore.activeThreadId] ?? appStore.activeSessionState?.model);
 const modelButtonLabel = computed(() => {
   const label = modelLabel(currentModel.value);
-  const level = appStore.activeSessionState?.thinkingLevel;
+  const level = appStore.activeModelPending ? undefined : appStore.activeSessionState?.thinkingLevel;
   return level ? `${label} · ${level}` : label;
 });
 const sessionStats = computed(() => appStore.activeSessionStats);
@@ -164,7 +166,14 @@ watch(() => appStore.activeThreadId, () => {
   previewImage.value = undefined;
 });
 
+watch(() => [appStore.activeThreadId, appStore.activeThread?.workspaceId, appStore.activeThread?.workspacePath, appStore.activeThread?.trust], () => {
+  pasteEpoch++;
+  pastingFiles.value = false;
+  attachmentError.value = "";
+}, { flush: "sync" });
+
 function submit() {
+  if (appStore.activeSessionOperation || pastingFiles.value || processingImages.value) return;
   if (!draft.value.trim() && appStore.activeAttachments.length === 0) return;
   if (bashDraft.value) {
     void appStore.sendActiveBash();
@@ -199,25 +208,60 @@ async function prepareImageFiles(source: FileList | File[], existing: PreparedIm
   return prepared;
 }
 
-async function addImageFiles(source: FileList | File[]) {
+async function addImageFiles(source: FileList | File[], current = () => true) {
   const threadId = appStore.activeThreadId;
   processingImages.value = true;
   try {
-    const prepared = await prepareImageFiles(source, appStore.activeAttachments, (message) => { attachmentError.value = message; });
-    if (appStore.activeThreadId === threadId) appStore.addActiveAttachments(prepared);
+    const prepared = await prepareImageFiles(source, appStore.activeAttachments, (message) => { if (current()) attachmentError.value = message; });
+    if (current() && appStore.activeThreadId === threadId) appStore.addActiveAttachments(prepared);
   } finally {
     processingImages.value = false;
   }
 }
 
-function onPaste(event: ClipboardEvent) {
+async function pasteClipboard(
+  event: ClipboardEvent,
+  insert: (text: string, separate?: boolean) => boolean,
+  addImages: (files: File[], current: () => boolean) => Promise<void>,
+  setError: (message: string) => void,
+  stillEditing: () => boolean = () => true,
+) {
+  // Capture before Milkdown or the browser inserts anything; Wails calls cannot
+  // synchronously decide whether Explorer supplied paths instead of text.
+  event.preventDefault();
+  event.stopPropagation();
+  const epoch = ++pasteEpoch;
+  const threadId = appStore.activeThreadId;
+  const plainText = event.clipboardData?.getData?.("text/plain") ?? "";
   const imageFiles = Array.from(event.clipboardData?.items ?? [])
     .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
-  if (!imageFiles.length) return;
-  event.preventDefault();
-  void addImageFiles(imageFiles);
+  pastingFiles.value = true;
+  setError("");
+  const current = () => epoch === pasteEpoch && appStore.activeThreadId === threadId && stillEditing();
+  try {
+    const result = await appStore.readComposerClipboard(threadId);
+    if (!current()) return;
+    if (result.references.length) {
+      if (!insert(`${result.references.join(" ")} `, true)) setError(tr("composer.pasteChanged"));
+    } else if (result.images.length || imageFiles.length) {
+      await addImages(result.images.length ? result.images : imageFiles, current);
+    } else if (plainText) {
+      if (!insert(plainText)) setError(tr("composer.pasteChanged"));
+    } else if (Array.from(event.clipboardData?.items ?? []).some((item) => item.kind === "file")) {
+      setError(tr("composer.pasteFilesUnavailable"));
+    }
+  } catch (error) {
+    if (current()) setError(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (epoch === pasteEpoch) pastingFiles.value = false;
+  }
+}
+
+function onPaste(event: ClipboardEvent) {
+  const insert = markdownEditor.value?.captureTextInsertion() ?? (() => false);
+  void pasteClipboard(event, insert, addImageFiles, (message) => { attachmentError.value = message; });
 }
 
 function onDrop(event: DragEvent) {
@@ -275,6 +319,7 @@ function onKeydown(event: KeyboardEvent) {
     }
   }
   if (event.key === "Enter" && !event.shiftKey) {
+    if (!event.repeat && markdownEditor.value?.handlesEnter()) return;
     event.preventDefault();
     event.stopPropagation();
     if (!event.repeat) submit();
@@ -356,13 +401,13 @@ function removeQueueEditImage(imageId: string) {
   editingPromptError.value = "";
 }
 
-async function addQueueEditImages(source: FileList | File[]) {
+async function addQueueEditImages(source: FileList | File[], current = () => true) {
   const promptId = editingPromptId.value;
   if (!promptId) return;
   editingPromptProcessing.value = true;
   try {
-    const prepared = await prepareImageFiles(source, editingPromptImages.value, (message) => { editingPromptError.value = message; });
-    if (editingPromptId.value === promptId) editingPromptImages.value = [...editingPromptImages.value, ...prepared];
+    const prepared = await prepareImageFiles(source, editingPromptImages.value, (message) => { if (current()) editingPromptError.value = message; });
+    if (current() && editingPromptId.value === promptId) editingPromptImages.value = [...editingPromptImages.value, ...prepared];
   } finally {
     editingPromptProcessing.value = false;
   }
@@ -380,13 +425,19 @@ function onQueueImageInput(event: Event) {
 }
 
 function onQueueEditPaste(event: ClipboardEvent) {
-  const imageFiles = Array.from(event.clipboardData?.items ?? [])
-    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file));
-  if (!imageFiles.length) return;
-  event.preventDefault();
-  void addQueueEditImages(imageFiles);
+  const input = event.target as HTMLInputElement;
+  const promptId = editingPromptId.value;
+  const original = editingPromptText.value;
+  const start = input.selectionStart ?? original.length;
+  const end = input.selectionEnd ?? start;
+  void pasteClipboard(event, (text, separate) => {
+    if (editingPromptText.value !== original) return false;
+    const previous = original[start - 1];
+    if (separate && previous && !/\s/.test(previous)) text = ` ${text}`;
+    editingPromptText.value = original.slice(0, start) + text + original.slice(end);
+    void nextTick(() => input.setSelectionRange(start + text.length, start + text.length));
+    return true;
+  }, addQueueEditImages, (message) => { editingPromptError.value = message; }, () => editingPromptId.value === promptId);
 }
 
 function onQueueEditDrop(event: DragEvent) {
@@ -397,13 +448,13 @@ function onQueueEditDrop(event: DragEvent) {
 }
 
 function saveQueueEdit(promptId: string) {
-  if (editingPromptProcessing.value || (!editingPromptText.value.trim() && editingPromptImages.value.length === 0)) return;
+  if (pastingFiles.value || editingPromptProcessing.value || (!editingPromptText.value.trim() && editingPromptImages.value.length === 0)) return;
   appStore.updatePendingPrompt(promptId, editingPromptText.value, editingPromptImages.value);
   cancelQueueEdit();
 }
 
 async function moveQueueEditToComposer(promptId: string) {
-  if (editingPromptProcessing.value || (!editingPromptText.value.trim() && editingPromptImages.value.length === 0)) return;
+  if (pastingFiles.value || editingPromptProcessing.value || (!editingPromptText.value.trim() && editingPromptImages.value.length === 0)) return;
   appStore.movePendingPromptToDraft(promptId, editingPromptText.value, editingPromptImages.value);
   cancelQueueEdit();
   await nextTick();
@@ -502,6 +553,7 @@ onMounted(() => {
   window.addEventListener("resize", positionOpenMenus);
 });
 onBeforeUnmount(() => {
+  pasteEpoch++;
   document.removeEventListener("pointerdown", closeMenus);
   window.removeEventListener("resize", positionOpenMenus);
 });
@@ -509,7 +561,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="composer-wrap" :class="ui.root">
-    <div v-for="widget in widgetsAbove" :key="widget.key" class="extension-widget" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
+    <div v-for="widget in widgetsAbove" :key="widget.key" class="extension-widget items-start" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
     <div v-if="appStore.activeRetry" class="retry-banner" :class="ui.status" role="status">
       <span>Retry {{ appStore.activeRetry.attempt }} of {{ appStore.activeRetry.maxAttempts }}</span>
       <small v-if="appStore.activeRetry.errorMessage">{{ appStore.activeRetry.errorMessage }}</small>
@@ -575,7 +627,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
-      <div class="composer-editor" @keydown.capture="onKeydown" @paste="onPaste">
+      <div class="composer-editor" @keydown.capture="onKeydown" @paste.capture="onPaste">
         <MarkdownEditor
           ref="markdownEditor"
           v-model="draft"
@@ -738,7 +790,7 @@ onBeforeUnmount(() => {
             class="send-button"
             type="button"
             :title="bashDraft ? agentRunning ? 'Wait for Pi before running a command' : 'Run command with Pi' : agentRunning ? tr('composer.queueMessage') : tr('composer.send')"
-            :disabled="(!draft.trim() && appStore.activeAttachments.length === 0) || appStore.activeThread?.status === 'starting' || bashRunning || (bashDraft && agentRunning) || processingImages"
+            :disabled="!!appStore.activeSessionOperation || (!draft.trim() && appStore.activeAttachments.length === 0) || appStore.activeThread?.status === 'starting' || bashRunning || (bashDraft && agentRunning) || processingImages || pastingFiles"
             @click="submit()"
           >
             <ArrowUp :size="17" />
@@ -775,7 +827,7 @@ onBeforeUnmount(() => {
     <div v-if="appStore.activeExtensionStatuses.length" class="extension-status-list" aria-live="polite">
       <span v-for="status in appStore.activeExtensionStatuses" :key="status.key" :title="status.key">{{ status.text }}</span>
     </div>
-    <div v-for="widget in widgetsBelow" :key="widget.key" class="extension-widget" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
+    <div v-for="widget in widgetsBelow" :key="widget.key" class="extension-widget items-start" :class="ui.status" :data-placement="widget.placement"><pre>{{ widget.lines.join("\n") }}</pre></div>
     <ImagePreviewDialog v-if="previewImage" :image="previewImage" @close="previewImage = undefined" />
   </div>
 </template>

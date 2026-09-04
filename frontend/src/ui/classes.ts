@@ -77,7 +77,7 @@ export const ui = {
   empty:
     "grid min-h-28 place-items-center gap-2 px-5 py-8 text-center text-sm leading-relaxed text-[var(--text-muted)]",
   status:
-    "flex min-w-0 items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-workspace)] px-3 py-2 text-sm leading-relaxed text-[var(--text-secondary)]",
+    "flex min-w-0 gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-workspace)] px-3 py-2 text-sm leading-relaxed text-[var(--text-secondary)]",
   messageItem:
     "min-w-0 border-b border-[var(--border)] py-3 last:border-b-0 [&>header]:mb-2 [&>header]:flex [&>header]:items-center [&>header]:justify-between [&>header]:gap-3 [&>pre]:m-0 [&>pre]:whitespace-pre-wrap [&>pre]:font-body [&>pre]:text-sm [&>pre]:leading-relaxed",
   code:

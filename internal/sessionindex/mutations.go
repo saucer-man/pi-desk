@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,25 +27,28 @@ const (
 type Mutation struct {
 	Path       string
 	BackupPath string
+	afterHash  [32]byte
 }
 
 func (index *Index) ForkAt(path, entryID string) (string, error) {
-	result, err := index.fork(path, entryID, false)
+	result, err := index.ForkMessage(path, entryID, false)
 	return result.Path, err
 }
 
 type ForkResult struct {
-	Path string
-	Text string
+	Path      string
+	Text      string
+	Images    []json.RawMessage
+	SessionID string
 }
 
 // ForkBefore creates a persisted branch ending immediately before a user
 // message and returns that message text for the new composer draft.
 func (index *Index) ForkBefore(path, entryID string) (ForkResult, error) {
-	return index.fork(path, entryID, true)
+	return index.ForkMessage(path, entryID, true)
 }
 
-func (index *Index) fork(path, entryID string, before bool) (ForkResult, error) {
+func (index *Index) ForkMessage(path, entryID string, before bool) (ForkResult, error) {
 	index.mutationMu.Lock()
 	defer index.mutationMu.Unlock()
 
@@ -90,6 +94,7 @@ func (index *Index) fork(path, entryID string, before bool) (ForkResult, error) 
 		return ForkResult{}, errors.New("only message entries can be forked")
 	}
 	selectedText := ""
+	var selectedImages []json.RawMessage
 	if before {
 		if entryRole(current.decoded) != "user" {
 			return ForkResult{}, errors.New("only user messages can be forked from before the entry")
@@ -97,6 +102,19 @@ func (index *Index) fork(path, entryID string, before bool) (ForkResult, error) 
 		selectedText, err = forkPromptText(current.decoded)
 		if err != nil {
 			return ForkResult{}, err
+		}
+		var message struct {
+			Content []json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(current.decoded["message"], &message) == nil {
+			for _, block := range message.Content {
+				var part struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(block, &part) == nil && part.Type == "image" {
+					selectedImages = append(selectedImages, block)
+				}
+			}
 		}
 		if current.parent == "" {
 			current = indexedEntry{}
@@ -129,8 +147,15 @@ func (index *Index) fork(path, entryID string, before bool) (ForkResult, error) 
 			if item.id != entryID {
 				continue
 			}
-			for next := position + 1; next < len(activeBranch) && entryRole(activeBranch[next].decoded) == "toolResult"; next++ {
-				current = activeBranch[next]
+			for next := position + 1; next < len(activeBranch); next++ {
+				role := entryRole(activeBranch[next].decoded)
+				if role != "" && role != "toolResult" {
+					break
+				}
+				// Metadata may be inserted between a tool call and its results.
+				if role == "toolResult" {
+					current = activeBranch[next]
+				}
 			}
 			break
 		}
@@ -217,7 +242,7 @@ func (index *Index) fork(path, entryID string, before bool) (ForkResult, error) 
 		_ = os.Remove(destination)
 		return ForkResult{}, fmt.Errorf("write forked session: %w", err)
 	}
-	return ForkResult{Path: destination, Text: selectedText}, nil
+	return ForkResult{Path: destination, Text: selectedText, Images: selectedImages, SessionID: sessionID}, nil
 }
 
 func forkPromptText(entry map[string]json.RawMessage) (string, error) {
@@ -300,7 +325,6 @@ func (index *Index) RewindBefore(path, entryID string) (Mutation, error) {
 			return nil, errors.New("only user messages can be replayed")
 		}
 		type branchEntry struct {
-			raw    json.RawMessage
 			id     string
 			parent string
 			entry  map[string]json.RawMessage
@@ -316,7 +340,7 @@ func (index *Index) RewindBefore(path, entryID string) (Mutation, error) {
 			_ = json.Unmarshal(decoded["id"], &id)
 			_ = json.Unmarshal(decoded["parentId"], &parent)
 			if id != "" {
-				byID[id] = branchEntry{raw: line, id: id, parent: parent, entry: decoded}
+				byID[id] = branchEntry{id: id, parent: parent, entry: decoded}
 				leafID = id
 			}
 		}
@@ -336,23 +360,49 @@ func (index *Index) RewindBefore(path, entryID string) (Mutation, error) {
 			return nil, errors.New("message is not on the active session branch")
 		}
 
-		branch := make([]json.RawMessage, 0, 64)
-		for parentID := current.parent; parentID != ""; {
-			parent, found := byID[parentID]
-			if !found {
-				return nil, errors.New("session branch contains a missing parent")
+		seen[current.id] = struct{}{} // Only the selected turn's active suffix is removable.
+		protected := make(map[string]struct{})
+		var references []string
+		collectReferences := func(item map[string]json.RawMessage) {
+			for _, field := range []string{"parentId", "targetId", "firstKeptEntryId", "fromId"} {
+				var ref string
+				if json.Unmarshal(item[field], &ref) == nil && ref != "" {
+					references = append(references, ref)
+				}
 			}
-			if _, duplicate := seen[parent.id]; duplicate {
-				return nil, errors.New("session branch contains a parent cycle")
+		}
+		for id, item := range byID {
+			if _, removing := seen[id]; removing {
+				continue
 			}
-			seen[parent.id] = struct{}{}
-			branch = append(branch, parent.raw)
-			parentID = parent.parent
+			// Other branches and their metadata may still refer to this suffix.
+			collectReferences(item.entry)
 		}
-		for left, right := 0, len(branch)-1; left < right; left, right = left+1, right-1 {
-			branch[left], branch[right] = branch[right], branch[left]
+		for position := 0; position < len(references); position++ {
+			ref := references[position]
+			if _, removing := seen[ref]; !removing {
+				continue
+			}
+			if _, kept := protected[ref]; kept {
+				continue
+			}
+			protected[ref] = struct{}{}
+			collectReferences(byID[ref].entry)
 		}
-		return append([]json.RawMessage{lines[0]}, branch...), nil
+		result := []json.RawMessage{lines[0]}
+		for _, line := range lines[1:] {
+			var item struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(line, &item)
+			_, removing := seen[item.ID]
+			_, keep := protected[item.ID]
+			if removing && !keep {
+				continue
+			}
+			result = append(result, line)
+		}
+		return resumeMutationAt(result, current.parent)
 	})
 }
 
@@ -367,13 +417,13 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 		if err := json.Unmarshal(entry["message"], &message); err != nil || (message.Role != "user" && message.Role != "assistant") {
 			return nil, errors.New("only user and assistant messages can be deleted")
 		}
-		parent := append(json.RawMessage(nil), entry["parentId"]...)
-		if len(parent) == 0 {
-			parent = json.RawMessage("null")
-		}
 		parents := make(map[string]string, len(lines))
+		byID := make(map[string]map[string]json.RawMessage, len(lines))
 		decoded := make([]map[string]json.RawMessage, len(lines))
 		for lineIndex, line := range lines {
+			if lineIndex == 0 {
+				continue
+			}
 			var relationship struct {
 				ID       string  `json:"id"`
 				ParentID *string `json:"parentId"`
@@ -382,6 +432,7 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 				continue
 			}
 			_ = json.Unmarshal(line, &decoded[lineIndex])
+			byID[relationship.ID] = decoded[lineIndex]
 			if relationship.ParentID != nil {
 				parents[relationship.ID] = *relationship.ParentID
 			} else {
@@ -392,7 +443,7 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 		for changed := true; changed; {
 			changed = false
 			for lineIndex, child := range decoded {
-				if lineIndex == target || child == nil || entryRole(child) != "toolResult" {
+				if lineIndex == target || child == nil {
 					continue
 				}
 				var id, childParent string
@@ -401,11 +452,29 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 				if id == "" {
 					continue
 				}
-				if _, removeParent := removeIDs[childParent]; removeParent {
-					if _, alreadyRemoved := removeIDs[id]; !alreadyRemoved {
-						removeIDs[id] = struct{}{}
-						changed = true
+				if _, alreadyRemoved := removeIDs[id]; alreadyRemoved {
+					continue
+				}
+				var kind, targetID string
+				_ = json.Unmarshal(child["type"], &kind)
+				_ = json.Unmarshal(child["targetId"], &targetID)
+				_, targetRemoved := removeIDs[targetID]
+				remove := kind == "label" && targetRemoved
+				if entryRole(child) == "toolResult" {
+					for ancestor := childParent; ancestor != ""; ancestor = parents[ancestor] {
+						if _, removed := removeIDs[ancestor]; removed {
+							remove = true
+							break
+						}
+						role := entryRole(byID[ancestor])
+						if role != "" && role != "toolResult" {
+							break
+						}
 					}
+				}
+				if remove {
+					removeIDs[id] = struct{}{}
+					changed = true
 				}
 			}
 		}
@@ -456,8 +525,40 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 			}
 			result = append(result, line)
 		}
-		return result, nil
+		var leaf string
+		_ = json.Unmarshal(decoded[len(decoded)-1]["id"], &leaf)
+		for leaf != "" {
+			if _, removed := removeIDs[leaf]; !removed {
+				break
+			}
+			leaf = parents[leaf]
+		}
+		return resumeMutationAt(result, leaf)
 	})
+}
+
+// Pi reopens the last entry as its active leaf, not the last timestamp.
+// Removing a leaf must not silently activate a neighboring, unrelated branch.
+func resumeMutationAt(lines []json.RawMessage, leafID string) ([]json.RawMessage, error) {
+	if leafID == "" {
+		if len(lines) > 1 {
+			return nil, errors.New("cannot leave an empty active branch while retaining other branches; fork this message instead")
+		}
+		return lines, nil
+	}
+	for position := 1; position < len(lines); position++ {
+		var entry struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(lines[position], &entry)
+		if entry.ID != leafID {
+			continue
+		}
+		leaf := lines[position]
+		lines = append(lines[:position], lines[position+1:]...)
+		return append(lines, leaf), nil
+	}
+	return nil, errors.New("active session leaf was not retained")
 }
 
 func entryRole(entry map[string]json.RawMessage) string {
@@ -502,6 +603,8 @@ func firstRetainedDescendantOnPath(parents map[string]string, removed map[string
 }
 
 func (index *Index) RestoreMutation(mutation Mutation) error {
+	index.mutationMu.Lock()
+	defer index.mutationMu.Unlock()
 	path, err := index.ValidatePath(mutation.Path)
 	if err != nil {
 		return err
@@ -516,6 +619,13 @@ func (index *Index) RestoreMutation(mutation Mutation) error {
 	data, err := os.ReadFile(backup)
 	if err != nil {
 		return fmt.Errorf("read session backup: %w", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read session before restore: %w", err)
+	}
+	if sha256.Sum256(current) != mutation.afterHash {
+		return errors.New("session changed after mutation; backup was not restored")
 	}
 	if err := atomic.WriteFile(path, bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("restore session backup: %w", err)
@@ -542,6 +652,9 @@ func (index *Index) mutateMessage(path, entryID string, change func([]json.RawMe
 	target := -1
 	var targetEntry map[string]json.RawMessage
 	for lineIndex, line := range lines {
+		if lineIndex == 0 {
+			continue
+		}
 		var entry map[string]json.RawMessage
 		if json.Unmarshal(line, &entry) != nil {
 			continue
@@ -563,6 +676,9 @@ func (index *Index) mutateMessage(path, entryID string, change func([]json.RawMe
 	if err != nil {
 		return Mutation{}, err
 	}
+	if err := validateMutationTree(changed); err != nil {
+		return Mutation{}, err
+	}
 	backup, err := backupSession(canonical)
 	if err != nil {
 		return Mutation{}, err
@@ -571,7 +687,14 @@ func (index *Index) mutateMessage(path, entryID string, change func([]json.RawMe
 		_ = os.Remove(backup)
 		return Mutation{}, err
 	}
-	return Mutation{Path: canonical, BackupPath: backup}, nil
+	hash := sha256.New()
+	for _, line := range changed {
+		hash.Write(line)
+		hash.Write([]byte{'\n'})
+	}
+	var afterHash [32]byte
+	copy(afterHash[:], hash.Sum(nil))
+	return Mutation{Path: canonical, BackupPath: backup, afterHash: afterHash}, nil
 }
 
 func replaceMessageText(content json.RawMessage, text string) (json.RawMessage, error) {
@@ -594,6 +717,7 @@ func replaceMessageText(content json.RawMessage, text string) (json.RawMessage, 
 				continue
 			}
 			block["text"] = encodedText
+			delete(block, "textSignature") // Provider signatures no longer describe edited text.
 			found = true
 		}
 		filtered = append(filtered, block)
@@ -623,14 +747,16 @@ func readMutationLines(path string) ([]json.RawMessage, error) {
 	scanner := bufio.NewScanner(io.LimitReader(file, maxSessionBytes+1))
 	scanner.Buffer(make([]byte, 64<<10), maxLineBytes)
 	lines := make([]json.RawMessage, 0, 256)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 || !utf8.Valid(line) {
-			return nil, errors.New("session transcript contains an invalid line")
+			return nil, fmt.Errorf("session transcript contains an invalid line at line %d", lineNumber)
 		}
 		var valid json.RawMessage
 		if json.Unmarshal(line, &valid) != nil {
-			return nil, errors.New("session transcript contains malformed JSON")
+			return nil, fmt.Errorf("session transcript contains malformed JSON at line %d; each line must contain exactly one JSON object", lineNumber)
 		}
 		lines = append(lines, append(json.RawMessage(nil), line...))
 	}
@@ -640,7 +766,61 @@ func readMutationLines(path string) ([]json.RawMessage, error) {
 	if len(lines) == 0 {
 		return nil, errors.New("session transcript is empty")
 	}
+	if err := validateMutationTree(lines); err != nil {
+		return nil, err
+	}
 	return lines, nil
+}
+
+// Reject ambiguous IDs and broken parent chains before any backup or write.
+// Parents need not precede children: replay may move the resume entry to EOF.
+func validateMutationTree(lines []json.RawMessage) error {
+	parents := make(map[string]string, len(lines))
+	for position, line := range lines {
+		var entry struct {
+			Type     string  `json:"type"`
+			ID       string  `json:"id"`
+			ParentID *string `json:"parentId"`
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Type == "" || entry.ID == "" {
+			return fmt.Errorf("invalid session entry at line %d", position+1)
+		}
+		if position == 0 {
+			if entry.Type != "session" {
+				return errors.New("session header is missing")
+			}
+			continue
+		}
+		if entry.Type == "session" {
+			return fmt.Errorf("unexpected session header at line %d", position+1)
+		}
+		if _, exists := parents[entry.ID]; exists {
+			return fmt.Errorf("duplicate session entry id %q at line %d", entry.ID, position+1)
+		}
+		parent := ""
+		if entry.ParentID != nil {
+			parent = *entry.ParentID
+		}
+		parents[entry.ID] = parent
+	}
+	visited := make(map[string]uint8, len(parents))
+	for id := range parents {
+		path := make([]string, 0, 16)
+		for current := id; current != "" && visited[current] != 2; current = parents[current] {
+			if _, exists := parents[current]; !exists {
+				return fmt.Errorf("session branch contains a missing parent %q", current)
+			}
+			if visited[current] == 1 {
+				return errors.New("session branch contains a parent cycle")
+			}
+			visited[current] = 1
+			path = append(path, current)
+		}
+		for _, current := range path {
+			visited[current] = 2
+		}
+	}
+	return nil
 }
 
 func writeMutationLines(path string, lines []json.RawMessage) error {

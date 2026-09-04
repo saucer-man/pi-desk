@@ -19,9 +19,12 @@ import (
 const stateVersion = 6
 
 const (
-	maxDesktopThreads = 500
-	maxDraftBytes     = 1 << 20
-	maxThreadTitleLen = 200
+	maxDesktopThreads    = 500
+	maxScheduledTasks    = 100
+	maxDraftBytes        = 1 << 20
+	maxThreadTitleLen    = 200
+	maxScheduledNameLen  = 200
+	maxScheduledModelLen = 256
 )
 
 type Record struct {
@@ -49,10 +52,34 @@ type ThreadRecord struct {
 }
 
 type DesktopRecord struct {
-	ActiveThreadID string             `json:"activeThreadId,omitempty"`
-	Threads        []ThreadRecord     `json:"threads"`
-	Preferences    *PreferencesRecord `json:"preferences,omitempty"`
-	Window         *WindowRecord      `json:"window,omitempty"`
+	ActiveThreadID string                `json:"activeThreadId,omitempty"`
+	Threads        []ThreadRecord        `json:"threads"`
+	ScheduledTasks []ScheduledTaskRecord `json:"scheduledTasks,omitempty"`
+	Preferences    *PreferencesRecord    `json:"preferences,omitempty"`
+	Window         *WindowRecord         `json:"window,omitempty"`
+}
+
+type ScheduledTaskRecord struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Prompt        string `json:"prompt"`
+	WorkspaceID   string `json:"workspaceId"`
+	ModelProvider string `json:"modelProvider,omitempty"`
+	ModelID       string `json:"modelId,omitempty"`
+	ModelName     string `json:"modelName,omitempty"`
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+	Frequency     string `json:"frequency"`
+	Time          string `json:"time,omitempty"`
+	Weekday       int    `json:"weekday,omitempty"`
+	RunAt         string `json:"runAt,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	NextRunAt     string `json:"nextRunAt,omitempty"`
+	LastRunAt     string `json:"lastRunAt,omitempty"`
+	LastThreadID  string `json:"lastThreadId,omitempty"`
+	LastStatus    string `json:"lastStatus,omitempty"`
+	LastError     string `json:"lastError,omitempty"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 type WindowRecord struct {
@@ -249,6 +276,9 @@ func (catalog *Catalog) RemoveAfter(id string, beforeRemove func(Record) error) 
 		}
 		return removed.Location.Kind == KindLocal && thread.WorkspaceID == "" && pathKey(thread.WorkspacePath) == pathKey(removed.Path)
 	})
+	desktop.ScheduledTasks = slices.DeleteFunc(slices.Clone(desktop.ScheduledTasks), func(task ScheduledTaskRecord) bool {
+		return task.WorkspaceID == removed.ID
+	})
 	if desktop.ActiveThreadID != "" && !slices.ContainsFunc(desktop.Threads, func(thread ThreadRecord) bool {
 		return thread.ID == desktop.ActiveThreadID
 	}) {
@@ -301,6 +331,7 @@ func (catalog *Catalog) Desktop() (DesktopRecord, error) {
 	}
 	result := catalog.desktop
 	result.Threads = cloneThreads(catalog.desktop.Threads)
+	result.ScheduledTasks = slices.Clone(catalog.desktop.ScheduledTasks)
 	if catalog.desktop.Preferences != nil {
 		preferences := *catalog.desktop.Preferences
 		result.Preferences = &preferences
@@ -370,12 +401,22 @@ func (catalog *Catalog) SaveDesktop(desktop DesktopRecord) error {
 		}
 		threadIDs[thread.ID] = struct{}{}
 	}
+	for _, task := range desktop.ScheduledTasks {
+		workspaceRecord, exists := workspaceIDs[task.WorkspaceID]
+		if !exists {
+			return fmt.Errorf("scheduled task %s references an unknown workspace", task.ID)
+		}
+		if workspaceRecord.Location.Kind != KindLocal || workspaceRecord.Trust != "approve" {
+			return fmt.Errorf("scheduled task %s requires a trusted local workspace", task.ID)
+		}
+	}
 	if desktop.ActiveThreadID != "" {
 		if _, ok := threadIDs[desktop.ActiveThreadID]; !ok {
 			return errors.New("active thread is not present in desktop state")
 		}
 	}
 	desktop.Threads = cloneThreads(desktop.Threads)
+	desktop.ScheduledTasks = slices.Clone(desktop.ScheduledTasks)
 	if desktop.Preferences != nil {
 		preferences := *desktop.Preferences
 		desktop.Preferences = &preferences
@@ -533,6 +574,7 @@ func (catalog *Catalog) loadLocked() error {
 	}
 	desktop := state.Desktop
 	desktop.Threads = cloneThreads(state.Desktop.Threads)
+	desktop.ScheduledTasks = slices.Clone(state.Desktop.ScheduledTasks)
 	if state.Version < 6 {
 		for index := range desktop.Threads {
 			if workspaceID, ok := workspaceIDForLocalPath(records, desktop.Threads[index].WorkspacePath); ok {
@@ -613,6 +655,65 @@ func validateDesktop(desktop DesktopRecord) error {
 			return fmt.Errorf("thread %s has an invalid status", thread.ID)
 		}
 	}
+	if len(desktop.ScheduledTasks) > maxScheduledTasks {
+		return fmt.Errorf("desktop state exceeds %d scheduled tasks", maxScheduledTasks)
+	}
+	taskIDs := make(map[string]struct{}, len(desktop.ScheduledTasks))
+	for _, task := range desktop.ScheduledTasks {
+		if strings.TrimSpace(task.ID) == "" {
+			return errors.New("scheduled task id is required")
+		}
+		if _, exists := taskIDs[task.ID]; exists {
+			return fmt.Errorf("duplicate scheduled task id %s", task.ID)
+		}
+		taskIDs[task.ID] = struct{}{}
+		if strings.TrimSpace(task.Name) == "" || len([]rune(task.Name)) > maxScheduledNameLen {
+			return fmt.Errorf("scheduled task %s has an invalid name", task.ID)
+		}
+		if strings.TrimSpace(task.Prompt) == "" || len(task.Prompt) > maxDraftBytes {
+			return fmt.Errorf("scheduled task %s has an invalid prompt", task.ID)
+		}
+		if strings.TrimSpace(task.WorkspaceID) == "" {
+			return fmt.Errorf("scheduled task %s workspace id is required", task.ID)
+		}
+		if (task.ModelProvider == "") != (task.ModelID == "") ||
+			(task.ModelProvider != "" && (!validScheduledModelIdentifier(task.ModelProvider) || !validScheduledModelIdentifier(task.ModelID))) ||
+			len([]rune(task.ModelName)) > maxScheduledModelLen || strings.ContainsAny(task.ModelName, "\r\n") {
+			return fmt.Errorf("scheduled task %s has an invalid model", task.ID)
+		}
+		if task.ThinkingLevel != "" && (task.ModelProvider == "" || !validScheduledThinkingLevel(task.ThinkingLevel)) {
+			return fmt.Errorf("scheduled task %s has an invalid thinking level", task.ID)
+		}
+		switch task.Frequency {
+		case "once":
+			if !validScheduledTimestamp(task.RunAt) {
+				return fmt.Errorf("scheduled task %s has an invalid run time", task.ID)
+			}
+		case "hourly", "daily", "weekdays":
+			if !validScheduledClock(task.Time) {
+				return fmt.Errorf("scheduled task %s has an invalid clock time", task.ID)
+			}
+		case "weekly":
+			if !validScheduledClock(task.Time) || task.Weekday < 0 || task.Weekday > 6 {
+				return fmt.Errorf("scheduled task %s has an invalid weekly schedule", task.ID)
+			}
+		default:
+			return fmt.Errorf("scheduled task %s has an invalid frequency", task.ID)
+		}
+		for _, value := range []string{task.NextRunAt, task.LastRunAt, task.CreatedAt, task.UpdatedAt} {
+			if value != "" && !validScheduledTimestamp(value) {
+				return fmt.Errorf("scheduled task %s has an invalid timestamp", task.ID)
+			}
+		}
+		if task.Enabled && task.NextRunAt == "" {
+			return fmt.Errorf("scheduled task %s requires a next run time while enabled", task.ID)
+		}
+		switch task.LastStatus {
+		case "", "started", "failed":
+		default:
+			return fmt.Errorf("scheduled task %s has an invalid last status", task.ID)
+		}
+	}
 	if desktop.Preferences != nil {
 		preferences := desktop.Preferences
 		switch preferences.Appearance {
@@ -675,6 +776,30 @@ func validateDesktop(desktop DesktopRecord) error {
 		}
 	}
 	return nil
+}
+
+func validScheduledTimestamp(value string) bool {
+	_, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	return err == nil
+}
+
+func validScheduledClock(value string) bool {
+	_, err := time.Parse("15:04", strings.TrimSpace(value))
+	return err == nil
+}
+
+func validScheduledModelIdentifier(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= maxScheduledModelLen && !strings.ContainsAny(value, "\r\n\t ")
+}
+
+func validScheduledThinkingLevel(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "off", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneThreads(threads []ThreadRecord) []ThreadRecord {

@@ -24,6 +24,7 @@ const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 const newProviderValue = "__new_provider__";
 const defaultProviderUserAgent = "codex_cli_rs/0.146.0 (Windows 11.0.26100; x86_64) Terminal";
 let headerEntrySequence = 0;
+let modelTestRequest: ReturnType<typeof modelConfigService.test> | undefined;
 
 type ProviderHeaderEntry = {
   id: number;
@@ -376,7 +377,11 @@ function openModelTest() {
 }
 
 function closeModelTest() {
-  if (!testing.value) testDialogOpen.value = false;
+  const request = modelTestRequest;
+  modelTestRequest = undefined;
+  testing.value = false;
+  testDialogOpen.value = false;
+  if (request) void request.cancel();
 }
 
 async function testModel() {
@@ -384,19 +389,27 @@ async function testModel() {
   testing.value = true;
   notice.value = "";
   testResult.value = undefined;
+  const request = modelConfigService.test({
+    baseUrl: editor.baseUrl,
+    api: editor.api,
+    apiKey: editor.apiKey,
+    headers: headersForRequest(),
+    modelId: editor.modelId,
+    prompt: testPrompt.value,
+  });
+  modelTestRequest = request;
   try {
-    testResult.value = await modelConfigService.test({
-      baseUrl: editor.baseUrl,
-      api: editor.api,
-      apiKey: editor.apiKey,
-      headers: headersForRequest(),
-      modelId: editor.modelId,
-      prompt: testPrompt.value,
-    });
+    const result = await request;
+    if (modelTestRequest === request) testResult.value = result;
   } catch (cause) {
-    testResult.value = { ok: false, latencyMs: 0, error: cause instanceof Error ? cause.message : String(cause) };
+    if (modelTestRequest === request) {
+      testResult.value = { ok: false, latencyMs: 0, error: cause instanceof Error ? cause.message : String(cause) };
+    }
   } finally {
-    testing.value = false;
+    if (modelTestRequest === request) {
+      modelTestRequest = undefined;
+      testing.value = false;
+    }
   }
 }
 
@@ -601,6 +614,7 @@ onMounted(() => {
   document.addEventListener("keydown", onProviderMenuKeydown);
 });
 onBeforeUnmount(() => {
+  closeModelTest();
   document.removeEventListener("pointerdown", onProviderMenuPointerDown);
   document.removeEventListener("keydown", onProviderMenuKeydown);
 });

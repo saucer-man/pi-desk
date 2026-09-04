@@ -1,15 +1,21 @@
 import type { ExecutionStep, TimelineMessage, TimelineRunNotice } from "../stores/app";
+import { splitTaggedThinking } from "./taggedThinking";
 
 function executionSteps(messages: TimelineMessage[], finalIndex: number): ExecutionStep[] {
   const steps: ExecutionStep[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
+    const tagged = splitTaggedThinking(message.text);
     if (message.thinking) steps.push({
       id: `${message.id}-thinking`, kind: "thinking", text: message.thinking,
       active: message.streaming && message.activeExecution === "thinking",
     });
+    if (tagged.thinking) steps.push({
+      id: `${message.id}-tagged-thinking`, kind: "thinking", text: tagged.thinking,
+      active: message.streaming && tagged.open,
+    });
     if (message.tools.length) steps.push({ id: `${message.id}-tools`, kind: "tools", tools: message.tools });
-    if (index !== finalIndex && message.text) steps.push({ id: `${message.id}-message`, kind: "message", text: message.text });
+    if (index !== finalIndex && tagged.text) steps.push({ id: `${message.id}-message`, kind: "message", text: tagged.text });
   }
   return steps;
 }
@@ -57,6 +63,7 @@ function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number):
   if (finalIndex < 0) finalIndex = messages.length - 1;
 
   const finalMessage = messages[finalIndex];
+  const finalTagged = splitTaggedThinking(finalMessage.text);
   const lastMessage = messages.at(-1) ?? finalMessage;
   const steps = executionSteps(messages, finalIndex);
   const runNotice = mergedRunNotice(messages);
@@ -65,6 +72,7 @@ function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number):
   return {
     ...finalMessage,
     id: finalMessage.id,
+    text: finalTagged.text,
     thinking: "",
     thinkingCount: steps.filter((step) => step.kind === "thinking").length,
     tools: [],

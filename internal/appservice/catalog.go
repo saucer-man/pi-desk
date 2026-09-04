@@ -345,7 +345,11 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 	if err != nil {
 		return domain.DesktopState{}, err
 	}
-	result := domain.DesktopState{ActiveThreadID: record.ActiveThreadID, Threads: make([]domain.DesktopThreadState, 0, len(record.Threads))}
+	result := domain.DesktopState{
+		ActiveThreadID: record.ActiveThreadID,
+		Threads:        make([]domain.DesktopThreadState, 0, len(record.Threads)),
+		ScheduledTasks: make([]domain.ScheduledTaskState, 0, len(record.ScheduledTasks)),
+	}
 	if record.Preferences != nil {
 		result.Preferences = &domain.DesktopPreferences{
 			Appearance: record.Preferences.Appearance, Language: record.Preferences.Language, FontFamily: record.Preferences.FontFamily, FontSize: record.Preferences.FontSize,
@@ -365,11 +369,25 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 			CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt, Unread: thread.Unread,
 		})
 	}
+	for _, task := range record.ScheduledTasks {
+		result.ScheduledTasks = append(result.ScheduledTasks, domain.ScheduledTaskState{
+			ID: task.ID, Name: task.Name, Prompt: task.Prompt, WorkspaceID: task.WorkspaceID,
+			ModelProvider: task.ModelProvider, ModelID: task.ModelID, ModelName: task.ModelName, ThinkingLevel: task.ThinkingLevel,
+			Frequency: task.Frequency, Time: task.Time, Weekday: task.Weekday, RunAt: task.RunAt,
+			Enabled: task.Enabled, NextRunAt: task.NextRunAt, LastRunAt: task.LastRunAt,
+			LastThreadID: task.LastThreadID, LastStatus: task.LastStatus, LastError: task.LastError,
+			CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		})
+	}
 	return result, nil
 }
 
 func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error {
-	record := workspace.DesktopRecord{ActiveThreadID: strings.TrimSpace(state.ActiveThreadID), Threads: make([]workspace.ThreadRecord, 0, len(state.Threads))}
+	record := workspace.DesktopRecord{
+		ActiveThreadID: strings.TrimSpace(state.ActiveThreadID),
+		Threads:        make([]workspace.ThreadRecord, 0, len(state.Threads)),
+		ScheduledTasks: make([]workspace.ScheduledTaskRecord, 0, len(state.ScheduledTasks)),
+	}
 	if state.Preferences != nil {
 		record.Preferences = &workspace.PreferencesRecord{
 			Appearance: strings.TrimSpace(state.Preferences.Appearance), Language: strings.TrimSpace(state.Preferences.Language), FontFamily: strings.TrimSpace(state.Preferences.FontFamily), FontSize: state.Preferences.FontSize,
@@ -443,6 +461,17 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error
 			Draft: thread.Draft, CreatedAt: strings.TrimSpace(thread.CreatedAt), UpdatedAt: strings.TrimSpace(thread.UpdatedAt), Unread: thread.Unread,
 		}
 		record.Threads = append(record.Threads, mapped)
+	}
+	for _, task := range state.ScheduledTasks {
+		record.ScheduledTasks = append(record.ScheduledTasks, workspace.ScheduledTaskRecord{
+			ID: strings.TrimSpace(task.ID), Name: strings.TrimSpace(task.Name), Prompt: task.Prompt,
+			WorkspaceID: strings.TrimSpace(task.WorkspaceID), Frequency: strings.TrimSpace(task.Frequency),
+			ModelProvider: strings.TrimSpace(task.ModelProvider), ModelID: strings.TrimSpace(task.ModelID), ModelName: strings.TrimSpace(task.ModelName), ThinkingLevel: strings.TrimSpace(task.ThinkingLevel),
+			Time: strings.TrimSpace(task.Time), Weekday: task.Weekday, RunAt: strings.TrimSpace(task.RunAt),
+			Enabled: task.Enabled, NextRunAt: strings.TrimSpace(task.NextRunAt), LastRunAt: strings.TrimSpace(task.LastRunAt),
+			LastThreadID: strings.TrimSpace(task.LastThreadID), LastStatus: strings.TrimSpace(task.LastStatus),
+			LastError: strings.TrimSpace(task.LastError), CreatedAt: strings.TrimSpace(task.CreatedAt), UpdatedAt: strings.TrimSpace(task.UpdatedAt),
+		})
 	}
 	return service.catalog.SaveDesktop(record)
 }

@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
-import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore, type TimelineMessage } from "../stores/app";
 import ConversationPane from "./ConversationPane.vue";
 
@@ -26,6 +26,7 @@ function transcript(length: number): TimelineMessage[] {
 
 describe("ConversationPane", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => vi.unstubAllGlobals());
 
   function mountTranscript(length: number) {
     const store = useAppStore();
@@ -39,7 +40,7 @@ describe("ConversationPane", () => {
       global: {
         stubs: {
           ComposerBar: true,
-          ConversationMessage: { props: ["message"], template: '<article class="stub-message">{{ message.text }}</article>' },
+          ConversationMessage: { props: ["message"], template: '<article class="stub-message" :data-message-id="message.id" :data-role="message.role">{{ message.text }}</article>' },
         },
       },
     });
@@ -59,6 +60,55 @@ describe("ConversationPane", () => {
     expect(wrapper.find("[data-virtualized]").exists()).toBe(false);
     expect(wrapper.findAll(".stub-message")).toHaveLength(80);
     expect(wrapper.find("composer-bar-stub").exists()).toBe(true);
+  });
+
+  it("measures the composer stack and follows its growth only while pinned to the bottom", async () => {
+    const observers: Array<{ callback: () => void; target?: Element; disconnect: () => void }> = [];
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.stubGlobal("ResizeObserver", class {
+      record: (typeof observers)[number];
+      constructor(callback: () => void) {
+        this.record = { callback, disconnect: vi.fn() };
+        observers.push(this.record);
+      }
+      observe(target: Element) { this.record.target = target; }
+      unobserve() {}
+      disconnect() { this.record.disconnect(); }
+    });
+    const wrapper = mountTranscript(4);
+    await flushPromises();
+    const composer = wrapper.get("composer-bar-stub").element;
+    const observer = observers.find((item) => item.target === composer)!;
+    expect(observer).toBeDefined();
+    const timeline = wrapper.get(".timeline").element as HTMLElement;
+    Object.defineProperties(timeline, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1200 },
+    });
+    timeline.scrollTop = 600;
+    await wrapper.get(".timeline").trigger("scroll");
+    const rect = vi.spyOn(composer, "getBoundingClientRect").mockReturnValue({ height: 320 } as DOMRect);
+
+    observer.callback();
+    frames.at(-1)?.(0);
+    await flushPromises();
+
+    expect((wrapper.element as HTMLElement).style.getPropertyValue("--composer-overlay-reserve")).toBe("320px");
+    expect(timeline.scrollTop).toBe(1200);
+
+    timeline.scrollTop = 100;
+    await wrapper.get(".timeline").trigger("scroll");
+    rect.mockReturnValue({ height: 400 } as DOMRect);
+    observer.callback();
+    frames.at(-1)?.(0);
+    await flushPromises();
+
+    expect((wrapper.element as HTMLElement).style.getPropertyValue("--composer-overlay-reserve")).toBe("400px");
+    expect(timeline.scrollTop).toBe(100);
+    wrapper.unmount();
+    expect(observer.disconnect).toHaveBeenCalled();
   });
 
   it("shows the temporary thinking status only while waiting for backend output", async () => {
@@ -109,6 +159,23 @@ describe("ConversationPane", () => {
 
     await input.trigger("keydown", { key: "Escape" });
     expect(wrapper.find(".conversation-search").exists()).toBe(false);
+  });
+
+  it("does not jump back to a search result when streaming output changes", async () => {
+    const wrapper = mountTranscript(4);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    await wrapper.vm.$nextTick();
+    await wrapper.get(".conversation-search-input").setValue("Message 0");
+    await flushPromises();
+
+    const scrollIntoView = vi.fn();
+    wrapper.findAll(".stub-message")[0].element.scrollIntoView = scrollIntoView;
+    const store = useAppStore();
+    store.messagesByThread["thread-1"][3].text += " streaming";
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it("shows a left conversation outline preview and jumps to a turn", async () => {

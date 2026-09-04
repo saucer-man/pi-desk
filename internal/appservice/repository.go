@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"pi-desk/internal/clipboard"
 	"pi-desk/internal/domain"
 	"pi-desk/internal/repository"
 	"pi-desk/internal/workspace"
@@ -55,22 +56,24 @@ type remoteRepositoryBinding struct {
 }
 
 type RepositoryService struct {
-	catalog      repositoryWorkspaceResolver
-	scanner      repositoryScanner
-	openFile     func(string) error
-	openFileWith func(string) error
-	revealFile   func(string) error
-	remoteMu     sync.RWMutex
-	remote       map[string]*remoteRepositoryBinding
-	remoteSeen   map[string]uint64
+	catalog        repositoryWorkspaceResolver
+	scanner        repositoryScanner
+	openFile       func(string) error
+	openFileWith   func(string) error
+	revealFile     func(string) error
+	clipboardFiles func() ([]string, error)
+	remoteMu       sync.RWMutex
+	remote         map[string]*remoteRepositoryBinding
+	remoteSeen     map[string]uint64
 }
 
 func NewRepositoryService(catalog *workspace.Catalog, scanner *repository.Scanner) *RepositoryService {
 	return &RepositoryService{
-		catalog:    catalog,
-		scanner:    scanner,
-		remote:     make(map[string]*remoteRepositoryBinding),
-		remoteSeen: make(map[string]uint64),
+		catalog:        catalog,
+		clipboardFiles: clipboard.FilePaths,
+		scanner:        scanner,
+		remote:         make(map[string]*remoteRepositoryBinding),
+		remoteSeen:     make(map[string]uint64),
 		openFile: func(path string) error {
 			app := application.Get()
 			if app == nil || app.Browser == nil {

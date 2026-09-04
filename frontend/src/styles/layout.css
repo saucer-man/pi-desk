@@ -1530,6 +1530,14 @@
   margin-top: 3px;
 }
 
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
 .markdown-body a {
   color: var(--blue);
   text-decoration: underline;
@@ -2378,6 +2386,7 @@
   display: grid;
   width: 25px;
   height: 25px;
+  align-self: center;
   place-items: center;
   padding: 0;
   border: 0;

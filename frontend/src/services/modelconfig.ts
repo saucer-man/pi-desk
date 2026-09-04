@@ -1,4 +1,5 @@
 import { ModelConfigService } from "../../bindings/pi-desk/internal/appservice";
+import type { CancellablePromise } from "@wailsio/runtime";
 import type {
   AddModelsConfigRequest,
   DeleteModelConfigRequest,
@@ -35,7 +36,7 @@ export const modelConfigService = {
   discover(request: DiscoverModelsRequest): Promise<ModelDiscoveryResult> {
     return ModelConfigService.DiscoverModels(request);
   },
-  test(request: TestModelConfigRequest): Promise<ModelTestResult> {
+  test(request: TestModelConfigRequest): CancellablePromise<ModelTestResult> {
     return ModelConfigService.TestModel(request);
   },
   quota(request: ModelQuotaRequest): Promise<ModelQuotaResult> {

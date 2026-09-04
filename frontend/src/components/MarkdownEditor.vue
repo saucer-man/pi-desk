@@ -11,11 +11,13 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 
-const core = ref<{ focus(): void; replaceMarkdown(value: string): void }>();
+const core = ref<{ focus(): void; replaceMarkdown(value: string): void; handlesEnter(): boolean; captureTextInsertion(): (text: string, separate?: boolean) => boolean }>();
 
 defineExpose({
   focus: () => core.value?.focus(),
   replaceMarkdown: (value: string) => core.value?.replaceMarkdown(value),
+  handlesEnter: () => core.value?.handlesEnter() ?? false,
+  captureTextInsertion: () => core.value?.captureTextInsertion() ?? (() => false),
 });
 </script>
 

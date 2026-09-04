@@ -188,7 +188,7 @@ func TestAgentServiceReplaysLatestUserMessageInSameSession(t *testing.T) {
 	}
 }
 
-func TestAgentServiceRemovesAssistantForkWhenPiCannotSwitch(t *testing.T) {
+func TestAgentServiceRetainsAssistantForkWhenSwitchOutcomeIsUnknown(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "project")
 	if err := os.Mkdir(directory, 0o755); err != nil {
@@ -217,8 +217,131 @@ func TestAgentServiceRemovesAssistantForkWhenPiCannotSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 || files[0] != path {
-		t.Fatalf("failed fork left an orphaned session: %#v", files)
+	if len(files) != 2 || runtime.stopped != "thread-1" {
+		t.Fatalf("uncertain fork must be retained and Pi stopped: files=%#v stopped=%q", files, runtime.stopped)
+	}
+}
+
+func TestAgentServiceCancelledHistorySwitch(t *testing.T) {
+	for _, operation := range []string{"edit", "delete", "replay", "fork"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "session.jsonl")
+			original := []byte("{\"type\":\"session\",\"version\":3,\"id\":\"session\",\"cwd\":\"D:/repo\"}\n" +
+				"{\"type\":\"message\",\"id\":\"user-1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Before\"}}\n")
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &fakeAgentRuntime{
+				stateData:    json.RawMessage(`{"sessionFile":` + strconv.Quote(path) + `}`),
+				responseData: json.RawMessage(`{"cancelled":true}`),
+			}
+			service := newAgentService(runtime)
+			service.index = sessionindex.New(root)
+			request := domain.SessionMessageRequest{ThreadID: "thread-1", Path: path, EntryID: "user-1", Text: "After"}
+			var err error
+			switch operation {
+			case "edit":
+				_, err = service.EditSessionMessage(request)
+			case "delete":
+				_, err = service.DeleteSessionMessage(request)
+			case "replay":
+				_, err = service.ReplaySessionMessage(request)
+			case "fork":
+				_, err = service.ForkSessionAt(request)
+			}
+			if err == nil || !strings.Contains(err.Error(), "cancelled") {
+				t.Fatalf("error = %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != string(original) {
+				t.Fatalf("original changed: %s, %v", data, err)
+			}
+			files, err := filepath.Glob(filepath.Join(root, "*.jsonl"))
+			if err != nil || len(files) != 1 {
+				t.Fatalf("cancelled operation left a fork: %v, %v", files, err)
+			}
+			if runtime.stopped != "" {
+				t.Fatal("a confirmed cancellation should keep the unchanged runtime")
+			}
+		})
+	}
+}
+
+func TestAgentServiceUnknownHistorySwitchDoesNotRestoreStaleBackup(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.jsonl")
+	if err := os.WriteFile(path, []byte("{\"type\":\"session\",\"version\":3,\"id\":\"session\"}\n"+
+		"{\"type\":\"message\",\"id\":\"user-1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Before\"}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeAgentRuntime{stateData: json.RawMessage(`{"sessionFile":` + strconv.Quote(path) + `}`), failCommand: "switch_session", callError: context.DeadlineExceeded}
+	service := newAgentService(runtime)
+	service.index = sessionindex.New(root)
+	_, err := service.EditSessionMessage(domain.SessionMessageRequest{ThreadID: "thread-1", Path: path, EntryID: "user-1", Text: "After"})
+	if err == nil || !strings.Contains(err.Error(), "outcome-unknown") {
+		t.Fatalf("error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "After") || runtime.stopped != "thread-1" {
+		t.Fatalf("data=%s error=%v stopped=%q", data, err, runtime.stopped)
+	}
+}
+
+func TestAgentServiceHistoryGateRejectsCommandsButAllowsAbort(t *testing.T) {
+	runtime := &fakeAgentRuntime{}
+	service := newAgentService(runtime)
+	service.mutationMu.Lock()
+	defer service.mutationMu.Unlock()
+	if _, err := service.SendPrompt(domain.PromptRequest{ThreadID: "thread", Message: "continue"}); err == nil {
+		t.Fatal("prompt admitted during history write")
+	}
+	if _, err := service.Bash(domain.BashRequest{ThreadID: "thread", Command: "echo test"}); err == nil {
+		t.Fatal("bash admitted during history write")
+	}
+	if _, err := service.StartSession(domain.StartSessionRequest{ThreadID: "thread"}); err == nil {
+		t.Fatal("startup admitted during history write")
+	}
+	if runtime.command != nil {
+		t.Fatal("blocked commands reached RPC")
+	}
+	if _, err := service.Abort(domain.ThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentServiceHistoryMutationRejectsInFlightCommand(t *testing.T) {
+	service := newAgentService(&fakeAgentRuntime{})
+	service.mutationMu.RLock()
+	defer service.mutationMu.RUnlock()
+	if _, err := service.DeleteSessionMessage(domain.SessionMessageRequest{}); err == nil || !strings.Contains(err.Error(), "current Pi command") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := service.ForkSessionAt(domain.SessionMessageRequest{}); err == nil || !strings.Contains(err.Error(), "current Pi command") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAgentServiceFailedStopBlocksFurtherHistoryWritesAndRestart(t *testing.T) {
+	runtime := &fakeAgentRuntime{stopError: errors.New("kill failed")}
+	service := newAgentService(runtime)
+	service.mutationMu.Lock()
+	err := service.stopUncertainSession("thread", context.DeadlineExceeded)
+	service.mutationMu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "outcome-unknown") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := service.SendPrompt(domain.PromptRequest{ThreadID: "thread", Message: "continue"}); err == nil {
+		t.Fatal("prompt admitted after stop failed")
+	}
+	if _, err := service.StartSession(domain.StartSessionRequest{ThreadID: "thread"}); err == nil {
+		t.Fatal("restart admitted after stop failed")
+	}
+	if _, err := service.DeleteSessionMessage(domain.SessionMessageRequest{}); err == nil || !strings.Contains(err.Error(), "restart Pi Desk") {
+		t.Fatalf("error=%v", err)
+	}
+	if runtime.command != nil {
+		t.Fatal("blocked commands reached Pi")
 	}
 }
 
@@ -260,10 +383,15 @@ func TestAgentServiceForksBeforeRootUserIntoPersistedSession(t *testing.T) {
 		t.Fatalf("root fork should contain only its header: %s", data)
 	}
 	var response struct {
-		Text string `json:"text"`
+		Text        string `json:"text"`
+		SessionFile string `json:"sessionFile"`
+		SessionID   string `json:"sessionId"`
 	}
 	if err := json.Unmarshal([]byte(result.DataJSON), &response); err != nil || response.Text != "Question" {
 		t.Fatalf("fork response = %q, error = %v", result.DataJSON, err)
+	}
+	if response.SessionFile != forked || response.SessionID == "" || response.SessionID == "session" {
+		t.Fatalf("fork response did not identify the new session: %s", result.DataJSON)
 	}
 }
 

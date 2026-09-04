@@ -14,6 +14,9 @@ function workspaceRequest(reference: RepositoryWorkspaceReference): { workspaceI
 }
 
 export const repositoryService = {
+  async clipboardFiles(workspace: RepositoryWorkspaceReference): Promise<{ path: string; name: string }[]> {
+    return await RepositoryService.ClipboardFiles(workspaceRequest(workspace)) ?? [];
+  },
   snapshot(workspace: RepositoryWorkspaceReference): Promise<RepositorySnapshot> {
     return RepositoryService.Snapshot(workspaceRequest(workspace));
   },

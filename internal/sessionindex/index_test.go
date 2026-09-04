@@ -585,6 +585,27 @@ func TestSnapshotIncludesStableEntryIDs(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsJoinedRecordsWithLineNumberWithoutChangingFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "broken.jsonl")
+	text := "{\"type\":\"session\",\"version\":3,\"id\":\"test\"}\n" +
+		`{"type":"message","id":"old","parentId":null,"message":{"role":"user","content":"old"}}` +
+		`{"type":"message","id":"latest","parentId":"old","message":{"role":"user","content":"Continue"}}` + "\n"
+	writeSession(t, path, text)
+	_, err := New(root).RewindBefore(path, "latest")
+	if err == nil || !strings.Contains(err.Error(), "malformed JSON at line 2") {
+		t.Fatalf("expected malformed line number, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != text {
+		t.Fatal("invalid transcript was changed")
+	}
+	backups, _ := filepath.Glob(path + ".*.pi-desk-backup")
+	if len(backups) != 0 {
+		t.Fatal("invalid transcript should fail before mutation")
+	}
+}
+
 func TestIndexEditsMessageTextAndPreservesStructuredBlocks(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "project")

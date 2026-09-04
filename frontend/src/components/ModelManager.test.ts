@@ -175,6 +175,30 @@ describe("ModelManager", () => {
     host.remove();
   });
 
+  it("cancels an in-flight model test when the dialog closes", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    mocks.test.mockReturnValue(Object.assign(new Promise(() => undefined), { cancel }));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const wrapper = mount(ModelManager, { attachTo: host, global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const testButton = wrapper.findAll("button").find((button) => button.text() === "Test");
+    await testButton!.trigger("click");
+    document.body.querySelector<HTMLButtonElement>(".model-test-submit")?.click();
+    await flushPromises();
+
+    const closeButton = document.body.querySelector<HTMLButtonElement>('.model-test-dialog button[title="Close"]');
+    expect(closeButton?.disabled).toBe(false);
+    closeButton?.click();
+    await flushPromises();
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(document.body.querySelector(".model-test-dialog")).toBeNull();
+    wrapper.unmount();
+    host.remove();
+  });
+
   it("queries account quota in a provider-aware result dialog", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);

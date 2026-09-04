@@ -13,6 +13,14 @@ export function Branches(request: domain$0.RepositoryRequest): $CancellablePromi
     return $Call.ByID(1079385008, request);
 }
 
+/**
+ * ClipboardFiles only returns references inside a trusted local workspace.
+ * Ordinary files are never read, uploaded, moved or copied by this operation.
+ */
+export function ClipboardFiles(request: domain$0.RepositoryRequest): $CancellablePromise<domain$0.RepositoryFile[] | null> {
+    return $Call.ByID(1894275181, request);
+}
+
 export function Diff(request: domain$0.RepositoryFileRequest): $CancellablePromise<domain$0.RepositoryFileDiff> {
     return $Call.ByID(226261371, request);
 }
