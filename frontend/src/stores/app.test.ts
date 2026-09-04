@@ -3236,6 +3236,28 @@ describe("app store", () => {
     expect(store.activeDraft).toBe("");
   });
 
+  it("restores the active model before resending an edited latest message", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 1;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    const model = { provider: "custom", id: "gpt-5.6", name: "GPT 5.6" };
+    store.sessionStateByThread[thread.id] = { model };
+    store.transcriptStateByThread[thread.id] = "loaded";
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.replaySessionMessage.mockResolvedValueOnce({});
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
+    mocks.getState.mockResolvedValueOnce({ model });
+
+    expect(await store.resendEditedMessage("latest", "Continue again")).toBe(true);
+
+    expect(mocks.setModel).toHaveBeenCalledWith({ threadId: thread.id, provider: model.provider, modelId: model.id });
+    expect(mocks.setModel.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendPrompt.mock.invocationCallOrder[0]);
+    expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "Continue again" }));
+  });
+
   it("reports a failed resend after rewind and keeps the edited draft for recovery", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");

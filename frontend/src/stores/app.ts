@@ -2374,6 +2374,8 @@ export const useAppStore = defineStore("app", {
       const latestUserMessage = this.activeMessages.findLast((item) => item.role === "user");
       if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
       const images = message.images?.map((image) => ({ ...image })) ?? [];
+      const modelToRestore = this.pendingModelByThread[thread.id] ?? this.sessionStateByThread[thread.id]?.model;
+      const modelSelectionGeneration = this.modelSelectionGenerationByThread[thread.id];
       this.sessionOperationByThread[thread.id] = "Replaying message";
       this.invalidateSessionReads(thread.id);
       try {
@@ -2384,6 +2386,9 @@ export const useAppStore = defineStore("app", {
         this.attachmentsByThread[thread.id] = images;
         this.scheduleDesktopStateSave();
         await this.reloadSessionTranscript(thread, false);
+        if (modelToRestore && this.modelSelectionGenerationByThread[thread.id] === modelSelectionGeneration) {
+          this.pendingModelByThread[thread.id] = { ...modelToRestore };
+        }
       } catch (error) {
         thread.status = "attention";
         thread.error = errorMessage(error);
