@@ -19,6 +19,7 @@
   --bg-raised: #2a2a2a;
   --bg-hover: #303030;
   --bg-active: #383838;
+  --bg-selected: #304967;
   --bg-menu: #292929;
   --bg-code: #1b1b1b;
   --bg-composer: #292929;
@@ -116,6 +117,7 @@
   --bg-raised: #ffffff;
   --bg-hover: #ededed;
   --bg-active: #e6e6e6;
+  --bg-selected: #dceafb;
   --bg-menu: #ffffff;
   --bg-code: #f3f3f3;
   --bg-composer: #ffffff;
@@ -162,6 +164,7 @@
     --bg-raised: #ffffff;
     --bg-hover: #ededed;
     --bg-active: #e6e6e6;
+    --bg-selected: #dceafb;
     --bg-menu: #ffffff;
     --bg-code: #f3f3f3;
     --bg-composer: #ffffff;

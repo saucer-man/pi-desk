@@ -2804,9 +2804,10 @@
   min-height: 30px;
 }
 
-.model-menu button[aria-checked="true"] {
-  background: var(--bg-active);
-  color: var(--text);
+.model-menu button[aria-checked="true"],
+.thinking-level-grid button[aria-checked="true"] {
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
 }
 
 .model-menu button span {

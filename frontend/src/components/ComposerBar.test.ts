@@ -286,7 +286,18 @@ describe("ComposerBar", () => {
     });
 
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
+    vi.spyOn(wrapper.get(".composer").element, "getBoundingClientRect").mockReturnValue(elementRect(100, 500, 820, 108));
+    const commandButton = wrapper.get('.composer-command-button[title="Commands"]');
+
+    expect(wrapper.get(".composer").classes()).toContain("!overflow-visible");
+    expect(wrapper.find(".completion-menu").classes()).toContain("!overflow-y-auto");
+    await commandButton.trigger("click");
+    await flushPromises();
+    const commandMenu = wrapper.get<HTMLElement>('.completion-menu[aria-label="Commands"]');
     const commands = wrapper.findAll('.completion-menu[aria-label="Commands"] button');
+    expect(commandMenu.classes()).toEqual(expect.arrayContaining(["!fixed", "!overflow-y-auto"]));
+    expect(commandMenu.element.style.bottom).toBe(`${window.innerHeight - 500 + 8}px`);
+    expect(window.innerHeight - Number.parseFloat(commandMenu.element.style.bottom)).toBeLessThan(500);
 
     expect(commands).toHaveLength(14);
     expect(wrapper.text()).not.toContain("/todo");

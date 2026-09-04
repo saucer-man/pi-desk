@@ -25,6 +25,7 @@ const accessMenuOpen = ref(false);
 const accessMenu = ref<HTMLElement>();
 const modelMenuStyle = ref<Record<string, string>>({});
 const accessMenuStyle = ref<Record<string, string>>({});
+const commandMenuStyle = ref<Record<string, string>>({});
 const commandIndex = ref(0);
 const commandButtonOpen = ref(false);
 const commandRefreshing = ref(false);
@@ -160,6 +161,11 @@ watch(commandIndex, async () => {
 
 watch(matchingFiles, (files) => {
   mentionIndex.value = Math.min(mentionIndex.value, Math.max(0, files.length - 1));
+});
+
+watch([commandMenuOpen, mentionMenuOpen, commandButtonOpen], async () => {
+  await nextTick();
+  positionOpenMenus();
 });
 
 watch(() => appStore.activeThreadId, () => {
@@ -496,7 +502,27 @@ function floatingMenuStyle(anchor: HTMLElement | undefined, preferredWidth: numb
   };
 }
 
+function floatingCompletionMenuStyle(): Record<string, string> {
+  const composerRect = composer.value?.getBoundingClientRect();
+  if (!composerRect) return {};
+  const viewportGap = 16;
+  const menuGap = 8;
+  const width = Math.min(Math.max(190, composerRect.width - 20), window.innerWidth - viewportGap * 2);
+  const left = Math.min(
+    Math.max(viewportGap, composerRect.left + 10),
+    window.innerWidth - width - viewportGap,
+  );
+  return {
+    left: `${left}px`,
+    right: "auto",
+    bottom: `${window.innerHeight - composerRect.top + menuGap}px`,
+    width: `${width}px`,
+    maxHeight: `${Math.max(80, composerRect.top - viewportGap - menuGap)}px`,
+  };
+}
+
 function positionOpenMenus() {
+  if (commandMenuOpen.value || mentionMenuOpen.value) commandMenuStyle.value = floatingCompletionMenuStyle();
   if (modelMenuOpen.value) modelMenuStyle.value = floatingMenuStyle(modelMenu.value, 270);
   if (accessMenuOpen.value) accessMenuStyle.value = floatingMenuStyle(accessMenu.value, 390);
 }
@@ -611,7 +637,7 @@ onBeforeUnmount(() => {
     </div>
     <div
       ref="composer"
-      class="composer"
+      class="composer !overflow-visible"
       :class="[ui.panel, { 'has-draft': draft.trim().length > 0 || appStore.activeAttachments.length > 0, 'drag-active': dragActive }]"
       @dragenter.prevent="dragActive = true"
       @dragover.prevent="dragActive = true"
@@ -635,7 +661,7 @@ onBeforeUnmount(() => {
           :ariaLabel="tr('composer.promptLabel')"
         />
       </div>
-      <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu" :class="ui.menuSurface" role="listbox" :aria-label="tr('composer.commands')">
+      <div v-if="commandMenuOpen && matchingCommands.length" ref="commandMenu" class="completion-menu !fixed !overflow-y-auto" :class="ui.menuSurface" :style="commandMenuStyle" role="listbox" :aria-label="tr('composer.commands')">
         <button
           v-for="(command, index) in matchingCommands"
           :key="`${command.source}:${command.name}`"
@@ -650,7 +676,7 @@ onBeforeUnmount(() => {
           <span><small>{{ commandSourceLabel(command.source) }}</small>{{ command.description || command.source }}</span>
         </button>
       </div>
-      <div v-if="mentionMenuOpen" class="completion-menu file-completion-menu" :class="ui.menuSurface" role="listbox" :aria-label="tr('composer.files')">
+      <div v-if="mentionMenuOpen" class="completion-menu file-completion-menu !fixed !overflow-y-auto" :class="ui.menuSurface" :style="commandMenuStyle" role="listbox" :aria-label="tr('composer.files')">
         <button
           v-for="(file, index) in matchingFiles"
           :key="file.path"
@@ -699,6 +725,7 @@ onBeforeUnmount(() => {
                   :key="`${model.provider}/${model.id}`"
                   type="button"
                   role="menuitemradio"
+                  class="aria-checked:bg-[var(--bg-selected)] aria-checked:text-[var(--text)]"
                   :aria-checked="currentModel?.provider === model.provider && currentModel?.id === model.id"
                   :disabled="modelChanging || modelCatalogRefreshing"
                   @click="void chooseModel(model)"
@@ -721,6 +748,7 @@ onBeforeUnmount(() => {
                     :key="level"
                     type="button"
                     role="menuitemradio"
+                    class="aria-checked:bg-[var(--bg-selected)] aria-checked:text-[var(--text)]"
                     :aria-checked="appStore.activeSessionState?.thinkingLevel === level"
                     @click="void appStore.chooseThinkingLevel(level); modelMenuOpen = false"
                   >

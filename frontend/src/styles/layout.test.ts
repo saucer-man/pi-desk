@@ -171,6 +171,12 @@ describe("batch extension questions", () => {
 });
 
 describe("model menu stability", () => {
+  it("keeps selected model and thinking options distinct from hover", async () => {
+    const layout = await layoutText();
+    expect(layout).toMatch(/\.model-menu button\[aria-checked="true"\],[\s\S]*\.thinking-level-grid button\[aria-checked="true"\]\s*\{[^}]*background:\s*var\(--bg-selected\) !important/);
+    expect(layout).toMatch(/\.model-menu button:hover[^}]*\{[^}]*background:\s*var\(--bg-hover\)/);
+  });
+
   it("keeps the popup height fixed while model capabilities refresh", async () => {
     const layout = await layoutText();
     const menu = firstRuleBody(layout, ".model-menu");
