@@ -219,7 +219,15 @@ func (service *TerminalService) bindRemoteThread(threadID string, runtime *remot
 	if current, exists := service.remoteThreads[threadID]; exists && current.workspaceID != lease.WorkspaceID() {
 		return errors.New("remote terminal thread workspace identity cannot change")
 	}
-	if _, exists := service.remoteThreads[threadID]; !exists && len(service.remoteThreads) >= 500 {
+	// Tombstones of unbound threads stay for routing safety; only live
+	// bindings count against the identity limit.
+	activeThreads := 0
+	for _, thread := range service.remoteThreads {
+		if thread.active {
+			activeThreads++
+		}
+	}
+	if _, exists := service.remoteThreads[threadID]; !exists && activeThreads >= 500 {
 		return errors.New("remote terminal thread identity limit reached")
 	}
 	if err := service.remote.Bind(threadID, runtime, lease, cwd); err != nil {
