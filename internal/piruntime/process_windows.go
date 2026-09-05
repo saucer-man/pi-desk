@@ -13,10 +13,18 @@ import (
 const createNewProcessGroup = 0x00000200
 
 func configureProcess(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{
+	attributes := &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup,
 		HideWindow:    true,
 	}
+	// invocationForPath hands cmd.exe a pre-quoted /c payload. Go's default
+	// argument escaping rewrites the payload quotes to \", which cmd.exe does
+	// not understand, so shim paths with spaces (C:\Program Files\...) fail
+	// with a localized "not recognized" error. Deliver the raw command line.
+	if len(command.Args) == 5 && command.Args[1] == "/d" && command.Args[2] == "/s" && command.Args[3] == "/c" {
+		attributes.CmdLine = quoteCMDArgument(command.Path) + ` /d /s /c "` + command.Args[4] + `"`
+	}
+	command.SysProcAttr = attributes
 }
 
 func killProcessTree(command *exec.Cmd) error {
