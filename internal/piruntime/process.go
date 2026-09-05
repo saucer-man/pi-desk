@@ -169,6 +169,10 @@ func buildPiArgs(config StartConfig) ([]string, error) {
 		args = append(args, "--session", filepath.Clean(absolute))
 	}
 	if config.SessionName != "" {
+		// cmd.exe would expand %VAR% in arguments routed through a .cmd shim.
+		if strings.Contains(config.SessionName, "%") {
+			return nil, errors.New("session name must not contain %")
+		}
 		args = append(args, "--name", config.SessionName)
 	}
 	switch config.Trust {

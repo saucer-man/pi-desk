@@ -219,7 +219,9 @@ func invocationForPath(path string, args []string) Invocation {
 }
 
 func quoteCMDArgument(value string) string {
-	if value != "" && !strings.ContainsAny(value, " \t&()[]{}^=;!'+,`~|<>\"") {
+	// cmd.exe expands %VAR% even inside double quotes, so % also forces the
+	// quoted form; buildPiArgs rejects it in user-supplied arguments.
+	if value != "" && !strings.ContainsAny(value, " \t&()[]{}^=;!'+,`~|<>\"%") {
 		return value
 	}
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
