@@ -121,6 +121,45 @@ func (service *ModelConfigService) GetConfiguredModels() ([]domain.SelectableMod
 	return models, nil
 }
 
+// rebindModelProvider renames the original provider when requested, then
+// get-or-creates the target provider and applies the shared provider fields.
+// headers is the raw request value; headerKeys the normalized map to persist.
+func rebindModelProvider(providers map[string]any, originalProviderID, providerID, baseURL, api, apiKey string, providerCompat map[string]any, headers map[string]string, headerKeys map[string]string) (map[string]any, error) {
+	if originalProviderID != "" && originalProviderID != providerID {
+		provider, exists, err := objectValue(providers, originalProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: %w", originalProviderID, err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("provider %s was not found", originalProviderID)
+		}
+		if _, targetExists := providers[providerID]; targetExists {
+			return nil, fmt.Errorf("provider %s already exists", providerID)
+		}
+		delete(providers, originalProviderID)
+		providers[providerID] = provider
+	}
+	provider, exists, err := objectValue(providers, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("provider %s: %w", providerID, err)
+	}
+	providerWasCreated := !exists
+	if providerWasCreated {
+		provider = map[string]any{}
+		providers[providerID] = provider
+	}
+	setOptionalString(provider, "baseUrl", baseURL)
+	setOptionalString(provider, "api", api)
+	setOptionalObject(provider, "compat", providerCompat)
+	setOptionalString(provider, "apiKey", apiKey)
+	if headers != nil {
+		setOptionalStringMap(provider, "headers", headerKeys)
+	} else if providerWasCreated {
+		setOptionalStringMap(provider, "headers", map[string]string{"User-Agent": defaultProviderUserAgent})
+	}
+	return provider, nil
+}
+
 func (service *ModelConfigService) UpsertModel(request domain.UpsertModelConfigRequest) (domain.ModelConfigSnapshot, error) {
 	request = normalizeModelRequest(request)
 	providerCompat, modelCompat, thinkingLevelMap, err := validateModelRequest(request)
@@ -142,38 +181,9 @@ func (service *ModelConfigService) UpsertModel(request domain.UpsertModelConfigR
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
-	if request.OriginalProviderID != "" && request.OriginalProviderID != request.ProviderID {
-		provider, exists, providerErr := objectValue(providers, request.OriginalProviderID)
-		if providerErr != nil {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s: %w", request.OriginalProviderID, providerErr)
-		}
-		if !exists {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s was not found", request.OriginalProviderID)
-		}
-		if _, targetExists := providers[request.ProviderID]; targetExists {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s already exists", request.ProviderID)
-		}
-		delete(providers, request.OriginalProviderID)
-		providers[request.ProviderID] = provider
-	}
-
-	provider, exists, err := objectValue(providers, request.ProviderID)
+	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, providerCompat, request.Headers, providerHeaders)
 	if err != nil {
-		return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s: %w", request.ProviderID, err)
-	}
-	providerWasCreated := !exists
-	if providerWasCreated {
-		provider = map[string]any{}
-		providers[request.ProviderID] = provider
-	}
-	setOptionalString(provider, "baseUrl", request.BaseURL)
-	setOptionalString(provider, "api", request.API)
-	setOptionalObject(provider, "compat", providerCompat)
-	setOptionalString(provider, "apiKey", request.APIKey)
-	if request.Headers != nil {
-		setOptionalStringMap(provider, "headers", providerHeaders)
-	} else if providerWasCreated {
-		setOptionalStringMap(provider, "headers", map[string]string{"User-Agent": defaultProviderUserAgent})
+		return domain.ModelConfigSnapshot{}, err
 	}
 
 	models, err := modelObjects(provider)
@@ -300,37 +310,9 @@ func (service *ModelConfigService) AddModels(request domain.AddModelsConfigReque
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
-	if request.OriginalProviderID != "" && request.OriginalProviderID != request.ProviderID {
-		provider, exists, providerErr := objectValue(providers, request.OriginalProviderID)
-		if providerErr != nil {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s: %w", request.OriginalProviderID, providerErr)
-		}
-		if !exists {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s was not found", request.OriginalProviderID)
-		}
-		if _, targetExists := providers[request.ProviderID]; targetExists {
-			return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s already exists", request.ProviderID)
-		}
-		delete(providers, request.OriginalProviderID)
-		providers[request.ProviderID] = provider
-	}
-	provider, exists, err := objectValue(providers, request.ProviderID)
+	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, providerCompat, request.Headers, providerHeaders)
 	if err != nil {
-		return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s: %w", request.ProviderID, err)
-	}
-	providerWasCreated := !exists
-	if providerWasCreated {
-		provider = map[string]any{}
-		providers[request.ProviderID] = provider
-	}
-	setOptionalString(provider, "baseUrl", request.BaseURL)
-	setOptionalString(provider, "api", request.API)
-	setOptionalObject(provider, "compat", providerCompat)
-	setOptionalString(provider, "apiKey", request.APIKey)
-	if request.Headers != nil {
-		setOptionalStringMap(provider, "headers", providerHeaders)
-	} else if providerWasCreated {
-		setOptionalStringMap(provider, "headers", map[string]string{"User-Agent": defaultProviderUserAgent})
+		return domain.ModelConfigSnapshot{}, err
 	}
 	models, err := modelObjects(provider)
 	if err != nil {
