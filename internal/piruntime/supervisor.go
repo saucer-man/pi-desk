@@ -109,7 +109,9 @@ func (supervisor *Supervisor) Start(ctx context.Context, config StartConfig) (Se
 
 	var client *pirpc.Client
 	client = pirpc.NewClient(process, generation, func(event pirpc.Event) {
-		if supervisor.isCurrent(config.ThreadID, generation, client) {
+		// Read goroutines start inside NewClient, before the outer variable is
+		// assigned, so this closure must not capture `client`.
+		if supervisor.isCurrent(config.ThreadID, generation) {
 			supervisor.sink(SessionEvent{ThreadID: config.ThreadID, Event: event})
 		}
 	})
@@ -288,11 +290,14 @@ func (supervisor *Supervisor) session(threadID string) (*managedSession, error) 
 	return session, nil
 }
 
-func (supervisor *Supervisor) isCurrent(threadID string, generation uint64, client *pirpc.Client) bool {
+func (supervisor *Supervisor) isCurrent(threadID string, generation uint64) bool {
 	supervisor.mu.RLock()
 	session := supervisor.sessions[threadID]
 	supervisor.mu.RUnlock()
-	return session != nil && session.generation == generation && session.client == client
+	// Generations are assigned monotonically under the supervisor lock right
+	// before the session is registered, so generation equality alone
+	// identifies the current session for a thread.
+	return session != nil && session.generation == generation
 }
 
 func (supervisor *Supervisor) remove(threadID string, expected *managedSession) bool {
