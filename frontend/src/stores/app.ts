@@ -2346,6 +2346,15 @@ export const useAppStore = defineStore("app", {
         task.lastStatus = "failed";
         task.lastError = errorMessage(error);
         task.lastThreadId = threadID;
+        const failedThread = this.threads.find((candidate) => candidate.id === threadID);
+        if (failedThread) {
+          if (failedThread.started) {
+            failedThread.status = "attention";
+            failedThread.error = task.lastError;
+          } else {
+            this.removeThreadState(threadID);
+          }
+        }
         return undefined;
       } finally {
         task.lastRunAt = startedAt;
