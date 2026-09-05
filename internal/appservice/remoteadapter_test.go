@@ -13,10 +13,15 @@ func TestRemoteAdapterManifestPinsContentCompatibilityAndCoverage(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, compatible := range []string{"0.85.0", "0.85.4"} {
+		if _, err := verifyRemoteAdapterBundle(compatible); err != nil {
+			t.Fatalf("compatible Pi version rejected: %q (%v)", compatible, err)
+		}
+	}
 	if manifest.Protocol != remoteAdapterProtocol || !slices.Equal(manifest.Coverage, remoteAdapterCoverage) {
 		t.Fatalf("manifest=%#v", manifest)
 	}
-	for _, incompatible := range []string{"", "0.84.1", "0.85.0", "invalid"} {
+	for _, incompatible := range []string{"", "0.84.1", "0.86.0", "invalid"} {
 		if _, err := verifyRemoteAdapterBundle(incompatible); err == nil {
 			t.Fatalf("incompatible Pi version accepted: %q", incompatible)
 		}

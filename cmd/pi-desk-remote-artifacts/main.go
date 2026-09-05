@@ -31,7 +31,7 @@ func main() {
 	output := flag.String("output", "build/remote-helper/artifacts", "artifact output directory")
 	buildIdentity := flag.String("build-identity", "", "helper hello build identity")
 	piMin := flag.String("pi-min", "0.84.2", "inclusive Pi compatibility version")
-	piMax := flag.String("pi-max", "0.85.0", "exclusive Pi compatibility version")
+	piMax := flag.String("pi-max", "0.86.0", "exclusive Pi compatibility version")
 	flag.Parse()
 	if flag.NArg() != 0 || strings.TrimSpace(*output) == "" || strings.TrimSpace(*buildIdentity) == "" {
 		fatal("output and build-identity are required")

@@ -20,7 +20,7 @@ func helperArtifactForTest(goos, architecture string, content []byte) HelperArti
 		SHA256:          hex.EncodeToString(digest[:]),
 		BuildIdentity:   "test-build-20260819",
 		PiVersionMin:    "0.84.2",
-		PiVersionMax:    "0.85.0",
+		PiVersionMax:    "0.86.0",
 	}
 }
 
@@ -134,7 +134,7 @@ func TestHelperArtifactSelectionAndIntegrityFailClosed(t *testing.T) {
 	if _, err := manifest.SelectHelperArtifact("windows", "amd64", "0.84.2"); !errors.Is(err, ErrHelperArtifactUnsupported) {
 		t.Fatalf("unsupported target error = %v", err)
 	}
-	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "0.85.0"); !errors.Is(err, ErrHelperPiIncompatible) {
+	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "0.86.0"); !errors.Is(err, ErrHelperPiIncompatible) {
 		t.Fatalf("incompatible Pi error = %v", err)
 	}
 	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "not-a-version"); !errors.Is(err, ErrHelperPiIncompatible) {
