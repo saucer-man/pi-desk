@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"pi-desk/internal/processutil"
 	"pi-desk/internal/remotehelper"
@@ -561,14 +560,9 @@ func (runtime *installedHelperGeneration) RunBash(ctx context.Context, rootHandl
 					return RuntimeBashResult{}, runtimeOutcomeUnknownError()
 				}
 				projected := strings.ToValidUTF8(string(output), "\uFFFD")
-				truncated := len(projected) > maxRuntimeBashOutputBytes
-				if truncated {
-					projected = projected[:maxRuntimeBashOutputBytes]
-					for !utf8.ValidString(projected) {
-						projected = projected[:len(projected)-1]
-					}
-				}
-				return RuntimeBashResult{ProcessID: processID, ExitCode: terminal.ExitCode, Output: projected, OutputBytes: terminal.OutputBytes, OutputTruncated: truncated}, nil
+				// The stream cap above rejects any overflow, so no truncation
+				// happens here and OutputBytes always matches len(output).
+				return RuntimeBashResult{ProcessID: processID, ExitCode: terminal.ExitCode, Output: projected, OutputBytes: terminal.OutputBytes}, nil
 			case remoteprotocol.KindError:
 				if frame.Envelope.Error == nil || frame.Envelope.Error.OutcomeUnknown != (frame.Envelope.Error.Code == "REMOTE_OUTCOME_UNKNOWN") {
 					_ = runtime.Kill()
