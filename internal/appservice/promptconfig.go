@@ -86,7 +86,7 @@ func (service *PromptTemplateService) GetPromptTemplate(request domain.PromptTem
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, false)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath)
 	if err != nil {
 		return domain.PromptTemplate{}, err
 	}
@@ -109,7 +109,7 @@ func (service *PromptTemplateService) UpsertPromptTemplate(request domain.Upsert
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, true)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath)
 	if err != nil {
 		return domain.PromptTemplate{}, err
 	}
@@ -170,7 +170,7 @@ func (service *PromptTemplateService) DeletePromptTemplate(request domain.Prompt
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, false)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath)
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func (service *PromptTemplateService) globalDirectory() (string, error) {
 	return filepath.Join(filepath.Clean(service.agentDirectory), "prompts"), nil
 }
 
-func (service *PromptTemplateService) directoryFor(scope domain.PromptTemplateScope, workspacePath string, create bool) (string, error) {
+func (service *PromptTemplateService) directoryFor(scope domain.PromptTemplateScope, workspacePath string) (string, error) {
 	switch scope {
 	case domain.PromptTemplateScopeGlobal:
 		return service.globalDirectory()
@@ -209,9 +209,6 @@ func (service *PromptTemplateService) directoryFor(scope domain.PromptTemplateSc
 				notice = "project prompt templates are unavailable"
 			}
 			return "", errors.New(notice)
-		}
-		if create {
-			return directory, nil
 		}
 		return directory, nil
 	default:
