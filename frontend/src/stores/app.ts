@@ -3318,8 +3318,9 @@ export const useAppStore = defineStore("app", {
               this.appendSystem(thread.id, tr("extension.invalidBatchRequest"), tr("extension.invalidBatchRequest"));
             }
           } else if (request.method === "notify" && request.message) {
-            if (isInternalRuntimeNotice(request.message)) break;
-            this.appendSystem(thread.id, request.message, request.notifyType === "error" ? request.message : undefined);
+            const notifyMessage = boundedExtensionText(request.message, 8192);
+            if (!notifyMessage || isInternalRuntimeNotice(notifyMessage)) break;
+            this.appendSystem(thread.id, notifyMessage, request.notifyType === "error" ? notifyMessage : undefined);
           } else if (request.method === "setStatus") {
             const key = boundedExtensionText(request.statusKey, 256);
             if (!key) break;
