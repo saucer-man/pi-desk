@@ -5052,6 +5052,76 @@
   font-size: calc(10.5px + var(--font-size-delta));
 }
 
+/* Skill list rows: leading icon chip, name over description, hairline separators. */
+.skill-list {
+  padding: 10px 0 18px;
+}
+
+.skill-list > .model-config-add-row {
+  width: auto;
+  margin: 0 8px 10px;
+}
+
+.skill-list .prompt-config-scope {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.skill-list .prompt-config-scope > header {
+  padding: 0 20px;
+}
+
+.skill-list .prompt-config-scope > .settings-inline-note,
+.skill-list .prompt-config-scope > .prompt-config-notice {
+  padding: 0 20px;
+}
+
+.skill-list .prompt-config-scope > button,
+.skill-list .runtime-resource-item {
+  min-height: 0;
+  justify-content: flex-start;
+  gap: 11px;
+  padding: 9px 20px;
+  border-radius: 0;
+}
+
+.skill-list .prompt-config-scope > button + button,
+.skill-list .runtime-resource-item + .runtime-resource-item {
+  border-top: 1px solid var(--border);
+}
+
+.skill-list .prompt-config-scope > button.is-active {
+  background: var(--bg-active);
+}
+
+.skill-row-icon {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-app);
+  color: var(--text-muted);
+}
+
+.skill-list .skill-row-text {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.skill-list .skill-row-text strong {
+  color: var(--text);
+  font-size: calc(13px + var(--font-size-delta));
+  font-weight: 500;
+}
+
+.skill-list .skill-row-text small {
+  font-size: calc(11px + var(--font-size-delta));
+}
+
 .prompt-config-notice {
   margin: 5px 9px 2px;
   line-height: 1.45;

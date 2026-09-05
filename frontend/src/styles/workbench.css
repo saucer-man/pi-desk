@@ -773,6 +773,19 @@
   gap: 6px;
 }
 
+/* Skill rows keep the two-line icon layout from layout.css. */
+.settings-dialog .skill-list .prompt-config-scope > button,
+.settings-dialog .skill-list .runtime-resource-item {
+  min-height: 0 !important;
+  padding: 9px 20px !important;
+}
+
+.settings-dialog .skill-list .prompt-config-scope > button > span.skill-row-text {
+  display: grid;
+  align-items: stretch;
+  gap: 3px !important;
+}
+
 .settings-dialog .provider-header-row {
   grid-template-columns: repeat(2, minmax(0, 1fr)) 28px;
 }
