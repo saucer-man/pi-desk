@@ -83,19 +83,37 @@ func (starter *ExecStarter) Start(ctx context.Context, config StartConfig) (pirp
 	if err != nil {
 		return nil, fmt.Errorf("open Pi stdin: %w", err)
 	}
-	stdout, err := command.StdoutPipe()
+	// os.Pipe instead of StdoutPipe/StderrPipe: those get their read ends
+	// closed by Wait, which can silently discard final records still in
+	// flight when Pi exits. Manual pipes are drained to EOF by the RPC
+	// client and are not touched by Wait.
+	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, fmt.Errorf("open Pi stdout: %w", err)
 	}
-	stderr, err := command.StderrPipe()
+	stderrRead, stderrWrite, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
+		_ = stdoutRead.Close()
+		_ = stdoutWrite.Close()
 		return nil, fmt.Errorf("open Pi stderr: %w", err)
 	}
+	command.Stdout = stdoutWrite
+	command.Stderr = stderrWrite
 	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdoutRead.Close()
+		_ = stdoutWrite.Close()
+		_ = stderrRead.Close()
+		_ = stderrWrite.Close()
 		return nil, fmt.Errorf("start Pi RPC process: %w", err)
 	}
+	// Drop the parent copies so readers see EOF when Pi (and its write ends) exit.
+	_ = stdoutWrite.Close()
+	_ = stderrWrite.Close()
 
-	return &execProcess{command: command, stdin: stdin, stdout: stdout, stderr: stderr}, nil
+	return &execProcess{command: command, stdin: stdin, stdout: stdoutRead, stderr: stderrRead}, nil
 }
 
 func validateWorkspace(path string) (string, error) {
