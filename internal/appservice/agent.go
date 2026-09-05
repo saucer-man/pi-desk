@@ -176,7 +176,10 @@ func (service *AgentService) StartSession(request domain.StartSessionRequest) (d
 			return domain.LiveSession{}, err
 		}
 		service.mu.Lock()
-		if service.remoteThreads[threadID] == "" && len(service.remoteThreads) >= 500 {
+		// The identity map keeps tombstones on purpose (workspace identity guard
+		// and remote-context admission), so bound live remote sessions instead
+		// of total identities ever seen.
+		if service.remoteThreads[threadID] == "" && len(service.remoteSessions) >= 500 {
 			service.mu.Unlock()
 			_ = service.remoteLifecycle.StopTask(threadID)
 			return domain.LiveSession{}, errors.New("remote Pi thread identity limit reached")
