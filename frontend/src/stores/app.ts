@@ -563,7 +563,7 @@ function boundedToolOutput(output: string): { text: string; truncated: boolean }
 
 function messageTimestamp(value: unknown): number | undefined {
   if (typeof value !== "number" && typeof value !== "string") return undefined;
-  const date = new Date(typeof value === "number" ? value : value);
+  const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.getTime();
 }
 
