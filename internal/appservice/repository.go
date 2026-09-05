@@ -426,8 +426,11 @@ func openWithChooser(path string) error {
 	if runtime.GOOS != "windows" {
 		return errors.New("system Open With dialog is currently available on Windows only")
 	}
-	if err := exec.Command("rundll32.exe", "shell32.dll,OpenAs_RunDLL", path).Start(); err != nil {
+	command := exec.Command("rundll32.exe", "shell32.dll,OpenAs_RunDLL", path)
+	if err := command.Start(); err != nil {
 		return fmt.Errorf("open system Open With dialog: %w", err)
 	}
+	// Reap the dialog process; its exit status carries no useful signal.
+	go func() { _ = command.Wait() }()
 	return nil
 }
