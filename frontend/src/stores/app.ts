@@ -1403,21 +1403,16 @@ export const useAppStore = defineStore("app", {
       this.newTaskOpen = false;
       this.scheduleDesktopStateSave();
     },
-    applySessionSnapshot(thread: ThreadSummary, snapshot: SessionSnapshot, prepend = false) {
-      const page = (snapshot.messages as Array<Record<string, unknown>> | null) ?? [];
-      const existingEntries = this.transcriptEntriesByThread[thread.id] ?? [];
-      const entries = prepend ? [...page, ...existingEntries] : page;
+    applySessionSnapshot(thread: ThreadSummary, snapshot: SessionSnapshot) {
+      const entries = (snapshot.messages as Array<Record<string, unknown>> | null) ?? [];
       this.transcriptEntriesByThread[thread.id] = entries;
-      const liveMessages = prepend
-        ? (this.messagesByThread[thread.id] ?? []).filter((message) => !message.id.startsWith("history-"))
-        : [];
       const historical = historicalMessages(entries, this.compactionEstimatesByThread[thread.id]);
       for (const message of historical) {
         if (message.compaction?.estimatedTokensAfter !== undefined) {
           this.applyCompactionEstimate(thread.id, message.compaction, false);
         }
       }
-      this.messagesByThread[thread.id] = [...historical, ...liveMessages];
+      this.messagesByThread[thread.id] = historical;
       if (Number.isInteger(snapshot.messageCount) && snapshot.messageCount >= 0) thread.messageCount = snapshot.messageCount;
       this.searchBodyTextByThread[thread.id] = snapshotSearchText(entries);
       this.searchBodyVersionByThread[thread.id] = sessionSearchVersion(thread);
