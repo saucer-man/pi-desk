@@ -256,7 +256,10 @@ func (session *RuntimeTerminalSession) consume(lifetime context.Context, results
 				session.sequence = event.Sequence
 				session.replay = append(session.replay, frame.Blob...)
 				if len(session.replay) > maxRuntimeTerminalReplayBytes {
-					session.replay = append([]byte(nil), session.replay[len(session.replay)-maxRuntimeTerminalReplayBytes:]...)
+					// Trim in place; reallocating would copy ~1 MiB per output chunk.
+					overflow := len(session.replay) - maxRuntimeTerminalReplayBytes
+					copy(session.replay, session.replay[overflow:])
+					session.replay = session.replay[:maxRuntimeTerminalReplayBytes]
 				}
 				session.mu.Unlock()
 				session.emit(RuntimeTerminalEvent{Type: "output", Sequence: event.Sequence, Data: append([]byte(nil), frame.Blob...)}, false)
