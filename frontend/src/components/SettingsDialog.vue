@@ -319,10 +319,10 @@ function sourceIcon(source: SlashCommand["source"]) {
                 <span>{{ resourceCounts[source] }}</span>
               </button>
             </div>
-            <label class="resource-search"><Search :size="14" /><input :class="ui.input" v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
+            <label class="resource-search"><Search :size="14" /><input v-model="resourceQuery" type="search" :placeholder="tr('settings.filterResources')" :aria-label="tr('settings.filterResources')" /></label>
             <div v-if="!appStore.activeThread?.started" class="settings-empty" :class="ui.empty"><Boxes :size="18" /><span>{{ tr("settings.piNotRunning") }}</span></div>
             <div v-else-if="filteredResources.length" class="resource-list">
-              <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row" :class="ui.listItem">
+              <div v-for="resource in filteredResources" :key="`${resource.source}-${resource.name}-${resource.path}`" class="resource-row">
                 <component :is="sourceIcon(resource.source)" :size="15" />
                 <span><strong>/{{ resource.name }}</strong><small>{{ resource.description || resource.source }}</small><code v-if="resource.path" :title="resource.path">{{ resource.path }}</code></span>
                 <em>{{ resource.location || resource.source }}</em>

@@ -4685,7 +4685,6 @@
 .resource-list {
   display: grid;
   min-height: 0;
-  gap: 12px;
 }
 
 .statistics-scope {
@@ -6234,15 +6233,19 @@
 
 .resource-search {
   display: grid;
-  height: 32px;
+  height: 36px;
   grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
-  gap: 7px;
-  padding: 0 9px;
+  gap: 8px;
+  padding: 0 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   background: var(--bg-app);
+}
+
+.resource-search:focus-within {
+  border-color: var(--focus);
 }
 
 .resource-search input {
@@ -6251,24 +6254,27 @@
   outline: 0;
   background: transparent;
   color: var(--text);
-  font-size: calc(10.5px + var(--font-size-delta));
+  font-size: calc(12px + var(--font-size-delta));
 }
 
 .resource-row {
   display: grid;
-  min-height: 54px;
   grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: start;
-  gap: 8px;
-  padding: 8px 7px;
+  gap: 10px;
+  padding: 11px 10px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
+}
+
+.resource-row:hover {
+  background: var(--bg-hover);
 }
 
 .resource-row > span {
   display: grid;
   min-width: 0;
-  gap: 3px;
+  gap: 4px;
 }
 
 .resource-row strong {
