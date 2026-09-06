@@ -3984,18 +3984,34 @@
   color: var(--text-muted);
 }
 
-.remote-alias-options {
+/* Higher specificity + !important to beat ui.menu's overflow-hidden utility. */
+.remote-alias-picker .remote-alias-options {
   position: absolute;
   z-index: 8;
   top: calc(100% + 4px);
   right: 0;
   left: 0;
   max-height: 228px;
-  overflow-y: auto;
+  overflow-y: auto !important;
   padding: 4px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
+}
+
+/* Tailwind v4 emits utilities inside @layer utilities, and for !important
+   declarations layered rules outrank unlayered ones regardless of
+   specificity. Join the same layer so this override can win. */
+@layer utilities {
+  .remote-alias-picker .remote-alias-options {
+    overflow-y: auto !important;
+  }
+
+  /* While the SSH alias dropdown is open, let it float over the dialog
+     instead of growing the body's scrollable area (outer scrollbar). */
+  .dialog-body.is-alias-open {
+    overflow: visible !important;
+  }
 }
 
 .remote-alias-option {

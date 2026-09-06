@@ -307,7 +307,7 @@ async function create() {
         <h2 id="new-task-title">{{ tr("newTask.title") }}</h2>
         <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('common.close')" :disabled="remoteBusy" @click="void close()"><X :size="17" /></button>
       </header>
-      <div class="dialog-body" :class="ui.dialogBody">
+      <div class="dialog-body" :class="[ui.dialogBody, { 'is-alias-open': remoteAliasOpen }]">
         <div class="segmented-control" role="group" :aria-label="tr('newTask.location')">
           <button type="button" :class="[ui.tab, { active: mode === 'local' }]" :aria-pressed="mode === 'local'" @click="void selectMode('local')"><FolderGit2 :size="15" />{{ tr("newTask.local") }}</button>
           <button type="button" :class="[ui.tab, { active: mode === 'ssh' }]" :aria-pressed="mode === 'ssh'" @click="void selectMode('ssh')"><Server :size="15" />{{ tr("newTask.ssh") }}</button>
