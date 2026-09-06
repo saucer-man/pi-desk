@@ -450,7 +450,25 @@ func parseSkillMetadata(content string) map[string]string {
 		if !found {
 			continue
 		}
-		result[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), "\"'")
+		value = strings.TrimSpace(value)
+		switch value {
+		case ">", ">-", ">+", "|", "|-", "|+":
+			var parts []string
+			for index+1 < len(lines) {
+				next := lines[index+1]
+				if strings.TrimSpace(next) == "" {
+					index++
+					continue
+				}
+				if next[0] != ' ' && next[0] != '\t' {
+					break
+				}
+				parts = append(parts, strings.TrimSpace(next))
+				index++
+			}
+			value = strings.Join(parts, " ")
+		}
+		result[strings.TrimSpace(key)] = strings.Trim(value, "\"'")
 	}
 	return result
 }

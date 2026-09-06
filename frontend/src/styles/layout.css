@@ -5094,18 +5094,6 @@
   background: var(--bg-active);
 }
 
-.skill-row-icon {
-  display: grid;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg-app);
-  color: var(--text-muted);
-}
-
 .skill-list .skill-row-text {
   display: grid;
   min-width: 0;

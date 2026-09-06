@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { FilePlus2, RefreshCw, Save, ScrollText, Trash2, WandSparkles, XCircle } from "lucide-vue-next";
+import { FilePlus2, RefreshCw, Save, ScrollText, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref } from "vue";
 import { SkillScope, type ManagedSkillSummary } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -198,17 +198,16 @@ onMounted(() => { void loadSkills(); });
         <button class="model-config-add-row" :class="ui.listItem" type="button" :disabled="saving" @click="openCreateDialog()"><FilePlus2 :size="14" /><span>{{ tr("settings.addSkill") }}</span></button>
         <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.globalSkills") }}</strong><span>{{ globalSkills.length }}</span></header>
-          <button v-for="skill in globalSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span class="skill-row-icon" aria-hidden="true"><WandSparkles :size="15" /></span><span class="skill-row-text"><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span></button>
+          <button v-for="skill in globalSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span class="skill-row-text"><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span></button>
         </section>
         <section class="prompt-config-scope" :class="ui.group">
           <header><strong>{{ tr("settings.projectSkills") }}</strong><span>{{ projectSkills.length }}</span></header>
           <p v-if="!snapshot?.projectEnabled" class="settings-inline-note">{{ snapshot?.projectNotice || tr("settings.projectSkillsUnavailable") }}</p>
-          <button v-for="skill in projectSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span class="skill-row-icon" aria-hidden="true"><WandSparkles :size="15" /></span><span class="skill-row-text"><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span></button>
+          <button v-for="skill in projectSkills" :key="keyOf(skill)" type="button" :class="{ 'is-active': selectedKey === keyOf(skill) }" :disabled="saving" @click="void selectSkill(skill)"><span class="skill-row-text"><strong>{{ skill.name }}</strong><small>{{ skill.description || tr("settings.skillNoDescription") }}</small></span></button>
         </section>
         <section class="prompt-config-scope runtime-resource-scope" :class="ui.group">
           <header><strong>{{ tr("settings.runtimeLoadedReadonly") }}</strong><span>{{ runtimeSkills.length }}</span></header>
           <div v-for="skill in runtimeSkills" :key="`${skill.name}-${skill.path}`" class="runtime-resource-item" :class="ui.listItem" :title="skill.path">
-            <span class="skill-row-icon" aria-hidden="true"><ScrollText :size="15" /></span>
             <span class="skill-row-text"><strong>/{{ skill.name }}</strong><small>{{ skill.description || skill.path || tr("settings.skillNoDescription") }}</small></span>
           </div>
           <p v-if="!appStore.activeThread?.started" class="prompt-config-notice">{{ tr("settings.startForRuntimeResources") }}</p>
