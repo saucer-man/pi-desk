@@ -669,6 +669,60 @@ describe("ComposerBar", () => {
     wrapper.unmount();
   });
 
+  it("creates a code block after a soft line break and exits it with a closing fence", async () => {
+    const store = useAppStore();
+    store.$patch({
+      threads: [{ id: "code-lines", title: "Code lines", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: true, generation: 1 }],
+      activeThreadId: "code-lines", draftsByThread: { "code-lines": "Before" },
+    });
+    store.sendActivePrompt = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mount(ComposerBar);
+    await flushPromises();
+    const setup = wrapper.findComponent(MarkdownEditorCore).vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const view = setup.setupState.get()?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("Milkdown editor did not start");
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+    const editor = wrapper.get("[contenteditable='true']");
+    await editor.trigger("keydown", { key: "Enter", code: "Enter", shiftKey: true });
+    view.dispatch(view.state.tr.insertText("```"));
+    await editor.trigger("keydown", { key: "Enter", code: "Enter" });
+
+    expect(editor.findAll("p")[0].text()).toBe("Before");
+    expect(editor.find("pre code").exists()).toBe(true);
+    view.dispatch(view.state.tr.insertText("const ready = true;"));
+    await editor.trigger("keydown", { key: "Enter", code: "Enter" });
+    view.dispatch(view.state.tr.insertText("```"));
+    await editor.trigger("keydown", { key: "Enter", code: "Enter" });
+
+    expect(editor.findAll("pre")).toHaveLength(1);
+    expect(editor.get("pre code").element.textContent).toBe("const ready = true;\n");
+    expect(editor.findAll("p").at(-1)?.text()).toBe("");
+    view.dispatch(view.state.tr.insertText("After"));
+    expect(editor.findAll("p").at(-1)?.text()).toBe("After");
+    expect(store.sendActivePrompt).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("creates a code block at the start of a new line inside a list item", async () => {
+    const store = useAppStore();
+    store.$patch({
+      threads: [{ id: "list-code", title: "List code", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: true, generation: 1 }],
+      activeThreadId: "list-code", draftsByThread: { "list-code": "1. Before" },
+    });
+    const wrapper = mount(ComposerBar);
+    await flushPromises();
+    const setup = wrapper.findComponent(MarkdownEditorCore).vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const view = setup.setupState.get()?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("Milkdown editor did not start");
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+    const editor = wrapper.get("[contenteditable='true']");
+    await editor.trigger("keydown", { key: "Enter", code: "Enter", shiftKey: true });
+    view.dispatch(view.state.tr.insertText("```"));
+    await editor.trigger("keydown", { key: "Enter", code: "Enter" });
+    expect(editor.find("li pre code").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it.each(["1. first", "- first"])("continues and exits a list (%s) with Enter without sending", async (draft) => {
     const store = useAppStore();
     store.$patch({

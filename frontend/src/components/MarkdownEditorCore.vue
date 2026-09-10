@@ -3,9 +3,10 @@ import { ui } from "../ui/classes";
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx, rootCtx, serializerCtx } from "@milkdown/core";
 import { codeBlockSchema, commonmark, createCodeBlockInputRule, hardbreakSchema, strongInputRule, strongSchema } from "@milkdown/preset-commonmark";
 import { markRule } from "@milkdown/prose";
-import { newlineInCode } from "@milkdown/prose/commands";
+import { exitCode, newlineInCode } from "@milkdown/prose/commands";
 import { textblockTypeInputRule } from "@milkdown/prose/inputrules";
 import { Fragment, Slice } from "@milkdown/prose/model";
+import { TextSelection } from "@milkdown/prose/state";
 import { gfm } from "@milkdown/preset-gfm";
 import { Milkdown, useEditor } from "@milkdown/vue";
 import { $inputRule, replaceAll } from "@milkdown/utils";
@@ -118,16 +119,44 @@ function captureTextInsertion(): (text: string, separate?: boolean) => boolean {
   };
 }
 
-function handlesEnter(): boolean {
+function handleEnter(event: KeyboardEvent): boolean {
   return get()?.action((ctx) => {
-    const { selection } = ctx.get(editorViewCtx).state;
+    const view = ctx.get(editorViewCtx);
+    const { selection } = view.state;
     const { $from, empty } = selection;
-    if ($from.parent.type.spec.code) return true;
-    for (let depth = $from.depth; depth > 0; depth -= 1) {
-      if ($from.node(depth).type.name === "list_item") return true;
+    if ($from.parent.type.spec.code) {
+      const line = $from.parent.textBetween(0, $from.parentOffset).split("\n").at(-1);
+      if (/^(?:```|~~~)$/.test(line ?? "")) {
+        view.dispatch(view.state.tr.delete(selection.from - 3, selection.from));
+        exitCode(view.state, view.dispatch);
+      } else {
+        view.someProp("handleKeyDown", (handler) => handler(view, event));
+      }
+      return true;
     }
     const text = $from.parent.textBetween(0, $from.parentOffset, undefined, "\uFFFC");
-    return empty && codeFence.test(`${text}\n`);
+    const lineStart = text.lastIndexOf("\uFFFC") + 1;
+    const match = empty && codeFence.exec(`${text.slice(lineStart)}\n`);
+    if (match) {
+      if (lineStart) {
+        const splitAt = $from.start() + lineStart - 1;
+        const tr = view.state.tr.delete(splitAt, selection.from).split(splitAt);
+        const codePos = splitAt + 2;
+        tr.setBlockType(codePos, codePos, codeBlockSchema.type(ctx), { language: match[1] })
+          .setSelection(TextSelection.create(tr.doc, codePos));
+        view.dispatch(tr.scrollIntoView());
+      } else {
+        view.someProp("handleKeyDown", (handler) => handler(view, event));
+      }
+      return true;
+    }
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      if ($from.node(depth).type.name === "list_item") {
+        view.someProp("handleKeyDown", (handler) => handler(view, event));
+        return true;
+      }
+    }
+    return false;
   }) ?? false;
 }
 
@@ -178,7 +207,7 @@ watch(() => [props.placeholder, props.ariaLabel], updateElement);
 
 onMounted(updateElement);
 
-defineExpose({ focus, replaceMarkdown, handlesEnter, captureTextInsertion });
+defineExpose({ focus, replaceMarkdown, handleEnter, captureTextInsertion });
 </script>
 
 <template>

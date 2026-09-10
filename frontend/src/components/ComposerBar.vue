@@ -13,7 +13,7 @@ import MarkdownEditor from "./MarkdownEditor.vue";
 import PiDeskTodoPanel from "./PiDeskTodoPanel.vue";
 
 const appStore = useAppStore();
-const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void; handlesEnter(): boolean; captureTextInsertion(): (text: string, separate?: boolean) => boolean }>();
+const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void; handleEnter(event: KeyboardEvent): boolean; captureTextInsertion(): (text: string, separate?: boolean) => boolean }>();
 const commandMenu = ref<HTMLElement>();
 const commandButton = ref<HTMLElement>();
 const composer = ref<HTMLElement>();
@@ -325,9 +325,9 @@ function onKeydown(event: KeyboardEvent) {
     }
   }
   if (event.key === "Enter" && !event.shiftKey) {
-    if (!event.repeat && markdownEditor.value?.handlesEnter()) return;
     event.preventDefault();
     event.stopPropagation();
+    if (!event.repeat && markdownEditor.value?.handleEnter(event)) return;
     if (!event.repeat) submit();
   }
 }
