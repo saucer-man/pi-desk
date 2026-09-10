@@ -21,6 +21,10 @@ func TestClipboardFilesBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	resolvedOutside, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name      string
 		paths     []string
@@ -28,16 +32,17 @@ func TestClipboardFilesBoundaries(t *testing.T) {
 		kind      workspace.Kind
 		wantError bool
 		wantCount int
+		wantPath  string
 	}{
-		{"unicode and deduplication", []string{inside, inside}, "approve", workspace.KindLocal, false, 1},
-		{"outside workspace", []string{outside}, "approve", workspace.KindLocal, true, 0},
-		{"mixed batch is atomic", []string{inside, outside}, "approve", workspace.KindLocal, true, 0},
-		{"untrusted", []string{inside}, "deny", workspace.KindLocal, true, 0},
-		{"remote", []string{inside}, "approve", workspace.KindSSH, true, 0},
-		{"relative path", []string{"需求 文档.md"}, "approve", workspace.KindLocal, true, 0},
-		{"directory", []string{root}, "approve", workspace.KindLocal, true, 0},
-		{"deleted file", []string{filepath.Join(root, "missing")}, "approve", workspace.KindLocal, true, 0},
-		{"ordinary paste needs no trust", nil, "deny", workspace.KindSSH, false, 0},
+		{"unicode and deduplication", []string{inside, inside}, "approve", workspace.KindLocal, false, 1, "需求 文档.md"},
+		{"outside workspace uses absolute path", []string{outside}, "approve", workspace.KindLocal, false, 1, filepath.ToSlash(resolvedOutside)},
+		{"mixed batch keeps both", []string{inside, outside}, "approve", workspace.KindLocal, false, 2, "需求 文档.md"},
+		{"untrusted", []string{inside}, "deny", workspace.KindLocal, true, 0, ""},
+		{"remote", []string{inside}, "approve", workspace.KindSSH, true, 0, ""},
+		{"relative path", []string{"需求 文档.md"}, "approve", workspace.KindLocal, true, 0, ""},
+		{"directory", []string{root}, "approve", workspace.KindLocal, true, 0, ""},
+		{"deleted file", []string{filepath.Join(root, "missing")}, "approve", workspace.KindLocal, true, 0, ""},
+		{"ordinary paste needs no trust", nil, "deny", workspace.KindSSH, false, 0, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := newRepositoryService(fakeWorkspaceResolver{record: workspace.Record{
@@ -48,8 +53,8 @@ func TestClipboardFilesBoundaries(t *testing.T) {
 			if (err != nil) != test.wantError || len(files) != test.wantCount {
 				t.Fatalf("files=%v error=%v", files, err)
 			}
-			if len(files) > 0 && (files[0].Path != "需求 文档.md" || files[0].Name != "需求 文档.md") {
-				t.Fatalf("expected a relative file reference: %v", files)
+			if len(files) > 0 && (files[0].Path != test.wantPath || files[0].Name != filepath.Base(test.wantPath)) {
+				t.Fatalf("unexpected file reference: %q wantPath=%q name=%q", files[0].Path, test.wantPath, files[0].Name)
 			}
 		})
 	}
@@ -62,7 +67,8 @@ func TestClipboardFilesBoundaries(t *testing.T) {
 	}
 	service := newRepositoryService(fakeWorkspaceResolver{record: workspace.Record{Path: root, Trust: "approve"}}, nil)
 	service.clipboardFiles = func() ([]string, error) { return []string{link}, nil }
-	if _, err := service.ClipboardFiles(domain.RepositoryRequest{WorkspacePath: root}); err == nil {
-		t.Fatal("symlink escape accepted")
+	files, err := service.ClipboardFiles(domain.RepositoryRequest{WorkspacePath: root})
+	if err != nil || len(files) != 1 || files[0].Path != filepath.ToSlash(resolvedOutside) {
+		t.Fatalf("symlink should resolve to an absolute reference: %v err=%v", files, err)
 	}
 }

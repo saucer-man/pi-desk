@@ -11,6 +11,7 @@ import {
   MoreHorizontal,
   PanelLeftOpen,
   Pencil,
+  Plug,
   Plus,
   RefreshCw,
   Search,
@@ -202,7 +203,7 @@ function openWorkspaceMenu(event: MouseEvent, workspaceID: string) {
   };
 }
 
-async function runWorkspaceAction(action: "newTask" | "open" | "disconnect") {
+async function runWorkspaceAction(action: "newTask" | "open" | "connect" | "disconnect") {
   const workspace = workspaceMenuItem.value;
   closeWorkspaceMenu();
   if (!workspace || workspaceActionID.value) return;
@@ -214,6 +215,7 @@ async function runWorkspaceAction(action: "newTask" | "open" | "disconnect") {
       else await appStore.createThread(workspace.path, workspace.trust);
       if (appStore.activeThreadId) appStore.startThreadInBackground(appStore.activeThreadId);
     } else if (action === "open") await appStore.openWorkspace(workspace.id);
+    else if (action === "connect") await appStore.connectRemoteWorkspace(workspace.id);
     else await appStore.disconnectRemoteWorkspace(workspace.id);
   } catch (error) {
     workspaceActionError.value = error instanceof Error ? error.message : String(error);
@@ -346,6 +348,12 @@ onBeforeUnmount(() => {
           >
             <Folder :size="16" />
             <span class="workspace-name min-w-0 flex-1 truncate">{{ group.workspace.name }}</span>
+            <span
+              v-if="group.workspace.kind === 'ssh'"
+              class="size-2 shrink-0 rounded-full border border-[var(--border-strong)]"
+              :class="appStore.remoteWorkspaceHasConnection(group.workspace.id) ? 'border-none bg-[var(--green)]' : 'bg-transparent'"
+              :title="tr(appStore.remoteWorkspaceHasConnection(group.workspace.id) ? 'sidebar.remoteConnected' : 'sidebar.remoteDisconnected')"
+            />
             <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag shrink-0 rounded-full border border-[var(--border-strong)] bg-[var(--bg-workspace)] px-1.5 py-0.5 text-[calc(9px+var(--font-size-delta))] font-semibold text-[var(--text-secondary)]">{{ tr("sidebar.remoteDirectory") }}</span>
           </button>
           <button
@@ -441,7 +449,10 @@ onBeforeUnmount(() => {
     >
       <button type="button" role="menuitem" @click="void runWorkspaceAction('newTask')"><SquarePen :size="15" />{{ tr("sidebar.newTask") }}</button>
       <button v-if="workspaceMenuItem.kind !== 'ssh'" type="button" role="menuitem" @click="void runWorkspaceAction('open')"><FolderOpen :size="15" />{{ tr("sidebar.openWorkspace") }}</button>
-      <button v-else-if="appStore.remoteWorkspaceHasConnection(workspaceMenuItem.id)" type="button" role="menuitem" @click="void runWorkspaceAction('disconnect')"><Unplug :size="15" />{{ tr("sidebar.disconnectRemote") }}</button>
+      <template v-else>
+        <button v-if="!appStore.remoteWorkspaceHasConnection(workspaceMenuItem.id)" type="button" role="menuitem" @click="void runWorkspaceAction('connect')"><Plug :size="15" />{{ tr("sidebar.connectRemote") }}</button>
+        <button v-else type="button" role="menuitem" @click="void runWorkspaceAction('disconnect')"><Unplug :size="15" />{{ tr("sidebar.disconnectRemote") }}</button>
+      </template>
       <button type="button" role="menuitem" @click="void openWorkspaceRename()"><Pencil :size="15" />{{ tr("sidebar.renameWorkspace") }}</button>
       <button type="button" role="menuitem" class="danger" @click="openWorkspaceRemoval"><Trash2 :size="15" />{{ tr("sidebar.removeWorkspace") }}</button>
     </div>

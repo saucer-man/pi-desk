@@ -11,7 +11,6 @@ var (
 	ErrConnectionSupervisorClosed  = errors.New("SSH connection supervisor is closed")
 	ErrConnectionInProgress        = errors.New("SSH connection attempt is already in progress")
 	ErrConnectionGenerationRevoked = errors.New("SSH connection generation is no longer ready")
-	ErrConnectionIdentityChanged   = errors.New("SSH target identity changed since the prior successful connection")
 )
 
 // ConnectionState is the fail-closed lifecycle state of a target preflight.
@@ -65,9 +64,10 @@ type connectionProber interface {
 }
 
 // ConnectionSupervisor owns the pre-helper lifecycle for exactly one
-// concrete SSH target. It serializes explicit connection attempts, revokes an
-// old generation before starting a new one, and rejects changed effective
-// config or host-key evidence instead of silently replacing its binding.
+// concrete SSH target. It serializes explicit connection attempts and revokes
+// an old generation before starting a new one. Each successful preflight
+// replaces the retained binding, so config or host-key changes are adopted on
+// reconnect instead of rejecting the target.
 type ConnectionSupervisor struct {
 	prober    connectionProber
 	locator   *Locator
@@ -78,7 +78,6 @@ type ConnectionSupervisor struct {
 	nextGeneration    uint64
 	liveGeneration    uint64
 	binding           ConnectionBinding
-	hasBinding        bool
 	failure           *ConnectionFailure
 	attempt           uint64
 	attemptCancel     context.CancelFunc
@@ -189,15 +188,8 @@ func (supervisor *ConnectionSupervisor) finishConnect(attempt uint64, preflight 
 		supervisor.failure = &failure
 		return supervisor.snapshotLocked(), lifecycleError(failure.Code, failure.Reason, err)
 	}
-	if supervisor.hasBinding && supervisor.binding != binding {
-		failure := ConnectionFailure{Code: FailureConnect, Reason: ReasonIdentityChanged}
-		supervisor.state = ConnectionDisconnected
-		supervisor.failure = &failure
-		return supervisor.snapshotLocked(), lifecycleError(failure.Code, failure.Reason, ErrConnectionIdentityChanged)
-	}
 
 	supervisor.binding = binding
-	supervisor.hasBinding = true
 	supervisor.liveGeneration = supervisor.nextGeneration
 	supervisor.state = ConnectionReady
 	return supervisor.snapshotLocked(), nil

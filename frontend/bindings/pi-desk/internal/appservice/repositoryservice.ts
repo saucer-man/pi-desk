@@ -14,8 +14,9 @@ export function Branches(request: domain$0.RepositoryRequest): $CancellablePromi
 }
 
 /**
- * ClipboardFiles only returns references inside a trusted local workspace.
- * Ordinary files are never read, uploaded, moved or copied by this operation.
+ * ClipboardFiles returns references to local files: workspace files use
+ * workspace-relative paths and other files use absolute paths. Ordinary
+ * files are never read, uploaded, moved or copied by this operation.
  */
 export function ClipboardFiles(request: domain$0.RepositoryRequest): $CancellablePromise<domain$0.RepositoryFile[] | null> {
     return $Call.ByID(1894275181, request);

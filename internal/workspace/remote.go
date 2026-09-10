@@ -52,9 +52,9 @@ func (catalog *Catalog) ResolveTarget(id string) (TargetRecord, error) {
 	return TargetRecord{}, errors.New("SSH target not found")
 }
 
-// RegisterTarget creates a random immutable target identity or refreshes only
-// a byte-for-byte matching alias binding. Identity drift is never accepted by
-// this method and does not mutate persisted state.
+// RegisterTarget creates a random target identity or refreshes the alias
+// binding. A changed config fingerprint or host key is adopted as the new
+// persisted binding instead of rejecting the connection.
 func (catalog *Catalog) RegisterTarget(registration TargetRegistration) (TargetRecord, error) {
 	binding := HostKeyBinding{
 		Algorithm:         strings.TrimSpace(registration.HostKeyAlgorithm),
@@ -87,9 +87,7 @@ func (catalog *Catalog) RegisterTarget(registration TargetRegistration) (TargetR
 		if targetAliasKey(targets[index].HostAlias) != targetAliasKey(candidate.HostAlias) {
 			continue
 		}
-		if targets[index].HostKey != candidate.HostKey {
-			return TargetRecord{}, ErrTargetIdentityChanged
-		}
+		targets[index].HostKey = candidate.HostKey
 		targets[index].Name = candidate.Name
 		targets[index].LastConnectedAt = now
 		if err := catalog.saveStateLocked(catalog.records, targets, catalog.desktop); err != nil {
@@ -224,11 +222,13 @@ func (catalog *Catalog) AddSSHWorkspaceAfter(registration SSHWorkspaceRegistrati
 			continue
 		}
 		// A root is a stable workspace identity. Reusing it with a new
-		// one-shot candidate WorkspaceID is idempotent; only a changed host
-		// binding or remote platform is an identity drift.
-		if ssh.HostKeyBinding != location.HostKeyBinding || ssh.RemoteOS != location.RemoteOS || ssh.RemoteArch != location.RemoteArch {
+		// one-shot candidate WorkspaceID is idempotent; a changed host
+		// binding is adopted, only a remote platform change is a drift.
+		if ssh.RemoteOS != location.RemoteOS || ssh.RemoteArch != location.RemoteArch {
 			return Record{}, ErrTargetIdentityChanged
 		}
+		ssh.HostKeyBinding = location.HostKeyBinding
+		records[index].Location.SSH = ssh
 		if registration.Trust == "deny" && beforeDeny != nil {
 			if err := beforeDeny(registration.TargetID); err != nil {
 				return Record{}, err

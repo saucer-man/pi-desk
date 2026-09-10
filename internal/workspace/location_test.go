@@ -164,31 +164,31 @@ func TestTargetAliasMatchingIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestTargetIdentityDriftDoesNotMutateState(t *testing.T) {
+func TestTargetIdentityDriftIsAdopted(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	catalog := NewCatalog(statePath)
 	original, err := catalog.RegisterTarget(testTargetRegistration())
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	drifted := testTargetRegistration()
 	drifted.ConfigFingerprint = strings.Repeat("b", 64)
-	if _, err := catalog.RegisterTarget(drifted); !errors.Is(err, ErrTargetIdentityChanged) {
+	updated, err := catalog.RegisterTarget(drifted)
+	if err != nil {
 		t.Fatalf("identity drift error = %v", err)
 	}
-	after, err := os.ReadFile(statePath)
+	if updated.ID != original.ID || updated.HostKey.ConfigFingerprint != drifted.ConfigFingerprint {
+		t.Fatalf("adopted target = %#v", updated)
+	}
+	persisted, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
-		t.Fatalf("identity drift mutated state\nbefore=%s\nafter=%s", before, after)
+	if !strings.Contains(string(persisted), drifted.ConfigFingerprint) {
+		t.Fatalf("adopted binding was not persisted: %s", persisted)
 	}
 	targets, _ := catalog.ListTargets()
-	if len(targets) != 1 || targets[0] != original {
+	if len(targets) != 1 || targets[0].HostKey.ConfigFingerprint != drifted.ConfigFingerprint {
 		t.Fatalf("identity drift changed in-memory target: %#v", targets)
 	}
 }

@@ -218,9 +218,6 @@ func (lifecycle *RemoteWorkspaceLifecycle) PrepareRootTrust(ctx context.Context,
 			return RemoteRootCandidate{}, connectErr
 		}
 	}
-	if !matchesCatalogTarget(ready, target) {
-		return RemoteRootCandidate{}, errors.New("remote target is disconnected or changed")
-	}
 	if session.generation != 0 && session.generation != ready.Generation {
 		_ = lifecycle.runtimes.RevokeAndRemoveTarget(ctx, target.ID)
 		session.runtime = nil
@@ -449,15 +446,6 @@ func (lifecycle *RemoteWorkspaceLifecycle) ConnectTarget(ctx context.Context, ta
 	if err != nil {
 		return err
 	}
-	if !matchesCatalogTarget(ready, target) {
-		session.connection.Disconnect()
-		session.roots = make(map[string]remoteOpenedRoot)
-		_ = lifecycle.runtimes.RevokeAndRemoveTarget(ctx, target.ID)
-		session.runtime = nil
-		session.artifact = remotessh.HelperArtifact{}
-		lifecycle.backends.UnbindTarget(target.ID)
-		return workspace.ErrTargetIdentityChanged
-	}
 	if err := lifecycle.requireOpen(); err != nil {
 		return err
 	}
@@ -491,8 +479,8 @@ func (lifecycle *RemoteWorkspaceLifecycle) OpenWorkspace(ctx context.Context, wo
 		return err
 	}
 	ready := session.connection.Snapshot()
-	if !matchesCatalogTarget(ready, target) {
-		return errors.New("remote target is disconnected or changed")
+	if ready.State != remotessh.ConnectionReady {
+		return errors.New("remote target is disconnected")
 	}
 	runtime, err := lifecycle.ensureRuntimeLocked(ctx, target.ID, session, ready.Generation, record.Location.SSH.RemoteOS, record.Location.SSH.RemoteArch, strings.TrimSpace(piVersion))
 	if err != nil {
@@ -821,7 +809,7 @@ func (lifecycle *RemoteWorkspaceLifecycle) approvedWorkspace(workspaceID string)
 		return workspace.Record{}, workspace.TargetRecord{}, nil, ErrRemoteContextChanged
 	}
 	target, err := lifecycle.catalog.ResolveTarget(record.Location.SSH.TargetID)
-	if err != nil || target.HostKey != record.Location.SSH.HostKeyBinding {
+	if err != nil {
 		return workspace.Record{}, workspace.TargetRecord{}, nil, ErrRemoteContextChanged
 	}
 	session, err := lifecycle.target(target)
@@ -898,11 +886,4 @@ func remoteTaskOwner(threadID string) string {
 func remotePendingRootOwner(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return "root-candidate-" + hex.EncodeToString(digest[:16])
-}
-
-func matchesCatalogTarget(snapshot remotessh.ConnectionSnapshot, target workspace.TargetRecord) bool {
-	return snapshot.State == remotessh.ConnectionReady && snapshot.Generation != 0 &&
-		snapshot.Binding.ConfigFingerprint == target.HostKey.ConfigFingerprint &&
-		snapshot.Binding.HostKey.Algorithm == target.HostKey.Algorithm &&
-		snapshot.Binding.HostKey.SHA256Hash == target.HostKey.SHA256
 }

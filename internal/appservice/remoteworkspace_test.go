@@ -12,25 +12,6 @@ import (
 )
 
 func TestRemoteWorkspaceLifecycleIdentityHelpers(t *testing.T) {
-	target := workspace.TargetRecord{
-		HostKey: workspace.HostKeyBinding{
-			Algorithm: "ssh-ed25519", SHA256: "SHA256:" + strings.Repeat("A", 43), ConfigFingerprint: strings.Repeat("a", 64),
-		},
-	}
-	snapshot := remotessh.ConnectionSnapshot{
-		State: remotessh.ConnectionReady, Generation: 3,
-		Binding: remotessh.ConnectionBinding{
-			ConfigFingerprint: target.HostKey.ConfigFingerprint,
-			HostKey:           remotessh.HostKeyEvidence{Algorithm: target.HostKey.Algorithm, SHA256Hash: target.HostKey.SHA256},
-		},
-	}
-	if !matchesCatalogTarget(snapshot, target) {
-		t.Fatal("matching catalog target was rejected")
-	}
-	snapshot.Generation = 0
-	if matchesCatalogTarget(snapshot, target) {
-		t.Fatal("zero connection generation was accepted")
-	}
 	if !validRemoteThreadID("thread-一") || validRemoteThreadID("thread\ninvalid") {
 		t.Fatal("remote thread identity validation is incorrect")
 	}

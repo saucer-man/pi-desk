@@ -1155,8 +1155,7 @@ export const useAppStore = defineStore("app", {
         this.activeThreadId = threadId;
         if (this.activeThread) this.activeThread.unread = false;
         if (this.activeThread?.sessionFile) void this.loadThreadTranscript(threadId);
-        const workspace = this.workspaces.find((item) => item.id === this.activeThread?.workspaceId);
-        if (this.catalogReady && this.activeThread && workspace?.kind !== "ssh") void this.startThreadInBackground(threadId);
+        if (this.catalogReady && this.activeThread) void this.startThreadInBackground(threadId);
         this.scheduleDesktopStateSave();
       }
     },
@@ -1248,6 +1247,12 @@ export const useAppStore = defineStore("app", {
       // A workspace may own multiple remote Pi sessions. Stop every one before
       // revoking the shared target connection and its helper runtime.
       await this.disconnectRemoteTarget(workspace.targetId);
+    },
+    async connectRemoteWorkspace(id: string) {
+      const workspace = this.workspaces.find((item) => item.id === id);
+      if (!workspace?.targetId || workspace.kind !== "ssh") throw new Error("Remote workspace not found");
+      const resumed = await remoteWorkspaceService.resume(id);
+      this.recordRemoteWorkspace(resumed, true);
     },
     async removeWorkspace(id: string, deleteSessions = false) {
       const workspace = this.workspaces.find((item) => item.id === id);

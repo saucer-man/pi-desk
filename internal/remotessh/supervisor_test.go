@@ -207,10 +207,10 @@ func TestConnectionSupervisorCallerCancellationIsStableFailure(t *testing.T) {
 	}
 }
 
-func TestConnectionSupervisorRejectsIdentityDrift(t *testing.T) {
+func TestConnectionSupervisorAdoptsIdentityDrift(t *testing.T) {
 	preflights := []ConnectionPreflight{
 		supervisorPreflight("config-a", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-		supervisorPreflight("config-b", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+		supervisorPreflight("config-b", "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
 	}
 	var mu sync.Mutex
 	call := 0
@@ -228,12 +228,14 @@ func TestConnectionSupervisorRejectsIdentityDrift(t *testing.T) {
 	}
 	supervisor.Disconnect()
 	second, err := supervisor.Connect(context.Background())
-	var lifecycleErr *ConnectionSupervisorError
-	if !errors.As(err, &lifecycleErr) || lifecycleErr.Failure.Code != FailureConnect || lifecycleErr.Failure.Reason != ReasonIdentityChanged || !errors.Is(err, ErrConnectionIdentityChanged) {
-		t.Fatalf("identity drift error = %v", err)
+	if err != nil {
+		t.Fatalf("changed identity was rejected: %v", err)
 	}
-	if second.State != ConnectionDisconnected || second.Generation != 0 || second.Failure == nil || *second.Failure != lifecycleErr.Failure {
-		t.Fatalf("identity drift snapshot = %#v", second)
+	if second.State != ConnectionReady || second.Generation == 0 || second.Generation == first.Generation {
+		t.Fatalf("adopted snapshot = %#v", second)
+	}
+	if second.Binding.ConfigFingerprint != "config-b" || second.Binding.HostKey.SHA256Hash != preflights[1].HostKey.SHA256Hash {
+		t.Fatalf("adopted binding = %#v", second.Binding)
 	}
 	if err := supervisor.ValidateGeneration(first.Generation); !errors.Is(err, ErrConnectionGenerationRevoked) {
 		t.Fatalf("old generation validation error = %v, want revoked", err)
