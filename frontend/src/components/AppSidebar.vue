@@ -37,7 +37,6 @@ const taskMenu = ref({ open: false, threadId: "", x: 0, y: 0 });
 const workspaceMenu = ref({ open: false, workspaceID: "", x: 0, y: 0 });
 const workspaceActionID = ref("");
 const workspaceActionError = ref("");
-const workspaceRenameOpen = ref(false);
 const workspaceRenameID = ref("");
 const workspaceRenameValue = ref("");
 const workspaceRenameInput = ref<HTMLInputElement>();
@@ -135,33 +134,33 @@ function closeWorkspaceMenu() {
   workspaceMenu.value.open = false;
 }
 
-async function openWorkspaceRename() {
-  const workspace = workspaceMenuItem.value;
-  closeWorkspaceMenu();
+async function openWorkspaceRename(target?: { id: string; name: string }) {
+  const workspace = target ?? workspaceMenuItem.value;
+  if (!target) closeWorkspaceMenu();
   if (!workspace || workspaceActionID.value) return;
   workspaceRenameID.value = workspace.id;
   workspaceRenameValue.value = workspace.name;
-  workspaceRenameOpen.value = true;
   await nextTick();
   workspaceRenameInput.value?.focus();
   workspaceRenameInput.value?.select();
 }
 
-function closeWorkspaceRename() {
-  if (workspaceActionID.value) return;
-  workspaceRenameOpen.value = false;
+function cancelWorkspaceRename() {
   workspaceRenameID.value = "";
+  workspaceRenameValue.value = "";
 }
 
 async function submitWorkspaceRename() {
+  const id = workspaceRenameID.value;
   const name = workspaceRenameValue.value.trim();
-  if (!workspaceRenameID.value || !name || workspaceActionID.value) return;
-  workspaceActionID.value = workspaceRenameID.value;
+  cancelWorkspaceRename();
+  if (!id || !name || workspaceActionID.value) return;
+  const workspace = appStore.workspaces.find((item) => item.id === id);
+  if (!workspace || workspace.name === name) return;
+  workspaceActionID.value = id;
   workspaceActionError.value = "";
   try {
-    await appStore.renameWorkspace(workspaceRenameID.value, name);
-    workspaceRenameOpen.value = false;
-    workspaceRenameID.value = "";
+    await appStore.renameWorkspace(id, name);
   } catch (error) {
     workspaceActionError.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -257,7 +256,6 @@ function onDocumentKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     closeTaskMenu();
     closeWorkspaceMenu();
-    closeWorkspaceRename();
   }
 }
 
@@ -337,11 +335,25 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="appStore.catalogLoading" class="sidebar-empty mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]">{{ tr("sidebar.loading") }}</p>
       <p v-else-if="!appStore.catalogReady && appStore.catalogError" class="sidebar-empty error-text mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]" :title="appStore.catalogError">{{ tr("sidebar.unavailable") }}</p>
-      <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-1">
-        <div class="workspace-header flex min-w-0 items-center">
+      <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-2">
+        <div class="workspace-header group flex h-8 min-w-0 items-center rounded-lg border border-transparent hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active)]">
+          <input
+            v-if="group.workspace.id === workspaceRenameID"
+            id="workspace-rename-input"
+            ref="workspaceRenameInput"
+            v-model="workspaceRenameValue"
+            class="h-6 w-full min-w-0 rounded-md border border-[var(--border-strong)] bg-[var(--bg-input)] px-2 text-sm text-[var(--text)] outline-none"
+            maxlength="200"
+            :aria-label="tr('sidebar.renameWorkspace')"
+            @click.stop
+            @keydown.enter.prevent="submitWorkspaceRename()"
+            @keydown.escape.prevent="cancelWorkspaceRename()"
+            @blur="submitWorkspaceRename()"
+          />
           <button
+            v-else
             type="button"
-            class="workspace-row flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-transparent bg-transparent px-2.5 text-left text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
+            class="workspace-row flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-lg bg-transparent px-2.5 text-left text-sm text-[var(--text)] hover:bg-transparent"
             :aria-expanded="!isWorkspaceCollapsed(group.workspace.id)"
             :title="group.workspace.kind === 'ssh' ? group.workspace.remoteRoot : group.workspace.path"
             @click="toggleWorkspace(group.workspace.id)"
@@ -356,27 +368,37 @@ onBeforeUnmount(() => {
             />
             <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag shrink-0 rounded-full border border-[var(--border-strong)] bg-[var(--bg-workspace)] px-1.5 py-0.5 text-[calc(9px+var(--font-size-delta))] font-semibold text-[var(--text-secondary)]">{{ tr("sidebar.remoteDirectory") }}</span>
           </button>
-          <button
-            class="icon-button workspace-menu-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
-            type="button"
-            :aria-label="tr('sidebar.workspaceActions', { workspace: group.workspace.name })"
-            :title="tr('sidebar.workspaceActions', { workspace: group.workspace.name })"
-            :disabled="Boolean(workspaceActionID)"
-            @click.stop="openWorkspaceMenu($event, group.workspace.id)"
-          ><MoreHorizontal :size="16" /></button>
+          <template v-if="group.workspace.id !== workspaceRenameID">
+            <button
+              class="icon-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] opacity-0 hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
+              type="button"
+              :aria-label="tr('sidebar.renameWorkspace')"
+              :title="tr('sidebar.renameWorkspace')"
+              :disabled="Boolean(workspaceActionID)"
+              @click.stop="void openWorkspaceRename(group.workspace)"
+            ><Pencil :size="14" /></button>
+            <button
+              class="icon-button workspace-menu-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] opacity-0 hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
+              type="button"
+              :aria-label="tr('sidebar.workspaceActions', { workspace: group.workspace.name })"
+              :title="tr('sidebar.workspaceActions', { workspace: group.workspace.name })"
+              :disabled="Boolean(workspaceActionID)"
+              @click.stop="openWorkspaceMenu($event, group.workspace.id)"
+            ><MoreHorizontal :size="16" /></button>
+          </template>
         </div>
-        <div v-if="!isWorkspaceCollapsed(group.workspace.id)" class="workspace-threads ml-3 border-l border-[var(--border)] py-1 pl-2">
+        <div v-if="!isWorkspaceCollapsed(group.workspace.id)" class="workspace-threads flex flex-col gap-1 p-0 pb-1">
           <button
             v-for="thread in group.threads"
             :key="thread.id"
-            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-lg border border-transparent bg-transparent px-2.5 text-left text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
-            :class="{ 'is-active border-[var(--border)] bg-[var(--bg-active)] text-[var(--text)]': appStore.activeThreadId === thread.id }"
+            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-lg bg-transparent pl-9 pr-2.5 text-left text-[calc(14px+var(--font-size-delta))] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
+            :class="{ 'is-active bg-[var(--bg-active)] text-[var(--text)]': appStore.activeThreadId === thread.id }"
             type="button"
             :title="thread.title"
             @click="appStore.selectThread(thread.id)"
             @contextmenu.prevent="openTaskMenu($event, thread.id)"
           >
-            <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started font-semibold text-[var(--text)]': thread.started }">{{ thread.title }}</span>
+            <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started text-[var(--text)]': thread.started }">{{ thread.title }}</span>
             <span
               v-if="thread.status === 'running' || thread.status === 'starting'"
               class="thread-status size-3.5 shrink-0 rounded-full border-2 border-[var(--border-strong)] border-t-[var(--text-secondary)] motion-reduce:animate-none"
@@ -456,23 +478,6 @@ onBeforeUnmount(() => {
       <button type="button" role="menuitem" @click="void openWorkspaceRename()"><Pencil :size="15" />{{ tr("sidebar.renameWorkspace") }}</button>
       <button type="button" role="menuitem" class="danger" @click="openWorkspaceRemoval"><Trash2 :size="15" />{{ tr("sidebar.removeWorkspace") }}</button>
     </div>
-    <form
-      v-if="!appStore.sidebarCollapsed && workspaceRenameOpen"
-      class="thread-context-menu workspace-rename-menu"
-      :class="ui.menuSurface"
-      role="dialog"
-      :style="{ left: `${workspaceMenu.x}px`, top: `${workspaceMenu.y}px` }"
-      :aria-label="tr('sidebar.renameWorkspace')"
-      @click.stop
-      @submit.prevent="void submitWorkspaceRename()"
-    >
-      <label for="workspace-rename-input">{{ tr("sidebar.workspaceName") }}</label>
-      <input :class="ui.input" id="workspace-rename-input" ref="workspaceRenameInput" v-model="workspaceRenameValue" maxlength="200" />
-      <div class="workspace-rename-actions">
-        <button type="submit" :disabled="!workspaceRenameValue.trim() || Boolean(workspaceActionID)">{{ tr("common.confirm") }}</button>
-        <button type="button" :disabled="Boolean(workspaceActionID)" @click="closeWorkspaceRename">{{ tr("common.cancel") }}</button>
-      </div>
-    </form>
     <RemoveWorkspaceDialog
       v-if="workspaceRemovalItem"
       :workspace-name="workspaceRemovalItem.name"
