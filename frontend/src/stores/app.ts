@@ -3,7 +3,7 @@ import { RuntimeState, type BootstrapState, type DesktopState, type SessionSnaps
 import { agentService, onPiEvent, type PiSessionEvent, type SessionBranches } from "../services/agent";
 import { catalogService } from "../services/catalog";
 import { checkForUpdates, checkRuntime as checkRuntimeStatus, getBootstrapState, notifyDesktop } from "../services/desktop";
-import { repositoryService, type GitBranchInventory, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference } from "../services/repository";
+import { repositoryService, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference } from "../services/repository";
 import { remoteWorkspaceService } from "../services/remoteWorkspaces";
 import { onTerminalEvent, type TerminalEvent } from "../services/terminal";
 import { modelConfigService } from "../services/modelconfig";
@@ -122,6 +122,7 @@ export interface ToolExecution {
   arguments?: unknown;
   output: string;
   truncated?: boolean;
+  resultReceived?: boolean;
   status: "running" | "complete" | "error";
   startedAt?: number;
   durationMs?: number;
@@ -131,7 +132,10 @@ export interface ToolExecution {
 export interface ToolDiff {
   path: string;
   text: string;
+  edits?: Array<{ oldText: string; newText: string; firstChangedLine?: number }>;
 }
+
+type RepositoryDiffView = RepositoryFileDiff & { session?: boolean };
 
 export interface ExecutionStep {
   id: string;
@@ -648,6 +652,7 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         const output = boundedToolOutput(contentText(value.content));
         tool.output = output.text;
         tool.truncated = output.truncated || undefined;
+        tool.resultReceived = true;
         tool.status = value.isError ? "error" : "complete";
         const endedAt = messageTimestamp(value.timestamp);
         if (endedAt !== undefined && tool.startedAt !== undefined) tool.durationMs = Math.max(0, endedAt - tool.startedAt);
@@ -824,11 +829,7 @@ export const useAppStore = defineStore("app", {
     repositoryErrorByWorkspace: {} as Record<string, string>,
     repositoryStaleByWorkspace: {} as Record<string, boolean>,
     repositoryRefreshGenerationByWorkspace: {} as Record<string, number>,
-    repositoryBranchesByWorkspace: {} as Record<string, GitBranchInventory | undefined>,
-    repositoryBranchesLoadingByWorkspace: {} as Record<string, boolean>,
-    repositoryBranchesGenerationByWorkspace: {} as Record<string, number>,
-    repositoryBranchesErrorByWorkspace: {} as Record<string, string>,
-    repositoryDiffByWorkspace: {} as Record<string, RepositoryFileDiff | undefined>,
+    repositoryDiffByWorkspace: {} as Record<string, RepositoryDiffView | undefined>,
     repositoryDiffPathByWorkspace: {} as Record<string, string>,
     repositoryDiffLoadingByWorkspace: {} as Record<string, boolean>,
     repositoryDiffGenerationByWorkspace: {} as Record<string, number>,
@@ -964,19 +965,7 @@ export const useAppStore = defineStore("app", {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
       return thread ? Boolean(state.repositoryStaleByWorkspace[repositoryKey(thread)]) : false;
     },
-    activeRepositoryBranches(state): GitBranchInventory | undefined {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryBranchesByWorkspace[repositoryKey(thread)] : undefined;
-    },
-    activeRepositoryBranchesLoading(state): boolean {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? Boolean(state.repositoryBranchesLoadingByWorkspace[repositoryKey(thread)]) : false;
-    },
-    activeRepositoryBranchesError(state): string {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryBranchesErrorByWorkspace[repositoryKey(thread)] ?? "" : "";
-    },
-    activeRepositoryDiff(state): RepositoryFileDiff | undefined {
+    activeRepositoryDiff(state): RepositoryDiffView | undefined {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
       return thread ? state.repositoryDiffByWorkspace[repositoryKey(thread)] : undefined;
     },
@@ -1514,17 +1503,27 @@ export const useAppStore = defineStore("app", {
         }
       }
     },
-    async openRepositoryDiff(path: string) {
+    async openRepositoryDiff(path: string, sessionDiff?: string) {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
       const workingPath = repositoryReference(thread);
       const key = repositoryKey(thread);
+      this.inspectorOpen = true;
+      this.inspectorTab = "changes";
+      this.repositoryFilePreviewGenerationByThread[thread.id] = (this.repositoryFilePreviewGenerationByThread[thread.id] ?? 0) + 1;
+      this.repositoryFilePreviewPathByThread[thread.id] = "";
+      this.repositoryFilePreviewLineByThread[thread.id] = undefined;
+      this.repositoryFilePreviewByThread[thread.id] = undefined;
+      this.repositoryFilePreviewLoadingByThread[thread.id] = false;
+      this.repositoryFilePreviewErrorByThread[thread.id] = "";
+      this.scheduleDesktopStateSave();
       const generation = (this.repositoryDiffGenerationByWorkspace[key] ?? 0) + 1;
       this.repositoryDiffGenerationByWorkspace[key] = generation;
       this.repositoryDiffPathByWorkspace[key] = path;
-      this.repositoryDiffByWorkspace[key] = undefined;
-      this.repositoryDiffLoadingByWorkspace[key] = true;
+      this.repositoryDiffByWorkspace[key] = sessionDiff === undefined ? undefined : { path, working: sessionDiff, session: true };
+      this.repositoryDiffLoadingByWorkspace[key] = sessionDiff === undefined;
       this.repositoryDiffErrorByWorkspace[key] = "";
+      if (sessionDiff !== undefined) return;
       try {
         const diff = await repositoryService.diff(workingPath, path);
         if (this.repositoryDiffGenerationByWorkspace[key] === generation) this.repositoryDiffByWorkspace[key] = diff;
@@ -1593,27 +1592,6 @@ export const useAppStore = defineStore("app", {
         else await repositoryService.openFile(thread.workspacePath, path);
       } catch (error) {
         this.repositoryFilePreviewErrorByThread[thread.id] = errorMessage(error);
-      }
-    },
-    async refreshActiveRepositoryBranches() {
-      const thread = this.activeThread;
-      if (!thread || thread.trust !== "approve") return;
-      const workingPath = repositoryReference(thread);
-      const key = repositoryKey(thread);
-      if (this.repositoryBranchesLoadingByWorkspace[key]) return;
-      const generation = (this.repositoryBranchesGenerationByWorkspace[key] ?? 0) + 1;
-      this.repositoryBranchesGenerationByWorkspace[key] = generation;
-      this.repositoryBranchesLoadingByWorkspace[key] = true;
-      this.repositoryBranchesErrorByWorkspace[key] = "";
-      try {
-        const branches = await repositoryService.branches(workingPath);
-        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) this.repositoryBranchesByWorkspace[key] = branches;
-      } catch (error) {
-        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) {
-          this.repositoryBranchesErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
-        }
-      } finally {
-        if (this.repositoryBranchesGenerationByWorkspace[key] === generation) this.repositoryBranchesLoadingByWorkspace[key] = false;
       }
     },
     closeRepositoryDiff() {
@@ -3006,8 +2984,6 @@ export const useAppStore = defineStore("app", {
     markRemoteWorkspaceStale(workspaceID: string) {
       this.repositoryRefreshGenerationByWorkspace[workspaceID] = (this.repositoryRefreshGenerationByWorkspace[workspaceID] ?? 0) + 1;
       this.repositoryLoadingByWorkspace[workspaceID] = false;
-      this.repositoryBranchesGenerationByWorkspace[workspaceID] = (this.repositoryBranchesGenerationByWorkspace[workspaceID] ?? 0) + 1;
-      this.repositoryBranchesLoadingByWorkspace[workspaceID] = false;
       this.repositoryDiffGenerationByWorkspace[workspaceID] = (this.repositoryDiffGenerationByWorkspace[workspaceID] ?? 0) + 1;
       this.repositoryDiffLoadingByWorkspace[workspaceID] = false;
       this.repositoryStaleByWorkspace[workspaceID] = true;
@@ -3232,6 +3208,7 @@ export const useAppStore = defineStore("app", {
             tool.truncated = bounded.truncated || undefined;
           }
           if (sessionEvent.event.type === "tool_execution_end") {
+            tool.resultReceived = true;
             tool.status = payload.isError ? "error" : "complete";
             this.waitingForOutputByThread[thread.id] = true;
             if (tool.startedAt !== undefined) tool.durationMs = Math.max(0, Date.now() - tool.startedAt);

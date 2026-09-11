@@ -54,7 +54,6 @@ const mocks = vi.hoisted(() => ({
   getDiagnostics: vi.fn(),
   snapshotRepository: vi.fn(),
   diffRepository: vi.fn(),
-  listRepositoryBranches: vi.fn(),
   openRepositoryFile: vi.fn(),
   openRepositoryFileWith: vi.fn(),
   previewRepositoryFile: vi.fn(),
@@ -136,7 +135,6 @@ vi.mock("../services/repository", () => ({
   repositoryService: {
     snapshot: mocks.snapshotRepository,
     diff: mocks.diffRepository,
-    branches: mocks.listRepositoryBranches,
     openFile: mocks.openRepositoryFile,
     openFileWith: mocks.openRepositoryFileWith,
     previewFile: mocks.previewRepositoryFile,
@@ -223,9 +221,6 @@ describe("app store", () => {
       git: { isRepository: true, branch: "main", files: [] },
     });
     mocks.diffRepository.mockResolvedValue({ path: "main.go", staged: "", working: "+change", content: "", binary: false, truncated: false });
-    mocks.listRepositoryBranches.mockResolvedValue({ branches: [
-      { name: "main", fullName: "refs/heads/main", remote: false, current: true, upstream: "origin/main", commit: "abc123", worktreePath: "D:\\work\\repo" },
-    ] });
     mocks.openRepositoryFile.mockResolvedValue(undefined);
     mocks.openRepositoryFileWith.mockResolvedValue(undefined);
     mocks.previewRepositoryFile.mockResolvedValue({
@@ -1418,6 +1413,7 @@ describe("app store", () => {
     expect(thread.status).toBe("idle");
     expect(store.activeMessages[0]).toMatchObject({ role: "assistant", text: "Hello", streaming: false });
     expect(store.activeMessages[0].tools[0]).toMatchObject({ id: "tool-1", name: "read", output: "done", status: "complete" });
+    expect(store.activeMessages[0].tools[0].resultReceived).toBe(true);
   });
 
   it("refreshes the settled background workspace instead of the active Repository", async () => {
@@ -1535,6 +1531,7 @@ describe("app store", () => {
 
     expect(store.activeMessages[0].tools[0]).toMatchObject({
       name: "edit",
+      resultReceived: true,
       status: "complete",
       diff: { path: "main.go", text: "- 1 old\n+ 1 new" },
     });
@@ -2695,37 +2692,39 @@ describe("app store", () => {
     expect(store.activeRepositoryFilePreview?.content).toBe("new");
   });
 
-  it("drops old branch results after remote invalidation and retry", async () => {
-    const store = useAppStore();
-    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
-    store.threads = [{ id: "thread-remote", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0 }];
-    store.activeThreadId = "thread-remote";
-    let finish!: (value: { branches: Array<{ name: string; fullName: string; remote: boolean; current: boolean; upstream: string; commit: string; worktreePath: string }> }) => void;
-    mocks.listRepositoryBranches.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
-
-    const first = store.refreshActiveRepositoryBranches();
-    await vi.waitFor(() => expect(mocks.listRepositoryBranches).toHaveBeenCalled());
-    store.markRemoteTargetStale("target-remote");
-    mocks.listRepositoryBranches.mockResolvedValueOnce({ branches: [{ name: "new", fullName: "refs/heads/new", remote: false, current: true, upstream: "", commit: "new", worktreePath: "" }] });
-    await store.refreshActiveRepositoryBranches();
-    finish({ branches: [{ name: "old", fullName: "refs/heads/old", remote: false, current: true, upstream: "", commit: "old", worktreePath: "" }] });
-    await first;
-
-    expect(store.activeRepositoryBranches?.branches?.[0].name).toBe("new");
-  });
-
   it("loads and opens a changed file through the trusted repository service", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");
+    store.inspectorOpen = false;
+    store.inspectorTab = "context";
+    store.repositoryFilePreviewPathByThread[store.activeThreadId] = "README.md";
+    store.repositoryFilePreviewByThread[store.activeThreadId] = { path: "README.md", absolutePath: "D:\\work\\repo\\README.md", content: "old", size: 3, binary: false, truncated: false };
 
     await store.openRepositoryDiff("main.go");
     expect(mocks.diffRepository).toHaveBeenCalledWith({ workspaceId: "workspace-1" }, "main.go");
     expect(store.activeRepositoryDiff?.working).toBe("+change");
+    expect(store.inspectorOpen).toBe(true);
+    expect(store.inspectorTab).toBe("changes");
+    expect(store.activeRepositoryFilePreviewPath).toBe("");
+    expect(store.activeRepositoryFilePreview).toBeUndefined();
 
     await store.openActiveRepositoryFile();
     await store.openActiveRepositoryFile(true);
     expect(mocks.openRepositoryFile).toHaveBeenCalledWith("D:\\work\\repo", "main.go");
     expect(mocks.revealRepositoryFile).toHaveBeenCalledWith("D:\\work\\repo", "main.go");
+  });
+
+  it("opens a conversation change from the recorded session diff", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+
+    await store.openRepositoryDiff("main.go", "@@ -1 +1 @@\n-old\n+new");
+
+    expect(mocks.diffRepository).not.toHaveBeenCalled();
+    expect(store.activeRepositoryDiff).toMatchObject({
+      path: "main.go", working: "@@ -1 +1 @@\n-old\n+new", session: true,
+    });
+    expect(store.activeRepositoryDiffLoading).toBe(false);
   });
 
   it("loads a linked file preview without changing the selected inspector tab", async () => {
@@ -2747,16 +2746,6 @@ describe("app store", () => {
 
     store.closeRepositoryFilePreview();
     expect(store.activeRepositoryFilePreview).toBeUndefined();
-  });
-
-  it("loads branch and worktree occupancy for a trusted workspace", async () => {
-    const store = useAppStore();
-    await store.createThread("D:\\work\\repo", "approve");
-
-    await store.refreshActiveRepositoryBranches();
-
-    expect(mocks.listRepositoryBranches).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
-    expect(store.activeRepositoryBranches?.branches?.[0]).toMatchObject({ name: "main", current: true, worktreePath: "D:\\work\\repo" });
   });
 
   it("loads persisted workspaces and discovers historical sessions", async () => {
@@ -2851,6 +2840,7 @@ describe("app store", () => {
         { type: "thinking", thinking: "Check files" },
         { type: "text", text: "I checked it." },
         { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "main.go" } },
+        { type: "toolCall", id: "tool-pending", name: "edit", arguments: { path: "pending.go", oldText: "old", newText: "new" } },
       ], timestamp: 1786348860000 },
       { role: "toolResult", toolCallId: "tool-1", content: [{ type: "text", text: "package main" }], isError: false },
       ],
@@ -2868,7 +2858,9 @@ describe("app store", () => {
       compaction: { summary: "## Context\n\nRepository inspection is complete.", tokensBefore: 241443 },
     });
     expect(store.activeMessages[2]).toMatchObject({ role: "assistant", text: "I checked it.", thinking: "Check files" });
-    expect(store.activeMessages[2].tools[0]).toMatchObject({ id: "tool-1", output: "package main", status: "complete" });
+    expect(store.activeMessages[2].tools[0]).toMatchObject({ id: "tool-1", output: "package main", resultReceived: true, status: "complete" });
+    expect(store.activeMessages[2].tools[1]).toMatchObject({ id: "tool-pending", status: "complete" });
+    expect(store.activeMessages[2].tools[1].resultReceived).toBeUndefined();
     expect(store.activeSessionState?.model).toEqual({ provider: "openai", id: "gpt-5" });
     expect(store.transcriptStateByThread["session-session-1"]).toBe("loaded");
   });

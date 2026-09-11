@@ -210,6 +210,85 @@ describe("ConversationMessage", () => {
     expect(wrapper.findAll(".message-action")).toHaveLength(4);
   });
 
+  it("shows successful changed files after the response and opens them in the Inspector", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-files", title: "Files", workspace: "repo", workspacePath: "D:\\repo",
+        trust: "approve", status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-files",
+    });
+    store.openRepositoryDiff = vi.fn().mockResolvedValue(undefined);
+    const tool = (id: string, path: string, status: "complete" | "error" = "complete", resultReceived = true, diff = "+ changed") => ({
+      id, name: "edit", output: "", status, resultReceived, diff: { path, text: diff },
+    });
+    const message = {
+      id: "assistant-files", role: "assistant" as const, text: "Done", thinking: "", timestamp: "10:04", streaming: true,
+      tools: [
+        tool("app", "src/App.vue"),
+        tool("app-again", "D:\\repo\\src\\app.vue", "complete", true, "- old\n+ changed"),
+        tool("test-index", "test/index.ts"),
+        tool("failed", "failed.ts", "error"),
+        tool("pending", "pending.ts", "complete", false),
+        tool("outside", "D:\\elsewhere\\outside.ts"),
+        ...["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"].map((path) => tool(path, path)),
+      ],
+    };
+    const wrapper = mount(ConversationMessage, { props: { message }, global: { plugins: [pinia] } });
+
+    expect(wrapper.find('[aria-label="Files changed"]').exists()).toBe(false);
+    await wrapper.setProps({ message: { ...message, streaming: false } });
+
+    const summary = wrapper.get('[aria-label="Files changed"]');
+    expect(summary.text()).toContain("Edited 7 files");
+    expect(summary.text()).toContain("+8");
+    expect(summary.text()).toContain("-1");
+    let files = summary.findAll("ul button");
+    expect(files).toHaveLength(3);
+    expect(files.map((file) => file.attributes("title"))).toEqual([
+      "src/App.vue", "test/index.ts", "a.ts",
+    ]);
+    expect(files[0].text()).toContain("+2");
+    expect(files[0].text()).toContain("-1");
+    expect(summary.text()).toContain("Show 4 more files");
+    await summary.get('button[aria-expanded="false"]').trigger("click");
+    files = summary.findAll("ul button");
+    expect(files).toHaveLength(7);
+    expect(summary.text()).toContain("Show fewer files");
+    await files[0].trigger("click");
+    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/App.vue", "+ changed\n- old\n+ changed");
+  });
+
+  it("normalizes remote absolute paths before opening a changed file", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      workspaces: [{ id: "remote", name: "Remote", path: "", kind: "ssh", targetId: "target", remoteRoot: "/srv/repo", trust: "approve" }],
+      threads: [{
+        id: "thread-remote", title: "Remote", workspace: "Remote", workspaceId: "remote", workspacePath: "",
+        trust: "approve", status: "idle", started: true, generation: 1,
+      }],
+      activeThreadId: "thread-remote",
+    });
+    store.openRepositoryDiff = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mount(ConversationMessage, { props: { message: {
+      id: "assistant-remote-file", role: "assistant", text: "Done", thinking: "", timestamp: "10:05", streaming: false,
+      tools: [{
+        id: "remote-edit", name: "edit", output: "", status: "complete", resultReceived: true,
+        diff: { path: "/srv/repo/src/main.go", text: "+ changed" },
+      }],
+    } }, global: { plugins: [pinia] } });
+
+    const file = wrapper.get('[aria-label="View diff for src/main.go"]');
+    expect(file.attributes("title")).toBe("src/main.go");
+    await file.trigger("click");
+    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/main.go", "+ changed");
+  });
+
   it("expands only the active reasoning step and collapses it when reasoning finishes", async () => {
     const pinia = createPinia();
     const message = {

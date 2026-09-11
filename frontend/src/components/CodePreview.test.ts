@@ -5,14 +5,17 @@ import CodePreview from "./CodePreview.vue";
 describe("CodePreview", () => {
   it("highlights recognized source files and keeps unknown files readable", async () => {
     const wrapper = mount(CodePreview, {
-      props: { path: "main.go", content: "package main\n\nfunc main() {}", label: "File preview content" },
+      props: { path: "main.go", content: "package main\n\nfunc main() {}", label: "File preview content", flush: true },
     });
 
     await vi.waitFor(() => expect(wrapper.find(".tok-keyword").exists()).toBe(true));
+    expect(wrapper.get("pre").classes()).toContain("p-0!");
     expect(wrapper.text()).toContain("package main");
+    expect(wrapper.findAll(".file-preview-line-number").map((line) => line.text())).toEqual(["1", "2", "3"]);
 
-    await wrapper.setProps({ path: "notes.unknown", content: "plain content" });
-    await vi.waitFor(() => expect(wrapper.text()).toBe("plain content"));
+    await wrapper.setProps({ path: "notes.unknown", content: "plain\ncontent" });
+    await vi.waitFor(() => expect(wrapper.findAll(".file-preview-line-text").map((line) => line.text())).toEqual(["plain", "content"]));
+    expect(wrapper.findAll(".file-preview-line-number").map((line) => line.text())).toEqual(["1", "2"]);
     expect(wrapper.find("[class^='tok-']").exists()).toBe(false);
   });
 });

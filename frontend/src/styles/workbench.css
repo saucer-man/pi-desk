@@ -479,6 +479,7 @@
   bottom: 18px;
   display: grid;
   width: var(--inspector-width);
+  grid-template-rows: 26px minmax(0, 1fr);
   grid-column: auto;
   grid-row: auto;
   border: 1px solid var(--border);
@@ -488,8 +489,9 @@
 }
 
 .inspector-header {
-  min-height: var(--topbar-height);
-  padding: 0 12px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -504,7 +506,6 @@
   line-height: 1.6;
 }
 
-.repository-toolbar,
 .terminal-toolbar {
   min-height: 46px;
   font-size: calc(13px + var(--font-size-delta));

@@ -1,10 +1,13 @@
 <script setup lang="ts">
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 import { ui } from "../ui/classes";
-import { ArrowUp, BrainCircuit, Check, CheckCircle2, ChevronRight, Copy, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
+import { ArrowUp, BrainCircuit, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, FileDiff, GitFork, LoaderCircle, Pencil, RefreshCw, Save, Sparkles, Trash2, TriangleAlert, X } from "lucide-vue-next";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import type { ExecutionStep, TimelineMessage } from "../stores/app";
+import type { ExecutionStep, TimelineMessage, ToolDiff } from "../stores/app";
 import { useAppStore } from "../stores/app";
 import type { PreparedImage } from "../utils/imageAttachments";
+import { resolveWorkspaceFileLink, type WorkspaceFileLink } from "../utils/fileLinks";
+import { mergeToolDiffs } from "../utils/toolDiff";
 import { parseSkillInvocation, replaceSkillInvocationUserMessage, skillInvocationCommandText } from "../utils/skillInvocation";
 import { splitTaggedThinking } from "../utils/taggedThinking";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
@@ -26,6 +29,7 @@ const confirmingDelete = ref(false);
 const copied = ref(false);
 const previewImage = ref<PreparedImage>();
 const executionOpen = ref(props.message.streaming);
+const changedFilesExpanded = ref(false);
 const editBox = ref<HTMLTextAreaElement>();
 const skillInvocation = computed(() => props.message.role === "user" ? parseSkillInvocation(props.message.text) : undefined);
 
@@ -121,6 +125,48 @@ const executionSteps = computed(() => [
   ...(props.message.tools.length ? [{ id: `${props.message.id}-tools`, kind: "tools" as const, tools: props.message.tools }] : []),
   ]),
 ]);
+type ChangedFileSummary = WorkspaceFileLink & { additions: number; deletions: number; diff: string };
+
+function diffStats(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++ ")) additions++;
+    else if (line.startsWith("-") && !line.startsWith("--- ")) deletions++;
+  }
+  return { additions, deletions };
+}
+
+const changedFiles = computed(() => {
+  if (props.message.role !== "assistant" || props.message.streaming) return [];
+  const thread = appStore.activeThread;
+  const root = thread ? appStore.remoteWorkspaceForThread(thread)?.remoteRoot || thread.workspacePath : "";
+  const windows = /^[a-z]:[\\/]/i.test(root);
+  const files = new Map<string, WorkspaceFileLink & { diffs: ToolDiff[] }>();
+  for (const step of executionSteps.value) {
+    for (const tool of step.tools ?? []) {
+      if (tool.resultReceived !== true || tool.status !== "complete" || !tool.diff?.path) continue;
+      const file = resolveWorkspaceFileLink(tool.diff.path, root);
+      if (!file) continue;
+      const key = windows ? file.absolutePath.toLowerCase() : file.absolutePath;
+      const existing = files.get(key);
+      if (existing) {
+        existing.diffs.push(tool.diff);
+      } else {
+        files.set(key, { ...file, diffs: [tool.diff] });
+      }
+    }
+  }
+  return [...files.values()].flatMap(({ diffs, ...file }) => {
+    const diff = mergeToolDiffs(diffs);
+    return diff ? [{ ...file, ...diffStats(diff), diff } satisfies ChangedFileSummary] : [];
+  });
+});
+const shownChangedFiles = computed(() => changedFilesExpanded.value ? changedFiles.value : changedFiles.value.slice(0, 3));
+const changedTotals = computed(() => changedFiles.value.reduce((total, file) => ({
+  additions: total.additions + file.additions,
+  deletions: total.deletions + file.deletions,
+}), { additions: 0, deletions: 0 }));
 const toolCount = computed(() => executionSteps.value.reduce((count, step) => count + (step.tools?.length ?? 0), 0));
 const thinkingCount = computed(() => executionSteps.value.filter((step) => step.kind === "thinking").length);
 const executionSummary = computed(() => {
@@ -152,6 +198,7 @@ watch(() => props.message.streaming, (streaming, wasStreaming) => {
   if (streaming) executionOpen.value = true;
   else if (wasStreaming) executionOpen.value = false;
 });
+watch(() => props.message.id, () => { changedFilesExpanded.value = false; });
 
 function syncExecutionOpen(event: Event) {
   const details = event.currentTarget as HTMLDetailsElement;
@@ -161,6 +208,10 @@ function syncExecutionOpen(event: Event) {
     return;
   }
   executionOpen.value = details.open;
+}
+
+function openChangedFile(file: ChangedFileSummary) {
+  void appStore.openRepositoryDiff(file.relativePath, file.diff);
 }
 
 async function copyMessage() {
@@ -299,6 +350,52 @@ function stepThinking(step: ExecutionStep): string {
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>
       <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" :search-query="searchQuery" :search-active="searchActive" />
+      <section v-if="changedFiles.length" class="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)]" :aria-label="tr('conversation.filesChanged')">
+        <header class="flex min-h-14 items-center gap-3 border-b border-[var(--border)] px-3 py-2">
+          <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--bg-app)] text-[var(--text-secondary)]" aria-hidden="true">
+            <FileDiff :size="17" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <strong class="block truncate text-sm font-semibold text-[var(--text)]">{{ tr("conversation.filesChangedCount", { count: changedFiles.length }) }}</strong>
+            <span class="mt-1 flex items-center gap-1 font-mono text-xs" :aria-label="tr('conversation.changeTotals', changedTotals)">
+              <span class="text-[var(--diff-add-text)]">+{{ changedTotals.additions }}</span>
+              <span class="text-[var(--diff-delete-text)]">-{{ changedTotals.deletions }}</span>
+            </span>
+          </div>
+        </header>
+        <ul class="m-0 list-none p-0">
+          <li v-for="file in shownChangedFiles" :key="file.absolutePath" class="border-b border-[var(--border)] last:border-b-0">
+            <button
+              class="flex min-h-10 w-full min-w-0 items-center gap-3 border-0 bg-transparent px-3 py-2 text-left text-sm text-[var(--text-secondary)] enabled:hover:bg-[var(--bg-hover)] enabled:hover:text-[var(--text)] enabled:active:bg-[var(--bg-active)] focus-visible:relative focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--focus)] disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 aria-current:bg-[var(--bg-selected)]"
+              type="button"
+              :title="file.relativePath"
+              :aria-label="tr('conversation.openChangedFile', { path: file.relativePath })"
+              :aria-current="appStore.activeRepositoryDiffPath === file.relativePath ? 'true' : undefined"
+              :aria-busy="appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading"
+              :disabled="appStore.activeThread?.trust !== 'approve'"
+              @click="openChangedFile(file)"
+            >
+              <span class="min-w-0 flex-1 truncate"><span class="text-[var(--text-activity)]">{{ file.relativePath.slice(0, -file.name.length) }}</span>{{ file.name }}</span>
+              <LoaderCircle v-if="appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading" class="is-spinning shrink-0" :size="13" aria-hidden="true" />
+              <span v-else class="flex shrink-0 items-center gap-1 font-mono text-xs" :aria-label="tr('conversation.changeTotals', { additions: file.additions, deletions: file.deletions })">
+                <span class="text-[var(--diff-add-text)]">+{{ file.additions }}</span>
+                <span class="text-[var(--diff-delete-text)]">-{{ file.deletions }}</span>
+              </span>
+            </button>
+          </li>
+        </ul>
+        <button
+          v-if="changedFiles.length > 3"
+          class="flex min-h-10 w-full items-center gap-2 border-0 border-t border-[var(--border)] bg-transparent px-3 py-2 text-left text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--focus)] pointer-coarse:min-h-11"
+          type="button"
+          :aria-expanded="changedFilesExpanded"
+          @click="changedFilesExpanded = !changedFilesExpanded"
+        >
+          {{ changedFilesExpanded ? tr("conversation.fewerChangedFiles") : tr("conversation.moreChangedFiles", { count: changedFiles.length - shownChangedFiles.length }) }}
+          <ChevronUp v-if="changedFilesExpanded" :size="14" aria-hidden="true" />
+          <ChevronDown v-else :size="14" aria-hidden="true" />
+        </button>
+      </section>
       <div
         v-if="runNotice"
         class="message-run-notice"

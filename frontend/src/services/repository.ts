@@ -1,7 +1,6 @@
 import { Dialogs } from "@wailsio/runtime";
 import { RepositoryService } from "../../bindings/pi-desk/internal/appservice";
 import type {
-  GitBranchInventory,
   RepositoryFileDiff,
   RepositoryFilePreview,
   RepositorySnapshot,
@@ -25,9 +24,6 @@ export const repositoryService = {
   },
   previewFile(workspace: RepositoryWorkspaceReference, path: string): Promise<RepositoryFilePreview> {
     return RepositoryService.PreviewFile({ ...workspaceRequest(workspace), path });
-  },
-  branches(workspace: RepositoryWorkspaceReference): Promise<GitBranchInventory> {
-    return RepositoryService.Branches(workspaceRequest(workspace));
   },
   openFile(workspacePath: string, path: string): Promise<void> {
     return RepositoryService.OpenFile({ workspacePath, path });
@@ -55,4 +51,4 @@ export const repositoryService = {
   },
 };
 
-export type { GitBranchInventory, RepositoryFileDiff, RepositoryFilePreview, RepositorySnapshot };
+export type { RepositoryFileDiff, RepositoryFilePreview, RepositorySnapshot };

@@ -1,10 +1,23 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 const props = defineProps<{ path: string; content: string; label: string; flush?: boolean }>();
-const highlighted = ref<{ text: string; classes: string }[]>();
+type Segment = { text: string; classes: string };
+const highlighted = ref<Segment[]>();
 let generation = 0;
+
+const previewLines = computed(() => {
+  const lines: Segment[][] = [[]];
+  for (const segment of highlighted.value ?? [{ text: props.content, classes: "" }]) {
+    segment.text.split("\n").forEach((text, index, parts) => {
+      if (text) lines[lines.length - 1].push({ text, classes: segment.classes });
+      if (index < parts.length - 1) lines.push([]);
+    });
+  }
+  if (props.content.endsWith("\n") && lines.length > 1 && lines.at(-1)?.length === 0) lines.pop();
+  return lines.map((segments, index) => ({ number: index + 1, segments }));
+});
 
 watch(() => [props.path, props.content] as const, async ([path, content]) => {
   const currentGeneration = ++generation;
@@ -24,7 +37,7 @@ watch(() => [props.path, props.content] as const, async ([path, content]) => {
     if (!description) return;
 
     const support = await description.load();
-    const segments: { text: string; classes: string }[] = [];
+    const segments: Segment[] = [];
     highlightCode(
       content,
       support.language.parser.parse(content),
@@ -40,5 +53,5 @@ watch(() => [props.path, props.content] as const, async ([path, content]) => {
 </script>
 
 <template>
-  <pre class="file-preview-content" :class="[ui.code, { 'rounded-none! border-0!': flush }]" :aria-label="label"><code v-if="highlighted"><span v-for="(segment, index) in highlighted" :key="index" :class="segment.classes">{{ segment.text }}</span></code><code v-else>{{ content }}</code></pre>
+  <pre class="file-preview-content" :class="[ui.code, { 'rounded-none! border-0! bg-[var(--preview-bg)]! p-0! text-[var(--preview-fg)]!': flush }]" :aria-label="label"><code><span v-for="line in previewLines" :key="line.number" class="file-preview-row"><span class="file-preview-line-number" aria-hidden="true">{{ line.number }}</span><span class="file-preview-line-text"><span v-for="(segment, index) in line.segments" :key="index" :class="segment.classes">{{ segment.text }}</span></span></span></code></pre>
 </template>
