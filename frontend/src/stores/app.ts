@@ -63,6 +63,25 @@ function requiresRemoteReconnect(message: string): boolean {
   return REMOTE_RECONNECT_CODES.some((code) => hasRemoteCode(message, code));
 }
 
+const THREAD_TITLE_MAX_CHARS = 40;
+
+// Derives a readable sidebar title from a raw first prompt: first line only,
+// markdown and URL noise stripped, long URLs reduced to their host, and a
+// clean single-character ellipsis instead of a mid-token cut.
+function threadTitleText(value: string): string {
+  const firstLine = value.split("\n").find((line) => line.trim())?.trim() ?? "";
+  const cleaned = firstLine
+    .replace(/^#+\s*/, "")
+    .replace(/`+/g, "")
+    .replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
+    .replace(/(?:https?:\/\/|www\.)([a-z0-9.-]+(?::\d+)?)[^\s<>()"'，。；、！？：]*\/?/gi, (_match, host: string) => host.replace(/^www\./, ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  if (cleaned.length <= THREAD_TITLE_MAX_CHARS) return cleaned;
+  return `${cleaned.slice(0, THREAD_TITLE_MAX_CHARS - 1)}…`;
+}
+
 export interface WorkspaceSummary {
   id: string;
   name: string;
@@ -1855,7 +1874,7 @@ export const useAppStore = defineStore("app", {
       if (thread.title === "New task") {
         const titleText = skillInvocationTitleText(message);
         thread.firstMessage = titleText;
-        thread.title = titleText ? titleText.length > 64 ? `${titleText.slice(0, 61)}...` : titleText : "Image task";
+        thread.title = threadTitleText(titleText) || "Image task";
       }
       thread.modifiedAt = nowISO();
       this.scheduleDesktopStateSave();
@@ -3500,7 +3519,7 @@ export const useAppStore = defineStore("app", {
           const id = `session-${session.id}`;
           historicalThreads.push({
             id,
-            title: session.title,
+            title: threadTitleText(session.title) || session.title,
             workspace: workspace.name,
             workspaceId: workspace.discovered ? undefined : workspace.id,
             workspacePath: workspace.path,
@@ -3546,7 +3565,7 @@ export const useAppStore = defineStore("app", {
           } else if (!saved.sessionPath && workspace) {
             historicalThreads.push({
               id: saved.id,
-              title: saved.title,
+              title: threadTitleText(saved.title) || saved.title,
               workspace: workspace.name,
               workspaceId: workspace.id,
               workspacePath: workspace.path,
@@ -3615,7 +3634,7 @@ export const useAppStore = defineStore("app", {
           const sessionFileKey = pathKey(session.path);
           const existing = this.threads.find((thread) => thread.sessionFile && pathKey(thread.sessionFile) === sessionFileKey);
           if (existing) {
-            existing.title = session.title;
+            existing.title = threadTitleText(session.title) || session.title;
             existing.modifiedAt = session.modifiedAt;
             existing.messageCount = session.messageCount;
             existing.firstMessage = session.firstMessage;
@@ -3623,7 +3642,7 @@ export const useAppStore = defineStore("app", {
           }
           const thread: ThreadSummary = {
             id: `session-${session.id}`,
-            title: session.title,
+            title: threadTitleText(session.title) || session.title,
             workspace: workspace.name,
             workspaceId: workspace.discovered ? undefined : workspace.id,
             workspacePath: workspace.path,
