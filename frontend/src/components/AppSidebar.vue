@@ -287,7 +287,7 @@ onBeforeUnmount(() => {
     >
       <PanelLeftOpen :size="17" />
     </button>
-    <nav v-else class="primary-nav grid gap-1 border-b border-[var(--border)] p-3" aria-label="Primary">
+    <nav v-else class="primary-nav grid gap-1 border-b border-[var(--border)] px-3 py-0" aria-label="Primary">
       <button v-if="!appStore.sidebarCollapsed" class="new-task-button flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
         <SquarePen :size="17" />
         <span>{{ tr("sidebar.newTask") }}</span>
@@ -323,7 +323,7 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="!appStore.sidebarCollapsed && appStore.searchOpen" class="sidebar-search-help mx-5 mt-1 text-[calc(11px+var(--font-size-delta))] leading-relaxed text-[var(--text-muted)]">{{ tr("sidebar.searchHelp") }}</p>
 
-    <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-3 pt-4">
+    <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-3 pt-2">
       <div class="section-heading flex h-8 items-center justify-between px-2 text-xs font-semibold text-[var(--text-secondary)]">
         <span class="tracking-[-0.01em]">{{ tr("sidebar.workspaces") }}</span>
         <div class="section-heading-actions flex items-center gap-0.5">
@@ -445,7 +445,6 @@ onBeforeUnmount(() => {
     <form
       v-if="!appStore.sidebarCollapsed && taskRenameOpen"
       class="thread-context-menu task-rename-menu"
-      :class="ui.menuSurface"
       role="dialog"
       :aria-label="tr('topbar.rename')"
       :style="{ left: `${taskMenu.x}px`, top: `${taskMenu.y}px` }"
@@ -453,10 +452,10 @@ onBeforeUnmount(() => {
       @submit.prevent="void submitTaskRename()"
     >
       <label for="task-rename-input">{{ tr("topbar.taskName") }}</label>
-      <input :class="ui.input" id="task-rename-input" ref="taskRenameInput" v-model="taskRenameValue" maxlength="200" />
+      <input id="task-rename-input" ref="taskRenameInput" v-model="taskRenameValue" maxlength="200" />
       <div class="workspace-rename-actions">
-        <button type="submit" :disabled="!taskRenameValue.trim()">{{ tr("common.confirm") }}</button>
-        <button type="button" @click="closeTaskRename">{{ tr("common.cancel") }}</button>
+        <button class="task-rename-confirm" type="submit" :disabled="!taskRenameValue.trim()">{{ tr("common.confirm") }}</button>
+        <button class="task-rename-cancel" type="button" @click="closeTaskRename">{{ tr("common.cancel") }}</button>
       </div>
     </form>
 

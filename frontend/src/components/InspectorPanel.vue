@@ -154,7 +154,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
 </script>
 
 <template>
-  <aside class="inspector absolute bottom-4 right-4 top-[68px] z-30 grid w-[var(--inspector-width)] grid-rows-[26px_minmax(0,1fr)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)] shadow-lg max-[1279px]:bottom-0 max-[1279px]:right-0 max-[1279px]:top-[52px] max-[1279px]:rounded-none max-[1279px]:rounded-l-xl max-[520px]:left-14 max-[520px]:w-[calc(100%_-_56px)] max-[520px]:rounded-none" :class="ui.root" :aria-label="tr('inspector.label')">
+  <aside class="inspector absolute bottom-4 right-4 top-[68px] z-30 grid w-[var(--inspector-width)] grid-rows-[32px_minmax(0,1fr)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)] shadow-lg max-[1279px]:bottom-0 max-[1279px]:right-0 max-[1279px]:top-[52px] max-[1279px]:rounded-none max-[1279px]:rounded-l-xl max-[520px]:left-14 max-[520px]:w-[calc(100%_-_56px)] max-[520px]:rounded-none" :class="ui.root" :aria-label="tr('inspector.label')">
     <div class="inspector-header flex items-center justify-between border-b border-[var(--border)]">
       <div class="inspector-tabs flex h-full items-stretch" role="tablist">
         <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'changes' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'changes'" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.files") }}</button>
@@ -166,14 +166,14 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
 
     <div v-if="appStore.inspectorTab === 'changes' && appStore.activeRepositoryFilePreviewPath" class="inspector-content file-preview-panel">
       <div class="inspector-file-header file-preview-toolbar">
-        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.closePreview')" @click="appStore.closeRepositoryFilePreview()"><ArrowLeft :size="15" /></button>
+        <button class="icon-button file-preview-toolbar-button" :class="ui.iconButton" type="button" :title="tr('files.closePreview')" @click="appStore.closeRepositoryFilePreview()"><ArrowLeft :size="15" /></button>
         <FileCode2 :size="14" aria-hidden="true" />
         <strong :title="filePreview?.absolutePath || appStore.activeRepositoryFilePreviewPath">{{ filePreviewName }}</strong>
         <span v-if="appStore.activeRepositoryFilePreviewLine" class="file-preview-line">:{{ appStore.activeRepositoryFilePreviewLine }}</span>
-        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.refreshPreview')" :disabled="appStore.activeRepositoryFilePreviewLoading" @click="refreshPreview"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryFilePreviewLoading }" /></button>
+        <button class="icon-button file-preview-toolbar-button" :class="ui.iconButton" type="button" :title="tr('files.refreshPreview')" :disabled="appStore.activeRepositoryFilePreviewLoading" @click="refreshPreview"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.activeRepositoryFilePreviewLoading }" /></button>
         <div v-if="!remoteWorkspace" class="inspector-file-actions">
-          <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
-          <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
+          <button class="icon-button file-preview-toolbar-button" :class="ui.iconButton" type="button" :title="tr('files.open')" @click="void appStore.openPreviewedRepositoryFile()"><ExternalLink :size="14" /></button>
+          <button class="icon-button file-preview-toolbar-button" :class="ui.iconButton" type="button" :title="tr('files.reveal')" @click="void appStore.openPreviewedRepositoryFile(true)"><FolderOpen :size="14" /></button>
         </div>
       </div>
       <div v-if="appStore.activeRepositoryFilePreviewLoading" class="repository-state" :class="ui.empty"><LoaderCircle :size="18" class="is-spinning" /></div>

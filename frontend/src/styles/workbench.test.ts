@@ -17,8 +17,8 @@ describe("responsive workbench layout", () => {
     expect(css).toMatch(/\.app-menubar\s*{\s*display:\s*none/);
     expect(css).toMatch(/grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\)/);
     expect(css).toMatch(/grid-template-rows:\s*var\(--topbar-height\) minmax\(0, 1fr\)/);
-    expect(css).toMatch(/\.inspector\s*{[^}]*grid-template-rows:\s*26px minmax\(0, 1fr\)/s);
-    expect(css).toMatch(/\.inspector-header\s*{[^}]*min-height:\s*26px/s);
+    expect(css).toMatch(/\.inspector\s*{[^}]*grid-template-rows:\s*32px minmax\(0, 1fr\)/s);
+    expect(css).toMatch(/\.inspector-header\s*{[^}]*min-height:\s*32px/s);
   });
 
   it("styles the workspace application control as a compact split button", async () => {

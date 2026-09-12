@@ -425,6 +425,82 @@
   padding: 0 9px;
 }
 
+.task-rename-menu {
+  width: 220px;
+  gap: 8px;
+  padding: 8px;
+  border-color: var(--border);
+  border-radius: 10px;
+}
+
+.task-rename-menu label {
+  color: var(--text-secondary);
+  font-size: calc(11.5px + var(--font-size-delta));
+  font-weight: 600;
+}
+
+.task-rename-menu input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  background: var(--bg-workspace);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(13px + var(--font-size-delta));
+}
+
+.task-rename-menu input:focus-visible {
+  border-color: transparent;
+  outline-color: var(--focus);
+}
+
+.task-rename-menu .workspace-rename-actions {
+  gap: 4px;
+}
+
+.task-rename-menu .workspace-rename-actions button {
+  min-height: 32px;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: calc(12.5px + var(--font-size-delta));
+  font-weight: 500;
+}
+
+.task-rename-menu .task-rename-confirm {
+  background: var(--text);
+  color: var(--text-inverse);
+}
+
+.task-rename-menu .task-rename-confirm:hover:not(:disabled) {
+  background: var(--text-secondary);
+  color: var(--text-inverse);
+}
+
+.task-rename-menu .task-rename-confirm:active:not(:disabled) {
+  background: var(--text);
+}
+
+.task-rename-menu .task-rename-confirm:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.task-rename-menu .task-rename-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.task-rename-menu .task-rename-cancel:active {
+  background: var(--bg-active);
+}
+
 .sidebar-empty {
   margin: 5px 9px;
   color: var(--text-muted);
@@ -2924,7 +3000,7 @@
   min-width: 0;
   min-height: 0;
   grid-column: 3;
-  grid-template-rows: 26px minmax(0, 1fr);
+  grid-template-rows: 32px minmax(0, 1fr);
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
   overflow: hidden;
@@ -2932,8 +3008,8 @@
 
 .inspector-header {
   display: flex;
-  height: 26px;
-  min-height: 26px;
+  height: 32px;
+  min-height: 32px;
   align-items: center;
   justify-content: space-between;
   padding: 0 6px;
@@ -2952,6 +3028,9 @@
 
 .inspector-tabs button {
   position: relative;
+  display: flex;
+  height: 100%;
+  align-items: center;
   padding: 0 9px;
   border: 0;
   background: transparent;
@@ -2984,21 +3063,36 @@
 }
 
 .file-preview-toolbar {
-  height: 26px;
-  min-height: 26px;
+  height: 32px;
+  min-height: 32px;
   flex: 0 0 auto;
   padding: 0 4px;
   border-bottom: 1px solid var(--border);
 }
 
-.inspector-header > .icon-button,
-.file-preview-toolbar .icon-button {
+.inspector-header > .icon-button {
   width: 24px !important;
   min-height: 24px !important;
   height: 24px !important;
 }
 
+.file-preview-toolbar .file-preview-toolbar-button {
+  box-sizing: border-box;
+  width: 24px !important;
+  min-width: 24px !important;
+  max-width: 24px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  flex: 0 0 24px !important;
+  padding: 0 !important;
+  border-radius: 6px !important;
+}
+
 .inspector-file-header > strong {
+  display: flex;
+  height: 100%;
+  align-items: center;
   overflow: hidden;
   color: var(--text-secondary);
   font-size: calc(11px + var(--font-size-delta));
