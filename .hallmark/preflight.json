@@ -1,13 +1,15 @@
 {
-  "date": "2026-08-29",
+  "date": "2026-09-12",
   "framework": "Vue 3 + Wails 3 + Tailwind CSS 4",
-  "font_stack": "Bahnschrift + Segoe UI Variable Text + Cascadia Code",
-  "palette": "existing light/dark CSS variables; neutral monochrome",
-  "motion": "motion-cut; CSS transitions only",
-  "spacing": "4-point Tailwind scale",
+  "font_stack": "Segoe UI Variable + Microsoft YaHei + Cascadia Code",
+  "palette": "Codex/Zcode-inspired warm neutral workbench with restrained cobalt focus and semantic diff colors",
+  "motion": "CSS-only state motion: 90/140/180/220ms with reduced-motion fallback",
+  "spacing": "compact 2/4/6/8/12/16/24px scale",
   "source_files": [
     "frontend/package.json",
     "frontend/src/styles/tokens.css",
-    "frontend/src/styles/tailwind.css"
+    "frontend/src/styles/tailwind.css",
+    "frontend/src/styles/workbench.css",
+    "frontend/src/ui/classes.ts"
   ]
 }

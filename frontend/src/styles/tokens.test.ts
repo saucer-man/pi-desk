@@ -34,16 +34,27 @@ describe("teleported dialog theme inheritance", () => {
     expect(tokens).toContain(':root[data-font-family="mono"]');
     expect(tokens).toContain(':root[data-font-size="12"]');
     expect(tokens).toContain(':root[data-font-size="18"]');
-    expect(tokens).toContain("--font-size-delta: -2px");
-    expect(tokens).toContain("--font-size-delta: 4px");
+    expect(tokens).toContain("--font-size-delta: -1.5px");
+    expect(tokens).toContain("--font-size-delta: 2px");
     expect(tokens).toContain("--font-size-root: 16px");
+    expect(tokens).toContain("--font-size-meta: calc(11px + var(--font-size-delta))");
+    expect(tokens).toContain("--font-size-control: calc(13px + var(--font-size-delta))");
     expect(tokens).toContain("--font-size-body: calc(14px + var(--font-size-delta))");
+  });
+
+  it("publishes the Codex-style code preview palette", async () => {
+    const tokens = await tokensText();
+    expect(tokens).toContain("--preview-keyword: #d53538");
+    expect(tokens).toContain("--preview-declaration: #751ed9");
+    expect(tokens).toContain("--preview-symbol: #bd5800");
+    expect(tokens).toContain("--preview-string: #008809");
+    expect(tokens).toContain("--preview-operator: #0071ea");
   });
 
   it("scales Tailwind text utilities with the selected interface size", async () => {
     const tailwind = await tailwindText();
-    expect(tailwind).toContain("--text-xs: calc(12px + var(--font-size-delta))");
-    expect(tailwind).toContain("--text-sm: calc(14px + var(--font-size-delta))");
-    expect(tailwind).toContain("--text-base: calc(16px + var(--font-size-delta))");
+    expect(tailwind).toContain("--text-xs: var(--font-size-meta)");
+    expect(tailwind).toContain("--text-sm: var(--font-size-control)");
+    expect(tailwind).toContain("--text-base: var(--font-size-body)");
   });
 });

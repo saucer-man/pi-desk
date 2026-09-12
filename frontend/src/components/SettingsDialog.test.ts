@@ -37,16 +37,16 @@ describe("SettingsDialog", () => {
     expect(wrapper.get(".settings-project-path").text()).toBe("Current project path: None");
     expect(wrapper.get(".settings-layout").classes()).not.toContain("px-5");
     expect(wrapper.get(".settings-dialog").classes()).toEqual(expect.arrayContaining([
-      "[&_.text-button]:!h-7",
-      "[&_.text-button]:!min-h-7",
-      "[&_.text-button]:!text-xs",
+      "[&_.text-button]:!h-[34px]",
+      "[&_.text-button]:!min-h-[34px]",
+      "[&_.text-button]:!text-sm",
       "[&_.icon-button]:!size-7",
-      "[&_.text-button_svg]:!size-[13px]",
-      "[&_select]:!h-7",
-      "[&_select]:!text-xs",
-      "[&_input:not([type=checkbox]):not([type=radio])]:!h-7",
+      "[&_.text-button_svg]:!size-3.5",
+      "[&_select]:!h-[34px]",
+      "[&_select]:!text-sm",
+      "[&_input:not([type=checkbox]):not([type=radio])]:!h-[34px]",
       "[&_input[type=checkbox]]:!size-3.5",
-      "[&_textarea]:!text-xs",
+      "[&_textarea]:!text-sm",
     ]));
     expect(wrapper.findAll(".appearance-select")).toHaveLength(4);
     for (const select of wrapper.findAll(".appearance-select")) {

@@ -1,5 +1,14 @@
 [
   {
+    "date": "2026-09-12",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "codex-zcode-neutral",
+    "enrichment": "none",
+    "variation": "compact docked desktop workbench with dense navigation and calm conversation canvas",
+    "brief": "Pi Desk system-wide desktop UI redesign"
+  },
+  {
     "date": "2026-09-03",
     "scope": "app-page",
     "macrostructure": "Workbench",

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { CalendarClock, Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
+import { CalendarClock, Check, ChevronDown, ChevronRight, FolderGit2, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { tr } from "../i18n";
@@ -8,7 +8,6 @@ import { tr } from "../i18n";
 const appStore = useAppStore();
 const workspaceApplicationMenuOpen = ref(false);
 const workspaceApplicationButton = ref<HTMLButtonElement>();
-const activeBranch = computed(() => appStore.activeRepository?.git.branch || "");
 const activeWorkspaceApplication = computed(() => appStore.activeWorkspaceApplication);
 const workspaceApplicationDisabled = computed(() => !activeWorkspaceApplication.value || appStore.activeThread?.trust !== "approve");
 const workspaceApplicationTitle = computed(() => workspaceApplicationDisabled.value
@@ -61,15 +60,15 @@ onBeforeUnmount(() => {
 
 <template>
   <header
-    class="topbar relative z-40 col-span-full row-start-1 grid h-[52px] min-w-0 border-b border-[var(--border)] bg-[var(--bg-workspace)] shadow-[0_1px_0_color-mix(in_srgb,var(--text)_3%,transparent)] max-[760px]:[grid-template-columns:56px_minmax(0,1fr)]"
-    :class="[ui.root, appStore.sidebarCollapsed ? '[grid-template-columns:56px_minmax(0,1fr)]' : '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]']"
+    class="topbar relative z-40 col-span-full row-start-1 grid h-[var(--topbar-height)] min-w-0 border-b border-[var(--border)] bg-[var(--bg-workspace)] max-[760px]:[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]"
+    :class="[ui.root, appStore.sidebarCollapsed ? '[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]' : '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]']"
   >
-    <div class="topbar-brand flex min-w-0 items-center gap-2.5 border-r border-[var(--border)] px-4" aria-label="Pi Desk">
-      <span class="topbar-brand-mark grid size-7 shrink-0 place-items-center rounded-lg bg-[var(--text)] text-xs font-extrabold tracking-tight text-[var(--bg-workspace)] shadow-sm" aria-hidden="true">Pi</span>
+    <div class="topbar-brand flex min-w-0 items-center gap-2 border-r border-[var(--border)] px-3" aria-label="Pi Desk">
+      <span class="topbar-brand-mark grid size-6 shrink-0 place-items-center rounded-md bg-[var(--text)] text-xs font-bold tracking-tight text-[var(--bg-workspace)]" aria-hidden="true">Pi</span>
       <strong class="min-w-0 truncate font-display text-sm font-bold tracking-[-0.01em]">Pi Desk</strong>
       <button
         v-if="!appStore.sidebarCollapsed"
-        class="icon-button topbar-sidebar-toggle ml-auto inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--text)]"
+        class="icon-button topbar-sidebar-toggle ml-auto inline-grid size-7 shrink-0 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--focus)]"
         type="button"
         :title="tr('sidebar.collapse')"
         :aria-label="tr('sidebar.collapse')"
@@ -79,18 +78,14 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div class="topbar-task flex min-w-0 items-center justify-between gap-4">
+    <div class="topbar-task flex min-w-0 items-center justify-between gap-3">
       <div class="topbar-title-group flex min-w-0 items-center gap-2.5">
         <CalendarClock v-if="appStore.activePage === 'scheduledTasks'" :size="17" class="text-[var(--text-muted)]" />
         <strong class="min-w-0 max-w-[min(42vw,540px)] truncate font-display text-[calc(15px+var(--font-size-delta))] font-semibold tracking-[-0.01em] text-[var(--text)]" :title="appStore.activePage === 'scheduledTasks' ? tr('scheduledTasks.title') : appStore.activeThread?.title || 'Pi Desk'">{{ appStore.activePage === "scheduledTasks" ? tr("scheduledTasks.title") : appStore.activeThread?.title || "Pi Desk" }}</strong>
         <span v-if="appStore.activePage === 'task' && appStore.activeExtensionTitle" class="extension-window-title min-w-0 truncate text-xs text-[var(--text-secondary)]" :title="appStore.activeExtensionTitle">{{ appStore.activeExtensionTitle }}</span>
-        <span v-if="appStore.activePage === 'task' && appStore.activeThread" class="workspace-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] shadow-sm" :title="appStore.activeThread.workspacePath">
+        <span v-if="appStore.activePage === 'task' && appStore.activeThread" class="workspace-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-app)] px-2 py-1 text-xs text-[var(--text-secondary)]" :title="appStore.activeThread.workspacePath">
           <FolderGit2 :size="14" />
           <span>{{ appStore.activeThread.workspace }}</span>
-        </span>
-        <span v-if="appStore.activePage === 'task' && activeBranch" class="branch-chip inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-app)] px-2.5 py-1.5 font-mono text-[calc(11px+var(--font-size-delta))] text-[var(--text-secondary)] shadow-sm" :title="activeBranch">
-          <GitBranch :size="14" />
-          <span>{{ activeBranch }}</span>
         </span>
       </div>
 
@@ -141,7 +136,7 @@ onBeforeUnmount(() => {
         </div>
         <button
           v-if="appStore.activePage === 'task'"
-          class="icon-button inspector-toggle inline-grid size-8 shrink-0 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--text)] max-[520px]:hidden"
+          class="icon-button inspector-toggle inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--focus)] max-[520px]:hidden"
           type="button"
           :title="appStore.inspectorOpen ? tr('topbar.closeInspector') : tr('topbar.openInspector')"
           :aria-label="appStore.inspectorOpen ? tr('topbar.closeInspector') : tr('topbar.openInspector')"

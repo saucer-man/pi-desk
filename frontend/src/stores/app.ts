@@ -45,10 +45,10 @@ const remoteReconnectProgressDefinitions: RemoteReconnectProgressStep[] = [
 ];
 
 export const MAX_PI_PROCESSES = 10;
-export const DEFAULT_SIDEBAR_WIDTH = 272;
+export const DEFAULT_SIDEBAR_WIDTH = 264;
 export const MIN_SIDEBAR_WIDTH = 180;
 export const MAX_SIDEBAR_WIDTH = 560;
-export const DEFAULT_INSPECTOR_WIDTH = 320;
+export const DEFAULT_INSPECTOR_WIDTH = 360;
 export const MIN_INSPECTOR_WIDTH = 240;
 export const MAX_INSPECTOR_WIDTH = 840;
 const TODO_WIDGET_KEYS = ["pi-deck-todo", "pi-desk-todo"] as const;

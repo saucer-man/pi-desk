@@ -101,7 +101,7 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
   </div>
   <div
     v-else
-    class="app-shell relative grid h-full w-full grid-rows-[52px_minmax(0,1fr)] overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased max-[760px]:[grid-template-columns:56px_minmax(0,1fr)]"
+    class="app-shell relative grid h-full w-full grid-rows-[var(--topbar-height)_minmax(0,1fr)] overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased max-[760px]:[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]"
     :data-theme="appStore.appearance"
     :style="{
       '--sidebar-width': `${appStore.sidebarWidth}px`,
@@ -112,7 +112,7 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
       'is-sidebar-collapsed': appStore.sidebarCollapsed,
       'is-inspector-closed': !appStore.inspectorOpen || appStore.activePage === 'scheduledTasks',
       'is-inspector-open': appStore.inspectorOpen && appStore.activePage === 'task',
-      '[grid-template-columns:56px_minmax(0,1fr)]': appStore.sidebarCollapsed,
+      '[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]': appStore.sidebarCollapsed,
       '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]': !appStore.sidebarCollapsed,
     }"
   >

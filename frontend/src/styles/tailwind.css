@@ -1,4 +1,4 @@
-/* Hallmark · genre: modern-minimal · macrostructure: Workbench · tone: austere · anchor hue: neutral-black
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · tone: technical/austere · theme: codex-zcode-neutral
  * pre-emit critique: P5 H5 E5 S5 R5 V4 · designed-as-app · utilities: Tailwind v4
  * contrast: pass (40–41) · nav: N2 · footer: n/a · slop: pass (42–45)
  * honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive: pass (49)
@@ -9,12 +9,12 @@
 @theme {
   --font-display: var(--font-interface-display);
   --font-body: var(--font-interface-body);
-  --font-mono: "Cascadia Code", Consolas, monospace;
-  --text-xs: calc(12px + var(--font-size-delta));
-  --text-sm: calc(14px + var(--font-size-delta));
-  --text-base: calc(16px + var(--font-size-delta));
-  --text-lg: calc(18px + var(--font-size-delta));
-  --text-xl: calc(20px + var(--font-size-delta));
+  --font-mono: var(--font-code-stack);
+  --text-xs: var(--font-size-meta);
+  --text-sm: var(--font-size-control);
+  --text-base: var(--font-size-body);
+  --text-lg: var(--font-size-title);
+  --text-xl: var(--font-size-dialog-title);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);

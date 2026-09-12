@@ -102,6 +102,7 @@ describe("AppTopbar", () => {
 
     expect(wrapper.find('button[title="Task actions"]').exists()).toBe(false);
     expect(wrapper.find('button[title="Session branches"]').exists()).toBe(false);
+    expect(wrapper.find(".branch-chip").exists()).toBe(false);
     expect(wrapper.find(".inspector-toggle").exists()).toBe(true);
   });
 

@@ -13,12 +13,12 @@ async function workbenchText(): Promise<string> {
 describe("responsive workbench layout", () => {
   it("uses one application topbar and a two-column shell", async () => {
     const css = await workbenchText();
-    expect(css).toMatch(/--topbar-height:\s*52px/);
+    expect(css).toMatch(/--topbar-height:\s*44px/);
     expect(css).toMatch(/\.app-menubar\s*{\s*display:\s*none/);
     expect(css).toMatch(/grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\)/);
     expect(css).toMatch(/grid-template-rows:\s*var\(--topbar-height\) minmax\(0, 1fr\)/);
-    expect(css).toMatch(/\.inspector\s*{[^}]*grid-template-rows:\s*32px minmax\(0, 1fr\)/s);
-    expect(css).toMatch(/\.inspector-header\s*{[^}]*min-height:\s*32px/s);
+    expect(css).toMatch(/\.inspector\s*{[^}]*grid-template-rows:\s*34px minmax\(0, 1fr\)/s);
+    expect(css).toMatch(/\.inspector-header\s*{[^}]*min-height:\s*34px/s);
   });
 
   it("styles the workspace application control as a compact split button", async () => {
@@ -30,13 +30,13 @@ describe("responsive workbench layout", () => {
 
   it("keeps the reading and composer axes bounded", async () => {
     const css = await workbenchText();
-    expect(css).toMatch(/--conversation-content-width:\s*960px/);
+    expect(css).toMatch(/--conversation-content-width:\s*880px/);
     expect(css).toMatch(/--composer-overlay-reserve:\s*0px/);
     expect(css).toMatch(/\.conversation-scroll-region\s*{[^}]*grid-column:\s*1[^}]*grid-row:\s*1 \/ -1/s);
-    expect(css).toMatch(/\.timeline\s*{[^}]*width:\s*100%[^}]*padding:\s*36px var\(--conversation-inline-space\) calc\(var\(--composer-overlay-reserve\) \+ 28px\)[^}]*scroll-padding-bottom:\s*var\(--composer-overlay-reserve\)/s);
-    expect(css).toMatch(/\.composer-wrap\s*{[^}]*--composer-max-width:\s*var\(--conversation-content-width\)[^}]*--composer-stack-total-inset:\s*24px[^}]*--conversation-inline-space:/s);
+    expect(css).toMatch(/\.timeline\s*{[^}]*width:\s*100%[^}]*padding:\s*24px var\(--conversation-inline-space\) calc\(var\(--composer-overlay-reserve\) \+ 20px\)[^}]*scroll-padding-bottom:\s*var\(--composer-overlay-reserve\)/s);
+    expect(css).toMatch(/\.composer-wrap\s*{[^}]*--composer-max-width:\s*var\(--conversation-content-width\)[^}]*--composer-stack-total-inset:\s*20px[^}]*--conversation-inline-space:/s);
     expect(css).toMatch(/\.composer-wrap\s*{[^}]*grid-column:\s*1[^}]*grid-row:\s*2[^}]*background:\s*linear-gradient\(to right, var\(--bg-workspace\) calc\(100% - 15px\), transparent calc\(100% - 15px\)\)[^}]*pointer-events:\s*none/s);
-    expect(css).toMatch(/\.composer-wrap\s*{[^}]*padding:\s*10px var\(--conversation-inline-space\) 22px/s);
+    expect(css).toMatch(/\.composer-wrap\s*{[^}]*padding:\s*8px var\(--conversation-inline-space\) 14px/s);
     expect(css).toMatch(/\.composer,[^}]*width:\s*min\(var\(--composer-max-width\), 100%\)/s);
     expect(css).toMatch(/\.composer-token-metrics\s*{[^}]*display:\s*grid[^}]*width:\s*min\(var\(--composer-max-width\), 100%\)/s);
     expect(css).toMatch(/\.message-row\[data-role="assistant"\] \.message-content,[^}]*max-width:\s*100%/s);
@@ -45,8 +45,8 @@ describe("responsive workbench layout", () => {
   it("keeps the conversation scrollbar at the workspace edge when the inspector opens", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/\.app-shell\.is-inspector-open \.workspace-shell\s*{[^}]*padding-right:\s*0/s);
-    expect(css).toMatch(/\.app-shell\.is-inspector-open \.timeline\s*{[^}]*--inspector-width\) - 18px[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ 18px \+ var\(--conversation-inline-space\)\)/s);
-    expect(css).toMatch(/\.app-shell\.is-inspector-open \.composer-wrap\s*{[^}]*--inspector-width\) - 18px[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ 18px \+ var\(--conversation-inline-space\)\)/s);
+    expect(css).toMatch(/\.app-shell\.is-inspector-open \.timeline\s*{[^}]*--inspector-width\) - var\(--conversation-content-width\)[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ var\(--conversation-inline-space\)\)/s);
+    expect(css).toMatch(/\.app-shell\.is-inspector-open \.composer-wrap\s*{[^}]*--inspector-width\) - var\(--conversation-content-width\)[^}]*padding-right:\s*calc\(var\(--inspector-width\) \+ var\(--conversation-inline-space\)\)/s);
     expect(css).toMatch(/\.composer,[^}]*pointer-events:\s*auto/s);
   });
 
@@ -67,7 +67,7 @@ describe("responsive workbench layout", () => {
 
   it("keeps the inspector resize target on the panel edge without a visible rail", async () => {
     const css = await workbenchText();
-    expect(css).toMatch(/\.pane-resizer\.is-right\s*{[^}]*right:\s*calc\(var\(--inspector-width\) \+ 14px\)/s);
+    expect(css).toMatch(/\.pane-resizer\.is-right\s*{[^}]*right:\s*calc\(var\(--inspector-width\) - 3px\)/s);
     expect(css).toMatch(/\.pane-resizer\.is-right::after\s*{[^}]*content:\s*none/s);
   });
 
@@ -77,7 +77,7 @@ describe("responsive workbench layout", () => {
     expect(css).toMatch(/\.dialog-body\.settings-layout\s*{[^}]*padding-block:\s*0 !important[^}]*padding-inline:\s*0 !important/s);
     expect(css).toMatch(/\.settings-layout\s*{[^}]*grid-template-columns:\s*156px minmax\(0, 1fr\)/s);
     expect(css).toMatch(/\.settings-nav\s*{[^}]*gap:\s*0[^}]*padding:\s*0/s);
-    expect(css).toMatch(/\.settings-nav button\s*{[^}]*width:\s*100%[^}]*height:\s*34px[^}]*border-radius:\s*0[^}]*font-size:\s*calc\(11\.5px \+ var\(--font-size-delta\)\)/s);
+    expect(css).toMatch(/\.settings-nav button\s*{[^}]*width:\s*100%[^}]*height:\s*34px[^}]*border-radius:\s*0[^}]*font-size:\s*var\(--font-size-label\)/s);
     expect(css).not.toMatch(/\.settings-dialog \.text-button\s*{/);
     expect(css).toMatch(/\.settings-dialog \.setting-row-select select\s*{[^}]*width:\s*128px[^}]*flex-basis:\s*128px/s);
     expect(css).not.toMatch(/\.settings-dialog \.setting-row-select select\s*{[^}]*font-size:/s);

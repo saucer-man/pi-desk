@@ -1,4 +1,4 @@
-/* Hallmark · macrostructure: codex-review-card-and-inspector · genre: modern-minimal · tone: technical · palette: existing neutral-blue · contrast: pass (40–41) · slop: pass (1–58) */
+/* Hallmark · pre-emit: P5 H5 E5 S5 R5 V4 · macrostructure: codex-review-card-and-inspector · genre: modern-minimal · tone: technical · palette: existing neutral-blue · contrast: pass (40–41) · slop: pass (1–58) */
 .app-shell {
   position: relative;
   display: grid;
@@ -725,8 +725,8 @@
 
 .window-control-close:hover,
 .window-control-close:active {
-  background: #c42b1c;
-  color: #fff;
+  background: var(--window-close-bg);
+  color: var(--window-close-fg);
 }
 
 .window-control:focus-visible {
@@ -890,7 +890,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-raised);
-  box-shadow: 0 5px 16px rgb(0 0 0 / 10%);
+  box-shadow: var(--shadow-menu);
 }
 
 .conversation-search-main {
@@ -2444,7 +2444,7 @@
   align-items: center;
   gap: 7px;
   padding: 0 6px 0 10px;
-  border-color: #665632;
+  border-color: var(--amber);
   color: var(--amber);
   font-size: calc(11.5px + var(--font-size-delta));
 }
@@ -2748,7 +2748,7 @@
 }
 
 .access-button.is-full {
-  color: #e8662d;
+  color: var(--amber);
 }
 
 .access-menu {
@@ -2924,8 +2924,8 @@
   place-items: center;
   border: 0;
   border-radius: 7px;
-  background: #5d5f60;
-  color: #a8aaa7;
+  background: var(--bg-active);
+  color: var(--text-muted);
 }
 
 .composer-actions {
@@ -3000,7 +3000,7 @@
   min-width: 0;
   min-height: 0;
   grid-column: 3;
-  grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-rows: 34px minmax(0, 1fr);
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
   overflow: hidden;
@@ -3008,8 +3008,8 @@
 
 .inspector-header {
   display: flex;
-  height: 32px;
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   padding: 0 6px;
@@ -3063,8 +3063,8 @@
 }
 
 .file-preview-toolbar {
-  height: 32px;
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
   flex: 0 0 auto;
   padding: 0 4px;
   border-bottom: 1px solid var(--border);
@@ -3114,9 +3114,6 @@
 }
 
 .inspector-content.file-preview-panel {
-  --preview-bg: #ffffff;
-  --preview-fg: #1f2328;
-  --preview-muted: #59636e;
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -3134,7 +3131,7 @@
   border: 0;
   background: var(--preview-bg);
   color: var(--preview-fg);
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: calc(11px + var(--font-size-delta));
   line-height: 1.55;
   tab-size: 2;
@@ -3152,14 +3149,14 @@
   display: grid;
   min-width: 100%;
   min-height: 20px;
-  grid-template-columns: 36px max-content;
+  grid-template-columns: 28px max-content;
 }
 
 .file-preview-line-number {
   position: sticky;
   left: 0;
   z-index: 1;
-  padding: 0 8px 0 0;
+  padding: 0;
   background: var(--preview-bg);
   color: var(--preview-muted);
   text-align: left;
@@ -3167,7 +3164,7 @@
 }
 
 .file-preview-line-text {
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .file-media-preview,
@@ -3226,47 +3223,53 @@
 }
 
 .file-preview-content .tok-keyword,
-.file-preview-content .tok-controlKeyword,
-.file-preview-content .tok-operatorKeyword {
-  color: #cf222e;
+.file-preview-content .tok-deleted,
+.file-preview-content .tok-invalid {
+  color: var(--preview-keyword);
+}
+
+.file-preview-content .tok-definitionKeyword,
+.file-preview-content .tok-function,
+.file-preview-content .tok-typeName,
+.file-preview-content .tok-heading,
+.file-preview-content .tok-strong {
+  color: var(--preview-declaration);
 }
 
 .file-preview-content .tok-definition,
-.file-preview-content .tok-typeName,
-.file-preview-content .tok-className,
-.file-preview-content .tok-namespace {
-  color: #8250df;
-}
-
-.file-preview-content .tok-variableName2 {
-  color: #953800;
+.file-preview-content .tok-variableName,
+.file-preview-content .tok-variableName2,
+.file-preview-content .tok-propertyName,
+.file-preview-content .tok-labelName,
+.file-preview-content .tok-operatorKeyword {
+  color: var(--preview-symbol);
 }
 
 .file-preview-content .tok-string,
 .file-preview-content .tok-string2 {
-  color: #0a3069;
+  color: var(--preview-string);
 }
 
 .file-preview-content .tok-number,
-.file-preview-content .tok-bool,
-.file-preview-content .tok-atom,
 .file-preview-content .tok-literal,
 .file-preview-content .tok-macroName,
-.file-preview-content .tok-meta {
-  color: #0550ae;
+.file-preview-content .tok-meta,
+.file-preview-content .tok-operator,
+.file-preview-content .tok-link,
+.file-preview-content .tok-url {
+  color: var(--preview-operator);
 }
 
 .file-preview-content .tok-comment {
-  color: #6e7781;
+  color: var(--preview-muted);
 }
 
 .file-preview-content .tok-inserted {
-  color: #1a7f37;
+  color: var(--preview-string);
 }
 
 .file-preview-content .tok-heading,
 .file-preview-content .tok-strong {
-  color: #8250df;
   font-weight: 700;
 }
 
@@ -3276,13 +3279,7 @@
 
 .file-preview-content .tok-link,
 .file-preview-content .tok-url {
-  color: #0969da;
   text-decoration: underline;
-}
-
-.file-preview-content .tok-deleted,
-.file-preview-content .tok-invalid {
-  color: #cf222e;
 }
 
 .inspector-content {
@@ -3465,18 +3462,18 @@
 }
 
 .diff-line.is-addition {
-  background: rgb(63 130 98 / 16%);
-  color: #8fd0af;
+  background: var(--diff-add-bg);
+  color: var(--diff-add-text);
 }
 
 .diff-line.is-deletion {
-  background: rgb(158 75 71 / 16%);
-  color: #e19a96;
+  background: var(--diff-delete-bg);
+  color: var(--diff-delete-text);
 }
 
 .diff-line.is-hunk {
-  background: rgb(75 103 133 / 16%);
-  color: #9ab4cc;
+  background: var(--diff-hunk-bg);
+  color: var(--diff-hunk-text);
 }
 
 .diff-line.is-meta {
@@ -3503,11 +3500,11 @@
 
 .change-status[data-status="A"],
 .change-status[data-status="U"] {
-  color: #77c5a8;
+  color: var(--diff-add-text);
 }
 
 .change-status[data-status="D"] {
-  color: #e68d89;
+  color: var(--diff-delete-text);
 }
 
 .change-summary {
@@ -4396,7 +4393,7 @@
 }
 
 .trust-options label.is-selected {
-  border-color: #5e6264;
+  border-color: var(--border-strong);
   background: var(--bg-raised);
   color: var(--text);
 }
@@ -5297,8 +5294,8 @@
   padding: 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: #ffffff;
-  background-color: #ffffff;
+  background: var(--preview-bg);
+  background-color: var(--preview-bg);
   box-shadow: var(--shadow-lg);
 }
 

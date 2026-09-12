@@ -279,7 +279,7 @@ onBeforeUnmount(() => {
   <aside class="sidebar col-start-1 row-start-2 flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-sidebar)]" :class="ui.root" :aria-label="tr('sidebar.navigation')">
     <button
       v-if="appStore.sidebarCollapsed"
-      class="icon-button sidebar-expand-button mx-auto mt-3 inline-grid size-9 shrink-0 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--text)]" :class="ui.iconButton"
+      class="icon-button sidebar-expand-button mx-auto mt-2 inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" :class="ui.iconButton"
       type="button"
       :title="tr('sidebar.expand')"
       :aria-label="tr('sidebar.expand')"
@@ -287,14 +287,14 @@ onBeforeUnmount(() => {
     >
       <PanelLeftOpen :size="17" />
     </button>
-    <nav v-else class="primary-nav grid gap-1 border-b border-[var(--border)] px-3 py-0" aria-label="Primary">
-      <button v-if="!appStore.sidebarCollapsed" class="new-task-button flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
+    <nav v-else class="primary-nav grid gap-0.5 border-b border-[var(--border)] px-2.5 py-1.5" aria-label="Primary">
+      <button v-if="!appStore.sidebarCollapsed" class="new-task-button flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
         <SquarePen :size="17" />
         <span>{{ tr("sidebar.newTask") }}</span>
       </button>
       <button
         v-if="!appStore.sidebarCollapsed"
-        class="flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:border-[var(--border)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--text)]"
+        class="flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]"
         type="button"
         :title="tr('sidebar.scheduledTasks')"
         :aria-label="tr('sidebar.scheduledTasks')"
@@ -305,12 +305,12 @@ onBeforeUnmount(() => {
         <span>{{ tr("sidebar.scheduledTasks") }}</span>
       </button>
       <div class="primary-nav-row flex min-w-0 items-center">
-        <button v-if="!appStore.sidebarCollapsed" class="primary-nav-search flex h-9 w-full min-w-0 items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.openSearch')" :aria-label="tr('sidebar.openSearch')" :aria-pressed="appStore.searchOpen" @click="toggleSearch">
+        <button v-if="!appStore.sidebarCollapsed" class="primary-nav-search flex h-8 w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.openSearch')" :aria-label="tr('sidebar.openSearch')" :aria-pressed="appStore.searchOpen" @click="toggleSearch">
           <Search :size="16" />
           <span>{{ tr("sidebar.search") }}</span>
         </button>
       </div>
-      <button v-if="!appStore.sidebarCollapsed" class="flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-lg border border-transparent bg-transparent px-3 text-sm text-[var(--text-secondary)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:border-[var(--border)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--text)]" type="button" :title="tr('sidebar.review')" :aria-label="tr('sidebar.review')" :aria-pressed="appStore.inspectorOpen && appStore.inspectorTab === 'changes'" @click="appStore.toggleInspector('changes')">
+      <button v-if="!appStore.sidebarCollapsed" class="flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.review')" :aria-label="tr('sidebar.review')" :aria-pressed="appStore.inspectorOpen && appStore.inspectorTab === 'changes'" @click="appStore.toggleInspector('changes')">
         <FileSearch :size="16" />
         <span>{{ tr("sidebar.review") }}</span>
       </button>
@@ -323,8 +323,8 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="!appStore.sidebarCollapsed && appStore.searchOpen" class="sidebar-search-help mx-5 mt-1 text-[calc(11px+var(--font-size-delta))] leading-relaxed text-[var(--text-muted)]">{{ tr("sidebar.searchHelp") }}</p>
 
-    <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-3 pt-2">
-      <div class="section-heading flex h-8 items-center justify-between px-2 text-xs font-semibold text-[var(--text-secondary)]">
+    <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-2.5 pt-1.5">
+      <div class="section-heading flex h-7 items-center justify-between px-2 text-xs font-semibold text-[var(--text-secondary)]">
         <span class="tracking-[-0.01em]">{{ tr("sidebar.workspaces") }}</span>
         <div class="section-heading-actions flex items-center gap-0.5">
           <button class="icon-button inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton" type="button" :title="tr('sidebar.syncSessions')" :disabled="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()">
@@ -335,8 +335,8 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="appStore.catalogLoading" class="sidebar-empty mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]">{{ tr("sidebar.loading") }}</p>
       <p v-else-if="!appStore.catalogReady && appStore.catalogError" class="sidebar-empty error-text mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]" :title="appStore.catalogError">{{ tr("sidebar.unavailable") }}</p>
-      <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-2">
-        <div class="workspace-header group flex h-8 min-w-0 items-center rounded-lg border border-transparent hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active)]">
+      <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-1">
+        <div class="workspace-header group flex h-8 min-w-0 items-center rounded-md border border-transparent hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active)]">
           <input
             v-if="group.workspace.id === workspaceRenameID"
             id="workspace-rename-input"
@@ -353,7 +353,7 @@ onBeforeUnmount(() => {
           <button
             v-else
             type="button"
-            class="workspace-row flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-lg bg-transparent px-2.5 text-left text-sm text-[var(--text)] hover:bg-transparent"
+            class="workspace-row flex h-full min-w-0 flex-1 items-center gap-2 rounded-md bg-transparent px-2 text-left text-sm text-[var(--text)] hover:bg-transparent"
             :aria-expanded="!isWorkspaceCollapsed(group.workspace.id)"
             :title="group.workspace.kind === 'ssh' ? group.workspace.remoteRoot : group.workspace.path"
             @click="toggleWorkspace(group.workspace.id)"
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
           <button
             v-for="thread in group.threads"
             :key="thread.id"
-            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-lg bg-transparent pl-9 pr-2.5 text-left text-[calc(14px+var(--font-size-delta))] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
+            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-transparent pl-8 pr-2 text-left text-[var(--font-size-label)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
             :class="{ 'is-active bg-[var(--bg-active)] text-[var(--text)]': appStore.activeThreadId === thread.id }"
             type="button"
             :title="thread.title"
@@ -415,7 +415,7 @@ onBeforeUnmount(() => {
       <p v-else-if="appStore.searchQuery.trim() && workspaceGroups.length === 0" class="sidebar-empty mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]">{{ tr("sidebar.noMatches") }}</p>
     </div>
 
-    <div v-if="!appStore.sidebarCollapsed" class="sidebar-footer flex h-14 shrink-0 items-center gap-2 border-t border-[var(--border)] px-4 text-xs text-[var(--text-secondary)]">
+    <div v-if="!appStore.sidebarCollapsed" class="sidebar-footer flex h-11 shrink-0 items-center gap-2 border-t border-[var(--border)] px-3 text-xs text-[var(--text-secondary)]">
       <RuntimeBadge />
       <button class="icon-button inline-grid size-8 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]" :class="ui.iconButton" type="button" :title="tr('sidebar.settings')" @click="appStore.openSettings()">
         <Settings :size="17" />

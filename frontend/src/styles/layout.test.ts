@@ -49,16 +49,17 @@ describe("application rail alignment", () => {
 describe("file preview density", () => {
   it("compacts the structural file preview and keeps its gutter flush", async () => {
     const layout = await layoutText();
-    expect(firstRuleBody(layout, ".inspector")).toMatch(/grid-template-rows:\s*32px minmax\(0, 1fr\)/);
-    expect(firstRuleBody(layout, ".inspector-header")).toMatch(/min-height:\s*32px/);
-    expect(firstRuleBody(layout, ".file-preview-toolbar")).toMatch(/height:\s*32px/);
+    expect(firstRuleBody(layout, ".inspector")).toMatch(/grid-template-rows:\s*34px minmax\(0, 1fr\)/);
+    expect(firstRuleBody(layout, ".inspector-header")).toMatch(/min-height:\s*34px/);
+    expect(firstRuleBody(layout, ".file-preview-toolbar")).toMatch(/height:\s*34px/);
     expect(layout).toMatch(/\.inspector-tabs button\s*{[^}]*display:\s*flex[^}]*align-items:\s*center/s);
     expect(layout).toMatch(/\.file-preview-toolbar \.file-preview-toolbar-button\s*{[^}]*width:\s*24px !important[^}]*height:\s*24px !important[^}]*padding:\s*0 !important/s);
-    expect(layout).toMatch(/\.file-preview-row\s*{[^}]*grid-template-columns:\s*36px max-content/s);
-    expect(layout).toMatch(/\.file-preview-line-number\s*{[^}]*padding:\s*0 8px 0 0[^}]*text-align:\s*left/s);
-    expect(layout).toMatch(/\.file-preview-content \.tok-definition,[\s\S]*color:\s*#8250df/);
-    expect(layout).toMatch(/\.file-preview-content \.tok-comment\s*{[^}]*color:\s*#6e7781/s);
-    expect(layout).toMatch(/\.file-preview-content \.tok-inserted\s*{[^}]*color:\s*#1a7f37/s);
+    expect(layout).toMatch(/\.file-preview-row\s*{[^}]*grid-template-columns:\s*28px max-content/s);
+    expect(layout).toMatch(/\.file-preview-line-number\s*{[^}]*padding:\s*0[^}]*text-align:\s*left/s);
+    expect(layout).toMatch(/\.file-preview-line-text\s*{[^}]*padding:\s*0 8px/s);
+    expect(layout).toMatch(/\.file-preview-content \.tok-definitionKeyword,[\s\S]*color:\s*var\(--preview-declaration\)/);
+    expect(layout).toMatch(/\.file-preview-content \.tok-definition,[\s\S]*color:\s*var\(--preview-symbol\)/);
+    expect(layout).toMatch(/\.file-preview-content \.tok-string,[\s\S]*color:\s*var\(--preview-string\)/);
   });
 });
 
