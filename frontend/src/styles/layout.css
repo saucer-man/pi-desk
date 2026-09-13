@@ -1861,6 +1861,19 @@
   white-space: nowrap;
 }
 
+/* Subagent cards carry a pi-desktop style subtitle naming the delegated agents;
+   it takes the remaining trigger-row space so status and duration stay pinned right. */
+.tool-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: calc(11px + var(--font-size-delta));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tool-duration {
   flex: 0 0 auto;
   color: var(--text-muted);
@@ -7094,6 +7107,36 @@
   color: var(--red);
   font-size: calc(10.5px + var(--font-size-delta));
   line-height: 1.35;
+}
+
+.browser-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 8px;
+  background: var(--bg-panel);
+}
+
+.browser-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  outline: none;
+  cursor: default;
+}
+
+.browser-empty {
+  display: grid;
+  max-width: 34ch;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+  line-height: 1.5;
 }
 
 .is-sidebar-collapsed .primary-nav {

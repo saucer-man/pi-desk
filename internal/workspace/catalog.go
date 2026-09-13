@@ -740,7 +740,7 @@ func validateDesktop(desktop DesktopRecord) error {
 			return errors.New("invalid streaming behavior preference")
 		}
 		switch preferences.InspectorTab {
-		case "changes", "context", "terminal":
+		case "changes", "context", "terminal", "browser":
 		default:
 			return errors.New("invalid inspector tab preference")
 		}

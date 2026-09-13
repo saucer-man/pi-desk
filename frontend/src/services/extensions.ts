@@ -1,5 +1,5 @@
 import { PiExtensionService } from "../../bindings/pi-desk/internal/appservice";
-import type { PiDeskComputerUseExtensionStatus, PiDeskGoalExtensionStatus, PiDeskTodoInstallResult, PiExtensionSnapshot, PiPackageRequest, PiPackageSnapshot, SetPiPackageEnabledRequest } from "../../bindings/pi-desk/internal/domain";
+import type { PiDeskBrowserExtensionStatus, PiDeskComputerUseExtensionStatus, PiDeskGoalExtensionStatus, PiDeskSubagentsExtensionStatus, PiDeskTodoInstallResult, PiExtensionSnapshot, PiPackageRequest, PiPackageSnapshot, SetPiPackageEnabledRequest } from "../../bindings/pi-desk/internal/domain";
 
 export const piExtensionService = {
   list(): Promise<PiExtensionSnapshot> {
@@ -23,6 +23,18 @@ export const piExtensionService = {
   removeComputerUse(): Promise<void> {
     return PiExtensionService.RemovePiDeskComputerUse();
   },
+  installSubagents(): Promise<PiDeskSubagentsExtensionStatus> {
+    return PiExtensionService.InstallPiDeskSubagents();
+  },
+  removeSubagents(): Promise<void> {
+    return PiExtensionService.RemovePiDeskSubagents();
+  },
+  installBrowser(): Promise<PiDeskBrowserExtensionStatus> {
+    return PiExtensionService.InstallPiDeskBrowser();
+  },
+  removeBrowser(): Promise<void> {
+    return PiExtensionService.RemovePiDeskBrowser();
+  },
   listPackages(workspacePath = ""): Promise<PiPackageSnapshot> {
     return PiExtensionService.ListPackages({ workspacePath });
   },
@@ -41,8 +53,10 @@ export const piExtensionService = {
 };
 
 export type {
+  PiDeskBrowserExtensionStatus,
   PiDeskComputerUseExtensionStatus,
   PiDeskGoalExtensionStatus,
+  PiDeskSubagentsExtensionStatus,
   PiDeskTodoExtensionStatus,
   PiDeskTodoInstallResult,
   PiExtensionSnapshot,

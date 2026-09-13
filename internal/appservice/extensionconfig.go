@@ -26,6 +26,8 @@ const (
 	legacyTodoExtensionName        = "pi-deck-todo.ts"
 	piDeskGoalExtensionName        = "pi-desk-goal.ts"
 	piDeskComputerUseExtensionName = "pi-desk-computer-use.ts"
+	piDeskSubagentsExtensionName   = "pi-desk-subagents.ts"
+	piDeskBrowserExtensionName     = "pi-desk-browser.ts"
 	maxExtensionSettingsBytes      = 4 << 20
 	maxGlobalExtensionEntries      = 1000
 	maxPackageSourceBytes          = 2048
@@ -41,12 +43,20 @@ var bundledPiDeskGoalExtension []byte
 //go:embed resources/pi-desk-computer-use.ts
 var bundledPiDeskComputerUseExtension []byte
 
+//go:embed resources/pi-desk-subagents.ts
+var bundledPiDeskSubagentsExtension []byte
+
+//go:embed resources/pi-desk-browser.ts
+var bundledPiDeskBrowserExtension []byte
+
 type PiExtensionService struct {
 	agentDirectory    string
 	directoryErr      error
 	todoSource        []byte
 	goalSource        []byte
 	computerUseSource []byte
+	subagentsSource   []byte
+	browserSource     []byte
 	workspaces        interface {
 		ResolvePath(string) (workspace.Record, error)
 	}
@@ -61,15 +71,15 @@ func NewPiExtensionService(catalog *workspace.Catalog, locator *piruntime.Locato
 	directory, err := defaultPiAgentDirectory()
 	return &PiExtensionService{
 		agentDirectory: directory, directoryErr: err, todoSource: bundledPiDeskTodoExtension, goalSource: bundledPiDeskGoalExtension,
-		computerUseSource: bundledPiDeskComputerUseExtension,
-		workspaces:        catalog, packageRunner: locatorPiPackageRunner{locator: locator},
+		computerUseSource: bundledPiDeskComputerUseExtension, subagentsSource: bundledPiDeskSubagentsExtension, browserSource: bundledPiDeskBrowserExtension,
+		workspaces: catalog, packageRunner: locatorPiPackageRunner{locator: locator},
 	}
 }
 
 func newPiExtensionService(agentDirectory string, todoSource []byte) *PiExtensionService {
 	return &PiExtensionService{
 		agentDirectory: agentDirectory, todoSource: todoSource, goalSource: bundledPiDeskGoalExtension,
-		computerUseSource: bundledPiDeskComputerUseExtension,
+		computerUseSource: bundledPiDeskComputerUseExtension, subagentsSource: bundledPiDeskSubagentsExtension, browserSource: bundledPiDeskBrowserExtension,
 	}
 }
 
@@ -231,6 +241,84 @@ func (service *PiExtensionService) RemovePiDeskComputerUse() error {
 	path := filepath.Join(directory, piDeskComputerUseExtensionName)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove Pi Desk computer use extension: %w", err)
+	}
+	return nil
+}
+
+func (service *PiExtensionService) InstallPiDeskSubagents() (domain.PiDeskSubagentsExtensionStatus, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return domain.PiDeskSubagentsExtensionStatus{}, err
+	}
+	if len(service.subagentsSource) == 0 {
+		return domain.PiDeskSubagentsExtensionStatus{}, errors.New("Pi Desk subagents extension source is unavailable")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return domain.PiDeskSubagentsExtensionStatus{}, fmt.Errorf("create Pi extension directory: %w", err)
+	}
+	targetPath := filepath.Join(directory, piDeskSubagentsExtensionName)
+	if err := atomic.WriteFile(targetPath, bytes.NewReader(service.subagentsSource)); err != nil {
+		return domain.PiDeskSubagentsExtensionStatus{}, fmt.Errorf("install Pi Desk subagents extension: %w", err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		return domain.PiDeskSubagentsExtensionStatus{}, fmt.Errorf("protect Pi Desk subagents extension: %w", err)
+	}
+	return service.subagentsStatus(directory)
+}
+
+func (service *PiExtensionService) RemovePiDeskSubagents() error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(directory, piDeskSubagentsExtensionName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove Pi Desk subagents extension: %w", err)
+	}
+	return nil
+}
+
+func (service *PiExtensionService) InstallPiDeskBrowser() (domain.PiDeskBrowserExtensionStatus, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return domain.PiDeskBrowserExtensionStatus{}, err
+	}
+	if len(service.browserSource) == 0 {
+		return domain.PiDeskBrowserExtensionStatus{}, errors.New("Pi Desk browser extension source is unavailable")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return domain.PiDeskBrowserExtensionStatus{}, fmt.Errorf("create Pi extension directory: %w", err)
+	}
+	targetPath := filepath.Join(directory, piDeskBrowserExtensionName)
+	if err := atomic.WriteFile(targetPath, bytes.NewReader(service.browserSource)); err != nil {
+		return domain.PiDeskBrowserExtensionStatus{}, fmt.Errorf("install Pi Desk browser extension: %w", err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		return domain.PiDeskBrowserExtensionStatus{}, fmt.Errorf("protect Pi Desk browser extension: %w", err)
+	}
+	return service.browserStatus(directory)
+}
+
+func (service *PiExtensionService) RemovePiDeskBrowser() error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(directory, piDeskBrowserExtensionName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove Pi Desk browser extension: %w", err)
 	}
 	return nil
 }
@@ -405,6 +493,14 @@ func (service *PiExtensionService) snapshot() (domain.PiExtensionSnapshot, error
 	if err != nil {
 		return domain.PiExtensionSnapshot{}, err
 	}
+	subagentsStatus, err := service.subagentsStatus(directory)
+	if err != nil {
+		return domain.PiExtensionSnapshot{}, err
+	}
+	browserStatus, err := service.browserStatus(directory)
+	if err != nil {
+		return domain.PiExtensionSnapshot{}, err
+	}
 	return domain.PiExtensionSnapshot{
 		GlobalDirectory: directory,
 		SettingsPath:    settingsPath,
@@ -412,6 +508,8 @@ func (service *PiExtensionService) snapshot() (domain.PiExtensionSnapshot, error
 		Todo:            status,
 		Goal:            goalStatus,
 		ComputerUse:     computerUseStatus,
+		Subagents:       subagentsStatus,
+		Browser:         browserStatus,
 	}, nil
 }
 
@@ -627,6 +725,32 @@ func (service *PiExtensionService) computerUseStatus(directory string) (domain.P
 		status.UpdateAvailable = !bytes.Equal(content, service.computerUseSource)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return domain.PiDeskComputerUseExtensionStatus{}, fmt.Errorf("read Pi Desk computer use extension: %w", err)
+	}
+	return status, nil
+}
+
+func (service *PiExtensionService) subagentsStatus(directory string) (domain.PiDeskSubagentsExtensionStatus, error) {
+	targetPath := filepath.Join(directory, piDeskSubagentsExtensionName)
+	status := domain.PiDeskSubagentsExtensionStatus{Path: targetPath}
+	content, err := os.ReadFile(targetPath)
+	if err == nil {
+		status.Installed = true
+		status.UpdateAvailable = !bytes.Equal(content, service.subagentsSource)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.PiDeskSubagentsExtensionStatus{}, fmt.Errorf("read Pi Desk subagents extension: %w", err)
+	}
+	return status, nil
+}
+
+func (service *PiExtensionService) browserStatus(directory string) (domain.PiDeskBrowserExtensionStatus, error) {
+	targetPath := filepath.Join(directory, piDeskBrowserExtensionName)
+	status := domain.PiDeskBrowserExtensionStatus{Path: targetPath}
+	content, err := os.ReadFile(targetPath)
+	if err == nil {
+		status.Installed = true
+		status.UpdateAvailable = !bytes.Equal(content, service.browserSource)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.PiDeskBrowserExtensionStatus{}, fmt.Errorf("read Pi Desk browser extension: %w", err)
 	}
 	return status, nil
 }

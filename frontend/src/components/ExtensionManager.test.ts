@@ -6,7 +6,8 @@ import ExtensionManager from "./ExtensionManager.vue";
 
 const extensionMocks = vi.hoisted(() => ({
   list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), installGoal: vi.fn(), removeGoal: vi.fn(),
-  installComputerUse: vi.fn(), removeComputerUse: vi.fn(), listPackages: vi.fn(),
+  installComputerUse: vi.fn(), removeComputerUse: vi.fn(), installSubagents: vi.fn(), removeSubagents: vi.fn(),
+  installBrowser: vi.fn(), removeBrowser: vi.fn(), listPackages: vi.fn(),
   installPackage: vi.fn(), updatePackage: vi.fn(), removePackage: vi.fn(), setPackageEnabled: vi.fn(),
 }));
 vi.mock("../services/extensions", () => ({ piExtensionService: extensionMocks }));
@@ -32,6 +33,16 @@ const baseSnapshot = {
   },
   computerUse: {
     path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-computer-use.ts",
+    installed: false,
+    updateAvailable: false,
+  },
+  subagents: {
+    path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-subagents.ts",
+    installed: false,
+    updateAvailable: false,
+  },
+  browser: {
+    path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-browser.ts",
     installed: false,
     updateAvailable: false,
   },
@@ -142,6 +153,26 @@ describe("ExtensionManager", () => {
     await remove.trigger("click");
     await flushPromises();
     expect(extensionMocks.removeComputerUse).toHaveBeenCalledOnce();
+  });
+
+  it("requires confirmation before removing Pi Desk Subagents", async () => {
+    extensionMocks.list.mockResolvedValue({
+      ...baseSnapshot,
+      subagents: { ...baseSnapshot.subagents, installed: true },
+    });
+    extensionMocks.removeSubagents.mockResolvedValue(undefined);
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Pi Desk Subagents");
+    const remove = wrapper.get('[data-testid="remove-subagents-extension"]');
+    await remove.trigger("click");
+    expect(extensionMocks.removeSubagents).not.toHaveBeenCalled();
+    expect(remove.text()).toContain("Confirm remove");
+
+    await remove.trigger("click");
+    await flushPromises();
+    expect(extensionMocks.removeSubagents).toHaveBeenCalledOnce();
   });
 
   it("installs Pi Desk Computer Use from the extension card", async () => {

@@ -82,7 +82,7 @@ describe("InspectorPanel", () => {
     await wrapper.get('button[title="Preview README.md"]').trigger("click");
     await flushPromises();
     expect(repositoryMocks.previewFile).toHaveBeenCalledWith("D:\\repo", "README.md");
-    expect(wrapper.findAll('[role="tab"]')).toHaveLength(3);
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(4);
     expect(wrapper.find(".inspector-file-header").exists()).toBe(true);
     expect(wrapper.text()).toContain("# Repo");
     await wrapper.get('button[title="Close file preview"]').trigger("click");

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, SquareTerminal, Wrench } from "lucide-vue-next";
+import { Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, Network, SquareTerminal, Wrench } from "lucide-vue-next";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolExecution } from "../stores/app";
 import { tr } from "../i18n";
@@ -36,6 +36,28 @@ const summary = computed(() => {
 });
 
 const statusLabel = computed(() => tr(({ running: "tools.running", complete: "tools.complete", error: "tools.failed" })[props.tool.status]));
+
+// Subagent calls follow the pi-desktop tool card language: a semantic Network
+// icon plus a muted mono subtitle naming the delegated agents and dispatch mode.
+const isSubagent = computed(() => props.tool.name === "subagent");
+const subagentSubtitle = computed(() => {
+  if (!isSubagent.value) return "";
+  const values = props.tool.arguments && typeof props.tool.arguments === "object" ? props.tool.arguments as Record<string, unknown> : {};
+  const agentName = (step: unknown): string => {
+    const agent = (step && typeof step === "object" ? (step as Record<string, unknown>).agent : step);
+    return typeof agent === "string" ? agent : "";
+  };
+  if (Array.isArray(values.chain) && values.chain.length > 0) {
+    return values.chain.map(agentName).filter(Boolean).join(" → ");
+  }
+  if (Array.isArray(values.tasks) && values.tasks.length > 0) {
+    const names = values.tasks.map(agentName).filter(Boolean);
+    const unique = [...new Set(names)];
+    const label = unique.join(", ");
+    return unique.length === names.length ? label : `${label} ×${names.length}`;
+  }
+  return agentName(values.agent);
+});
 const durationLabel = computed(() => {
   const duration = props.tool.durationMs;
   if (duration === undefined) return "";
@@ -80,10 +102,12 @@ onBeforeUnmount(() => {
   <details class="tool-call" :data-state="tool.status" :open="open" @toggle="syncOpen">
     <summary :class="ui.root">
       <ChevronRight class="disclosure-icon" :size="13" aria-hidden="true" />
-      <SquareTerminal v-if="tool.name === 'bash'" :size="15" aria-hidden="true" />
+      <Network v-if="isSubagent" :size="15" aria-hidden="true" />
+      <SquareTerminal v-else-if="tool.name === 'bash'" :size="15" aria-hidden="true" />
       <Wrench v-else :size="15" aria-hidden="true" />
       <span class="tool-summary-group">
         <span class="tool-summary">{{ summary }}</span>
+        <span v-if="subagentSubtitle" class="tool-subtitle" :title="subagentSubtitle">{{ subagentSubtitle }}</span>
         <span v-if="durationLabel" class="tool-duration">{{ durationLabel }}</span>
         <span v-if="tool.diff" class="tool-diff-badge">diff</span>
         <span class="tool-status">

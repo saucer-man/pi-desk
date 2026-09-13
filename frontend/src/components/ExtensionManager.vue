@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { AlertTriangle, CheckCircle2, Download, Goal, Monitor, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
+import { AlertTriangle, Bot, CheckCircle2, Download, Goal, Globe, Monitor, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -17,6 +17,8 @@ const notice = ref("");
 const removeArmed = ref(false);
 const goalRemoveArmed = ref(false);
 const computerUseRemoveArmed = ref(false);
+const subagentsRemoveArmed = ref(false);
+const browserRemoveArmed = ref(false);
 const packageSource = ref("");
 const packageScope = ref(PiPackageScope.PiPackageScopeGlobal);
 const packageBusy = ref("");
@@ -233,6 +235,82 @@ async function removeComputerUse() {
   }
 }
 
+async function installSubagents() {
+  if (changing.value) return;
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installSubagents();
+    notice.value = tr("settings.subagentsExtensionInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
+async function removeSubagents() {
+  if (changing.value) return;
+  if (!subagentsRemoveArmed.value) {
+    subagentsRemoveArmed.value = true;
+    window.setTimeout(() => { subagentsRemoveArmed.value = false; }, 5000);
+    return;
+  }
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.removeSubagents();
+    notice.value = tr("settings.subagentsExtensionRemoved");
+    subagentsRemoveArmed.value = false;
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
+async function installBrowser() {
+  if (changing.value) return;
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installBrowser();
+    notice.value = tr("settings.browserExtensionInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
+async function removeBrowser() {
+  if (changing.value) return;
+  if (!browserRemoveArmed.value) {
+    browserRemoveArmed.value = true;
+    window.setTimeout(() => { browserRemoveArmed.value = false; }, 5000);
+    return;
+  }
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.removeBrowser();
+    notice.value = tr("settings.browserExtensionRemoved");
+    browserRemoveArmed.value = false;
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
 onMounted(() => { void loadExtensions(); });
 </script>
 
@@ -337,6 +415,72 @@ onMounted(() => { void loadExtensions(); });
             @click="void removeComputerUse()"
           >
             <Trash2 :size="14" />{{ computerUseRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
+          </button>
+        </div>
+      </div>
+      <div class="extension-feature-row" data-testid="subagents-extension-row">
+        <Bot :size="18" />
+        <span>
+          <strong>Pi Desk Subagents</strong>
+          <small>{{ tr("settings.subagentsExtensionHelp") }}</small>
+          <code :title="snapshot?.subagents.path">{{ snapshot?.subagents.path }}</code>
+        </span>
+        <em v-if="snapshot?.subagents.installed && !snapshot.subagents.updateAvailable" class="is-installed"><CheckCircle2 :size="12" />{{ tr("settings.extensionInstalled") }}</em>
+        <em v-else-if="snapshot?.subagents.updateAvailable" class="is-update"><AlertTriangle :size="12" />{{ tr("settings.extensionUpdateAvailable") }}</em>
+        <em v-else>{{ tr("settings.extensionNotInstalled") }}</em>
+        <div class="extension-feature-actions">
+          <button
+            v-if="!snapshot?.subagents.installed || snapshot.subagents.updateAvailable"
+            data-testid="install-subagents-extension"
+            class="text-button primary" :class="ui.buttonPrimary"
+            type="button"
+            :disabled="loading || changing"
+            @click="void installSubagents()"
+          >
+            <Download :size="14" />{{ snapshot?.subagents.updateAvailable ? tr("settings.updateExtension") : tr("settings.installExtension") }}
+          </button>
+          <button
+            v-else
+            data-testid="remove-subagents-extension"
+            class="text-button danger" :class="ui.buttonDanger"
+            type="button"
+            :disabled="changing"
+            @click="void removeSubagents()"
+          >
+            <Trash2 :size="14" />{{ subagentsRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
+          </button>
+        </div>
+      </div>
+      <div class="extension-feature-row" data-testid="browser-extension-row">
+        <Globe :size="18" />
+        <span>
+          <strong>Pi Desk Browser</strong>
+          <small>{{ tr("settings.browserExtensionHelp") }}</small>
+          <code :title="snapshot?.browser.path">{{ snapshot?.browser.path }}</code>
+        </span>
+        <em v-if="snapshot?.browser.installed && !snapshot.browser.updateAvailable" class="is-installed"><CheckCircle2 :size="12" />{{ tr("settings.extensionInstalled") }}</em>
+        <em v-else-if="snapshot?.browser.updateAvailable" class="is-update"><AlertTriangle :size="12" />{{ tr("settings.extensionUpdateAvailable") }}</em>
+        <em v-else>{{ tr("settings.extensionNotInstalled") }}</em>
+        <div class="extension-feature-actions">
+          <button
+            v-if="!snapshot?.browser.installed || snapshot.browser.updateAvailable"
+            data-testid="install-browser-extension"
+            class="text-button primary" :class="ui.buttonPrimary"
+            type="button"
+            :disabled="loading || changing"
+            @click="void installBrowser()"
+          >
+            <Download :size="14" />{{ snapshot?.browser.updateAvailable ? tr("settings.updateExtension") : tr("settings.installExtension") }}
+          </button>
+          <button
+            v-else
+            data-testid="remove-browser-extension"
+            class="text-button danger" :class="ui.buttonDanger"
+            type="button"
+            :disabled="changing"
+            @click="void removeBrowser()"
+          >
+            <Trash2 :size="14" />{{ browserRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
           </button>
         </div>
       </div>

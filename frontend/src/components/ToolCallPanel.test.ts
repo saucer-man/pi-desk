@@ -88,4 +88,36 @@ describe("ToolCallPanel", () => {
     expect(preview?.getAttribute("src")).toBe("data:image/jpeg;base64,abc");
     document.body.innerHTML = "";
   });
+
+  it("renders subagent calls with a network icon and a pi-desktop style agent subtitle", () => {
+    const wrapper = mount(ToolCallPanel, {
+      props: { tool: { id: "tool-6", name: "subagent", arguments: { agent: "scout", task: "find entry points" }, output: "done", status: "complete" } },
+    });
+
+    expect(wrapper.find("summary .lucide-network").exists()).toBe(true);
+    expect(wrapper.get(".tool-summary").text()).toBe("subagent");
+    expect(wrapper.get(".tool-subtitle").text()).toBe("scout");
+  });
+
+  it("summarizes parallel and chain subagent dispatches in the subtitle", () => {
+    const parallel = mount(ToolCallPanel, {
+      props: {
+        tool: {
+          id: "tool-7", name: "subagent", output: "", status: "complete",
+          arguments: { tasks: [{ agent: "scout", task: "a" }, { agent: "scout", task: "b" }, { agent: "planner", task: "c" }] },
+        },
+      },
+    });
+    expect(parallel.get(".tool-subtitle").text()).toBe("scout, planner ×3");
+
+    const chain = mount(ToolCallPanel, {
+      props: {
+        tool: {
+          id: "tool-8", name: "subagent", output: "", status: "complete",
+          arguments: { chain: [{ agent: "scout", task: "a" }, { agent: "planner", task: "{previous}" }] },
+        },
+      },
+    });
+    expect(chain.get(".tool-subtitle").text()).toBe("scout → planner");
+  });
 });

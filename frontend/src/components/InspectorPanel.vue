@@ -10,6 +10,7 @@ import MarkdownBody from "./MarkdownBody.vue";
 import { tr } from "../i18n";
 
 const TerminalPane = defineAsyncComponent(() => import("./TerminalPane.vue"));
+const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
 
 const appStore = useAppStore();
 const state = computed(() => appStore.activeSessionState);
@@ -160,6 +161,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
         <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'changes' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'changes'" @click="appStore.setInspectorTab('changes')">{{ tr("inspector.files") }}</button>
         <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'context' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'context'" @click="appStore.setInspectorTab('context')">{{ tr("inspector.context") }}</button>
         <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'terminal' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'terminal'" @click="appStore.setInspectorTab('terminal')">{{ tr("inspector.terminal") }}</button>
+        <button class="relative whitespace-nowrap border-0 bg-transparent px-3 text-[calc(13px+var(--font-size-delta))] text-[var(--text-secondary)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--text)] after:transition-transform after:duration-150 hover:text-[var(--text)] active:bg-[var(--bg-hover)]" :class="{ 'is-active text-[var(--text)] after:scale-x-100': appStore.inspectorTab === 'browser' }" type="button" role="tab" :aria-selected="appStore.inspectorTab === 'browser'" @click="appStore.setInspectorTab('browser')">{{ tr("inspector.browser") }}</button>
       </div>
       <button class="icon-button ml-auto hidden size-8 shrink-0 place-items-center rounded-lg border border-transparent bg-transparent text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] max-[520px]:inline-grid" :class="ui.iconButton" type="button" :title="tr('topbar.closeInspector')" :aria-label="tr('topbar.closeInspector')" @click="appStore.toggleInspector()"><PanelRightClose :size="17" /></button>
     </div>
@@ -271,6 +273,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
       <div v-else class="panel-empty" :class="ui.empty"><span>{{ tr("inspector.selectTask") }}</span></div>
     </div>
 
-    <TerminalPane v-else />
+    <TerminalPane v-else-if="appStore.inspectorTab === 'terminal'" />
+    <BrowserPane v-else-if="appStore.inspectorTab === 'browser'" />
   </aside>
 </template>

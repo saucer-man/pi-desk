@@ -23,7 +23,7 @@ import {
 } from "../utils/scheduledTasks";
 
 export type ThreadStatus = "idle" | "starting" | "running" | "attention";
-export type InspectorTab = "changes" | "context" | "terminal";
+export type InspectorTab = "changes" | "context" | "terminal" | "browser";
 export type StreamingBehavior = "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
 export type Appearance = "dark" | "light" | "system";
@@ -1132,6 +1132,11 @@ export const useAppStore = defineStore("app", {
     setInspectorTab(tab: InspectorTab) {
       this.inspectorTab = tab;
       if (tab === "changes" || tab === "context") void this.refreshActiveRepository();
+      this.scheduleDesktopStateSave();
+    },
+    activateBrowserPane() {
+      this.inspectorOpen = true;
+      this.inspectorTab = "browser";
       this.scheduleDesktopStateSave();
     },
     toggleSearch() {
@@ -3205,6 +3210,7 @@ export const useAppStore = defineStore("app", {
             diff: buildToolDiff(String(payload.toolName ?? "tool"), payload.args),
           });
           assistant.activeExecution = "tool";
+          if (String(payload.toolName ?? "").startsWith("browser_")) this.activateBrowserPane();
           if (REMOTE_MUTATING_TOOLS.has(String(payload.toolName ?? ""))) this.markRemoteRepositoryStale(thread.id);
           break;
         }

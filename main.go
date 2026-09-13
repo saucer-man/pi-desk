@@ -179,6 +179,7 @@ func main() {
 	}
 	repositoryService := appservice.NewRepositoryService(catalog, repository.New())
 	terminalService := appservice.NewTerminalService(catalog)
+	browserService := appservice.NewBrowserService()
 	remoteBackends, err := appservice.NewRemoteBackendCoordinator(catalog, repositoryService, terminalService)
 	if err != nil {
 		log.Fatal(err)
@@ -234,6 +235,7 @@ func main() {
 			application.NewService(orphanSessionService),
 			application.NewService(repositoryService),
 			application.NewService(terminalService),
+			application.NewService(browserService),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

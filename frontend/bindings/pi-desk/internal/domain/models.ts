@@ -36,6 +36,36 @@ export interface BootstrapState {
     "window": WindowState;
 }
 
+export interface BrowserClickRequest {
+    "x": number;
+    "y": number;
+    "button"?: string;
+    "clickCount"?: number;
+}
+
+export interface BrowserKeyRequest {
+    "key": string;
+    "modifiers"?: number;
+}
+
+export interface BrowserStatus {
+    "attached": boolean;
+    "url"?: string;
+    "title"?: string;
+    "profileDir"?: string;
+}
+
+export interface BrowserTextInputRequest {
+    "text": string;
+}
+
+export interface BrowserWheelRequest {
+    "x": number;
+    "y": number;
+    "deltaX": number;
+    "deltaY": number;
+}
+
 export interface CommandResult {
     "command": string;
     "dataJson"?: string;
@@ -391,6 +421,12 @@ export interface OrphanSessionSummary {
     "messageCount": number;
 }
 
+export interface PiDeskBrowserExtensionStatus {
+    "path": string;
+    "installed": boolean;
+    "updateAvailable": boolean;
+}
+
 export interface PiDeskComputerUseExtensionStatus {
     "path": string;
     "installed": boolean;
@@ -398,6 +434,12 @@ export interface PiDeskComputerUseExtensionStatus {
 }
 
 export interface PiDeskGoalExtensionStatus {
+    "path": string;
+    "installed": boolean;
+    "updateAvailable": boolean;
+}
+
+export interface PiDeskSubagentsExtensionStatus {
     "path": string;
     "installed": boolean;
     "updateAvailable": boolean;
@@ -435,6 +477,8 @@ export interface PiExtensionSnapshot {
     "todo": PiDeskTodoExtensionStatus;
     "goal": PiDeskGoalExtensionStatus;
     "computerUse": PiDeskComputerUseExtensionStatus;
+    "subagents": PiDeskSubagentsExtensionStatus;
+    "browser": PiDeskBrowserExtensionStatus;
 }
 
 export interface PiExtensionSummary {

@@ -36,6 +36,18 @@ type PiDeskComputerUseExtensionStatus struct {
 	UpdateAvailable bool   `json:"updateAvailable"`
 }
 
+type PiDeskSubagentsExtensionStatus struct {
+	Path            string `json:"path"`
+	Installed       bool   `json:"installed"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
+type PiDeskBrowserExtensionStatus struct {
+	Path            string `json:"path"`
+	Installed       bool   `json:"installed"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
 type PiExtensionSnapshot struct {
 	GlobalDirectory string                           `json:"globalDirectory"`
 	SettingsPath    string                           `json:"settingsPath"`
@@ -43,6 +55,8 @@ type PiExtensionSnapshot struct {
 	Todo            PiDeskTodoExtensionStatus        `json:"todo"`
 	Goal            PiDeskGoalExtensionStatus        `json:"goal"`
 	ComputerUse     PiDeskComputerUseExtensionStatus `json:"computerUse"`
+	Subagents       PiDeskSubagentsExtensionStatus   `json:"subagents"`
+	Browser         PiDeskBrowserExtensionStatus     `json:"browser"`
 }
 
 type PiDeskTodoInstallResult struct {

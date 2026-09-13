@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/natefinch/atomic v1.0.1
 	github.com/pkg/sftp v1.13.11
