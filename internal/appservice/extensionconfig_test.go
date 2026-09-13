@@ -230,6 +230,78 @@ func TestPiExtensionServiceInstallsUpdatesAndRemovesBundledGoal(t *testing.T) {
 	}
 }
 
+func TestBundledPiDeskComputerUseGuardsDesktopControl(t *testing.T) {
+	t.Parallel()
+	content := string(bundledPiDeskComputerUseExtension)
+	for _, expected := range []string{
+		`name: "computer_screenshot"`,
+		`name: "computer_click"`,
+		`name: "computer_type"`,
+		`name: "computer_key"`,
+		`name: "computer_scroll"`,
+		`name: "computer_window"`,
+		"ctx.ui.confirm(",
+		"Desktop control was not authorized for this session",
+		"signal?.aborted",
+		"process.platform !== \"win32\"",
+		"Get-Clipboard",
+		"Set-Clipboard",
+		"SetProcessDPIAware",
+		"SetCursorPos",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("bundled computer use extension is missing %q", expected)
+		}
+	}
+	if strings.Contains(content, "TypeText") {
+		t.Fatal("bundled computer use extension must not type through the input method editor")
+	}
+}
+
+func TestPiExtensionServiceInstallsUpdatesAndRemovesBundledComputerUse(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	agent := filepath.Join(root, "agent")
+	extensions := filepath.Join(agent, "extensions")
+	if err := os.MkdirAll(extensions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := newPiExtensionService(agent, []byte("todo source\n"))
+
+	before, err := service.ListExtensions()
+	if err != nil || before.ComputerUse.Installed {
+		t.Fatalf("unexpected pre-install computer use status %#v, %v", before.ComputerUse, err)
+	}
+	installed, err := service.InstallPiDeskComputerUse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed.Installed || installed.UpdateAvailable || installed.Path == "" {
+		t.Fatalf("unexpected computer use install result %#v", installed)
+	}
+	content, err := os.ReadFile(filepath.Join(extensions, piDeskComputerUseExtensionName))
+	if err != nil || len(content) == 0 {
+		t.Fatalf("computer use extension was not written: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extensions, piDeskComputerUseExtensionName), []byte("user modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outdated, err := service.ListExtensions()
+	if err != nil || !outdated.ComputerUse.UpdateAvailable {
+		t.Fatalf("expected computer use update status %#v, %v", outdated.ComputerUse, err)
+	}
+	if _, err := service.InstallPiDeskComputerUse(); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RemovePiDeskComputerUse(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := service.ListExtensions()
+	if err != nil || after.ComputerUse.Installed || after.ComputerUse.UpdateAvailable {
+		t.Fatalf("unexpected computer use removal status %#v, %v", after.ComputerUse, err)
+	}
+}
+
 func TestPiExtensionServiceRejectsInvalidSettings(t *testing.T) {
 	t.Parallel()
 	agent := filepath.Join(t.TempDir(), "agent")

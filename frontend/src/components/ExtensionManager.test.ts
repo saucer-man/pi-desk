@@ -5,7 +5,8 @@ import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/intern
 import ExtensionManager from "./ExtensionManager.vue";
 
 const extensionMocks = vi.hoisted(() => ({
-  list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), installGoal: vi.fn(), removeGoal: vi.fn(), listPackages: vi.fn(),
+  list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), installGoal: vi.fn(), removeGoal: vi.fn(),
+  installComputerUse: vi.fn(), removeComputerUse: vi.fn(), listPackages: vi.fn(),
   installPackage: vi.fn(), updatePackage: vi.fn(), removePackage: vi.fn(), setPackageEnabled: vi.fn(),
 }));
 vi.mock("../services/extensions", () => ({ piExtensionService: extensionMocks }));
@@ -26,6 +27,11 @@ const baseSnapshot = {
   },
   goal: {
     path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-goal.ts",
+    installed: false,
+    updateAvailable: false,
+  },
+  computerUse: {
+    path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-computer-use.ts",
     installed: false,
     updateAvailable: false,
   },
@@ -116,6 +122,44 @@ describe("ExtensionManager", () => {
     await remove.trigger("click");
     await flushPromises();
     expect(extensionMocks.removeGoal).toHaveBeenCalledOnce();
+  });
+
+  it("requires confirmation before removing Pi Desk Computer Use", async () => {
+    extensionMocks.list.mockResolvedValue({
+      ...baseSnapshot,
+      computerUse: { ...baseSnapshot.computerUse, installed: true },
+    });
+    extensionMocks.removeComputerUse.mockResolvedValue(undefined);
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Pi Desk Computer Use");
+    const remove = wrapper.get('[data-testid="remove-computer-use-extension"]');
+    await remove.trigger("click");
+    expect(extensionMocks.removeComputerUse).not.toHaveBeenCalled();
+    expect(remove.text()).toContain("Confirm remove");
+
+    await remove.trigger("click");
+    await flushPromises();
+    expect(extensionMocks.removeComputerUse).toHaveBeenCalledOnce();
+  });
+
+  it("installs Pi Desk Computer Use from the extension card", async () => {
+    extensionMocks.list
+      .mockResolvedValueOnce(baseSnapshot)
+      .mockResolvedValueOnce({
+        ...baseSnapshot,
+        computerUse: { ...baseSnapshot.computerUse, installed: true },
+      });
+    extensionMocks.installComputerUse.mockResolvedValue({ ...baseSnapshot.computerUse, installed: true });
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="install-computer-use-extension"]').trigger("click");
+    await flushPromises();
+
+    expect(extensionMocks.installComputerUse).toHaveBeenCalledOnce();
+    expect(wrapper.get('[data-testid="remove-computer-use-extension"]').text()).toContain("Remove");
   });
 
   it("installs, toggles, updates, and removes Pi packages", async () => {

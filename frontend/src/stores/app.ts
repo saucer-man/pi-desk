@@ -127,6 +127,7 @@ export interface ToolExecution {
   startedAt?: number;
   durationMs?: number;
   diff?: ToolDiff;
+  images?: PreparedImage[];
 }
 
 export interface ToolDiff {
@@ -654,6 +655,8 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         tool.truncated = output.truncated || undefined;
         tool.resultReceived = true;
         tool.status = value.isError ? "error" : "complete";
+        const images = contentImages(value.content);
+        if (images.length) tool.images = images;
         const endedAt = messageTimestamp(value.timestamp);
         if (endedAt !== undefined && tool.startedAt !== undefined) tool.durationMs = Math.max(0, endedAt - tool.startedAt);
         tool.diff = buildToolDiff(tool.name, tool.arguments, value.details) ?? tool.diff;
@@ -3229,6 +3232,8 @@ export const useAppStore = defineStore("app", {
             if (tool.startedAt !== undefined) tool.durationMs = Math.max(0, Date.now() - tool.startedAt);
             const result = payload.result && typeof payload.result === "object" ? payload.result as Record<string, unknown> : undefined;
             tool.diff = buildToolDiff(tool.name, tool.arguments, result?.details) ?? tool.diff;
+            const images = contentImages(result?.content);
+            if (images.length) tool.images = images;
             if (REMOTE_MUTATING_TOOLS.has(tool.name)) this.markRemoteRepositoryStale(thread.id);
           }
           break;

@@ -4,11 +4,15 @@ import { Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, SquareTe
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolExecution } from "../stores/app";
 import { tr } from "../i18n";
+import ImagePreviewDialog from "./ImagePreviewDialog.vue";
 
 const props = defineProps<{ tool: ToolExecution }>();
 const copied = ref<"input" | "output" | "">("");
 const open = ref(props.tool.status === "running");
+const previewImage = ref<{ name: string; previewUrl: string }>();
 let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+const resultImages = computed(() => props.tool.images ?? []);
 
 const inputText = computed(() => {
   if (props.tool.arguments === undefined) return "";
@@ -104,6 +108,21 @@ onBeforeUnmount(() => {
       </div>
       <pre>{{ inputText }}</pre>
     </div>
+    <div v-if="resultImages.length" class="tool-section">
+      <div class="tool-section-header"><span>{{ tr("tools.outputImages") }}</span></div>
+      <div class="tool-images">
+        <button
+          v-for="image in resultImages"
+          :key="image.id"
+          type="button"
+          class="tool-image-open"
+          :aria-label="image.name"
+          @click="previewImage = image"
+        >
+          <img :src="image.previewUrl" :alt="image.name" loading="lazy" />
+        </button>
+      </div>
+    </div>
     <div v-if="tool.output" class="tool-section">
       <div class="tool-section-header">
         <span>{{ tr("tools.output") }} <small v-if="tool.truncated">{{ tr("tools.truncated") }}</small></span>
@@ -114,5 +133,6 @@ onBeforeUnmount(() => {
       </div>
       <pre>{{ tool.output }}</pre>
     </div>
+    <ImagePreviewDialog v-if="previewImage" :image="previewImage" @close="previewImage = undefined" />
   </details>
 </template>

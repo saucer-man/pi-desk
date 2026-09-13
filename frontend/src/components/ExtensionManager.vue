@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { AlertTriangle, CheckCircle2, Download, Goal, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
+import { AlertTriangle, CheckCircle2, Download, Goal, Monitor, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -16,6 +16,7 @@ const loadError = ref("");
 const notice = ref("");
 const removeArmed = ref(false);
 const goalRemoveArmed = ref(false);
+const computerUseRemoveArmed = ref(false);
 const packageSource = ref("");
 const packageScope = ref(PiPackageScope.PiPackageScopeGlobal);
 const packageBusy = ref("");
@@ -194,6 +195,44 @@ async function removeGoal() {
   }
 }
 
+async function installComputerUse() {
+  if (changing.value) return;
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installComputerUse();
+    notice.value = tr("settings.computerUseExtensionInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
+async function removeComputerUse() {
+  if (changing.value) return;
+  if (!computerUseRemoveArmed.value) {
+    computerUseRemoveArmed.value = true;
+    window.setTimeout(() => { computerUseRemoveArmed.value = false; }, 5000);
+    return;
+  }
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.removeComputerUse();
+    notice.value = tr("settings.computerUseExtensionRemoved");
+    computerUseRemoveArmed.value = false;
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
 onMounted(() => { void loadExtensions(); });
 </script>
 
@@ -265,6 +304,39 @@ onMounted(() => { void loadExtensions(); });
             @click="void removeGoal()"
           >
             <Trash2 :size="14" />{{ goalRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
+          </button>
+        </div>
+      </div>
+      <div class="extension-feature-row" data-testid="computer-use-extension-row">
+        <Monitor :size="18" />
+        <span>
+          <strong>Pi Desk Computer Use</strong>
+          <small>{{ tr("settings.computerUseExtensionHelp") }}</small>
+          <code :title="snapshot?.computerUse.path">{{ snapshot?.computerUse.path }}</code>
+        </span>
+        <em v-if="snapshot?.computerUse.installed && !snapshot.computerUse.updateAvailable" class="is-installed"><CheckCircle2 :size="12" />{{ tr("settings.extensionInstalled") }}</em>
+        <em v-else-if="snapshot?.computerUse.updateAvailable" class="is-update"><AlertTriangle :size="12" />{{ tr("settings.extensionUpdateAvailable") }}</em>
+        <em v-else>{{ tr("settings.extensionNotInstalled") }}</em>
+        <div class="extension-feature-actions">
+          <button
+            v-if="!snapshot?.computerUse.installed || snapshot.computerUse.updateAvailable"
+            data-testid="install-computer-use-extension"
+            class="text-button primary" :class="ui.buttonPrimary"
+            type="button"
+            :disabled="loading || changing"
+            @click="void installComputerUse()"
+          >
+            <Download :size="14" />{{ snapshot?.computerUse.updateAvailable ? tr("settings.updateExtension") : tr("settings.installExtension") }}
+          </button>
+          <button
+            v-else
+            data-testid="remove-computer-use-extension"
+            class="text-button danger" :class="ui.buttonDanger"
+            type="button"
+            :disabled="changing"
+            @click="void removeComputerUse()"
+          >
+            <Trash2 :size="14" />{{ computerUseRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
           </button>
         </div>
       </div>

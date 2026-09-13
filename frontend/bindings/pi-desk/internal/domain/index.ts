@@ -62,6 +62,7 @@ export type {
     ModelTestResult,
     OpenWorkspaceWithRequest,
     OrphanSessionSummary,
+    PiDeskComputerUseExtensionStatus,
     PiDeskGoalExtensionStatus,
     PiDeskTodoExtensionStatus,
     PiDeskTodoInstallResult,

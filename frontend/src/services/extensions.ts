@@ -1,5 +1,5 @@
 import { PiExtensionService } from "../../bindings/pi-desk/internal/appservice";
-import type { PiDeskGoalExtensionStatus, PiDeskTodoInstallResult, PiExtensionSnapshot, PiPackageRequest, PiPackageSnapshot, SetPiPackageEnabledRequest } from "../../bindings/pi-desk/internal/domain";
+import type { PiDeskComputerUseExtensionStatus, PiDeskGoalExtensionStatus, PiDeskTodoInstallResult, PiExtensionSnapshot, PiPackageRequest, PiPackageSnapshot, SetPiPackageEnabledRequest } from "../../bindings/pi-desk/internal/domain";
 
 export const piExtensionService = {
   list(): Promise<PiExtensionSnapshot> {
@@ -16,6 +16,12 @@ export const piExtensionService = {
   },
   removeGoal(): Promise<void> {
     return PiExtensionService.RemovePiDeskGoal();
+  },
+  installComputerUse(): Promise<PiDeskComputerUseExtensionStatus> {
+    return PiExtensionService.InstallPiDeskComputerUse();
+  },
+  removeComputerUse(): Promise<void> {
+    return PiExtensionService.RemovePiDeskComputerUse();
   },
   listPackages(workspacePath = ""): Promise<PiPackageSnapshot> {
     return PiExtensionService.ListPackages({ workspacePath });
@@ -35,6 +41,7 @@ export const piExtensionService = {
 };
 
 export type {
+  PiDeskComputerUseExtensionStatus,
   PiDeskGoalExtensionStatus,
   PiDeskTodoExtensionStatus,
   PiDeskTodoInstallResult,

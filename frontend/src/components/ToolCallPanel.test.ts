@@ -69,4 +69,23 @@ describe("ToolCallPanel", () => {
     expect(wrapper.findAll(".diff-line")[0].classes()).toContain("is-removed");
     expect(wrapper.findAll(".diff-line")[1].classes()).toContain("is-added");
   });
+
+  it("renders result images with a fullscreen preview", async () => {
+    const wrapper = mount(ToolCallPanel, {
+      props: {
+        tool: {
+          id: "tool-5", name: "computer_screenshot", output: "captured", status: "complete",
+          images: [{ id: "img-1", name: "Image 1", data: "abc", mimeType: "image/jpeg", previewUrl: "data:image/jpeg;base64,abc" }],
+        },
+      },
+    });
+
+    const thumb = wrapper.get(".tool-image-open img");
+    expect(thumb.attributes("src")).toBe("data:image/jpeg;base64,abc");
+    expect(document.body.querySelector(".image-preview-dialog")).toBeNull();
+    await wrapper.get(".tool-image-open").trigger("click");
+    const preview = document.body.querySelector(".image-preview-dialog img");
+    expect(preview?.getAttribute("src")).toBe("data:image/jpeg;base64,abc");
+    document.body.innerHTML = "";
+  });
 });
