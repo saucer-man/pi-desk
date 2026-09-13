@@ -24,11 +24,18 @@ type PiDeskTodoExtensionStatus struct {
 	LegacyBackupPath string `json:"legacyBackupPath,omitempty"`
 }
 
+type PiDeskGoalExtensionStatus struct {
+	Path            string `json:"path"`
+	Installed       bool   `json:"installed"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+}
+
 type PiExtensionSnapshot struct {
 	GlobalDirectory string                    `json:"globalDirectory"`
 	SettingsPath    string                    `json:"settingsPath"`
 	Extensions      []PiExtensionSummary      `json:"extensions"`
 	Todo            PiDeskTodoExtensionStatus `json:"todo"`
+	Goal            PiDeskGoalExtensionStatus `json:"goal"`
 }
 
 type PiDeskTodoInstallResult struct {

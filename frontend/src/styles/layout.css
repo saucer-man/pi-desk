@@ -2204,6 +2204,191 @@
   white-space: nowrap;
 }
 
+.pi-desk-goal-panel {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.pi-desk-goal-header {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 7px 0 10px;
+  color: var(--text-secondary);
+}
+
+.pi-desk-goal-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-desk-goal-heading > svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.pi-desk-goal-heading strong {
+  color: var(--text);
+  font-size: calc(11.5px + var(--font-size-delta));
+  font-weight: 650;
+}
+
+.pi-desk-goal-heading span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: calc(10.5px + var(--font-size-delta));
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-desk-goal-status {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--blue) 18%, transparent);
+  color: var(--blue);
+  font-size: calc(9.5px + var(--font-size-delta));
+  font-style: normal;
+  font-weight: 600;
+}
+
+.pi-desk-goal-panel.is-paused .pi-desk-goal-status,
+.pi-desk-goal-panel.is-usage_limited .pi-desk-goal-status,
+.pi-desk-goal-panel.is-budget_limited .pi-desk-goal-status {
+  background: color-mix(in oklch, var(--amber) 18%, transparent);
+  color: var(--amber);
+}
+
+.pi-desk-goal-panel.is-blocked .pi-desk-goal-status {
+  background: color-mix(in oklch, var(--red) 16%, transparent);
+  color: var(--red);
+}
+
+.pi-desk-goal-panel.is-complete .pi-desk-goal-status,
+.pi-desk-goal-panel.is-complete .pi-desk-goal-heading > svg {
+  background: color-mix(in oklch, var(--green) 18%, transparent);
+  color: var(--green);
+}
+
+.pi-desk-goal-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.pi-desk-goal-actions .text-button {
+  height: 22px;
+  gap: 4px;
+  padding: 0 8px;
+  font-size: calc(10.5px + var(--font-size-delta));
+}
+
+.pi-desk-goal-actions .icon-button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+}
+
+.pi-desk-goal-collapse {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  place-items: center;
+}
+
+.pi-desk-goal-collapse:hover,
+.pi-desk-goal-collapse:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.pi-desk-goal-collapse svg {
+  transition: transform 120ms ease;
+}
+
+.pi-desk-goal-panel.is-collapsed .pi-desk-goal-collapse svg {
+  transform: rotate(-90deg);
+}
+
+.pi-desk-goal-budget {
+  height: 2px;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.pi-desk-goal-budget span {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+}
+
+.pi-desk-goal-panel.is-usage_limited .pi-desk-goal-budget span,
+.pi-desk-goal-panel.is-budget_limited .pi-desk-goal-budget span {
+  background: var(--amber);
+}
+
+.pi-desk-goal-panel.is-blocked .pi-desk-goal-budget span {
+  background: var(--red);
+}
+
+.pi-desk-goal-content {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 120ms ease, opacity 120ms ease;
+}
+
+.pi-desk-goal-panel.is-collapsed .pi-desk-goal-content {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.pi-desk-goal-content-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pi-desk-goal-text {
+  max-height: 96px;
+  margin: 0;
+  padding: 6px 10px 2px;
+  overflow-y: auto;
+  color: var(--text-secondary);
+  font-size: calc(11px + var(--font-size-delta));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.pi-desk-goal-meta {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 10px 6px;
+}
+
+.pi-desk-goal-meta span {
+  color: var(--text-muted);
+  font-size: calc(9.5px + var(--font-size-delta));
+  font-variant-numeric: tabular-nums;
+}
+
 .extension-status-list {
   display: flex;
   min-width: 0;

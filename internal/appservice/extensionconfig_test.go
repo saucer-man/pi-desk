@@ -160,6 +160,76 @@ func TestPiExtensionServiceInstallsUpdatesAndRemovesBundledTodo(t *testing.T) {
 	}
 }
 
+func TestBundledPiDeskGoalImplementsGoalLoop(t *testing.T) {
+	t.Parallel()
+	content := string(bundledPiDeskGoalExtension)
+	for _, expected := range []string{
+		`const WIDGET_KEY = "pi-desk-goal"`,
+		`const ENTRY_TYPE = "pi-desk-goal"`,
+		`pi.registerCommand("goal"`,
+		`name: GOAL_COMPLETE_TOOL`,
+		`name: GOAL_BLOCKED_TOOL`,
+		"goal_id does not match the current goal",
+		`pi.on("agent_settled"`,
+		`pi.sendUserMessage(buildGoalPrompt(goal, lead), { deliverAs: "followUp" })`,
+		"goal.tokenBudget !== undefined && goal.tokensUsed >= goal.tokenBudget",
+		"MAX_NO_PROGRESS_TURNS",
+		"MAX_AUTO_TURNS",
+		"persistState()",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("bundled goal extension is missing %q", expected)
+		}
+	}
+	if strings.Contains(content, "goal_wait") {
+		t.Fatal("bundled goal extension must not register a wait tool")
+	}
+}
+
+func TestPiExtensionServiceInstallsUpdatesAndRemovesBundledGoal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	agent := filepath.Join(root, "agent")
+	extensions := filepath.Join(agent, "extensions")
+	if err := os.MkdirAll(extensions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := newPiExtensionService(agent, []byte("todo source\n"))
+
+	before, err := service.ListExtensions()
+	if err != nil || before.Goal.Installed {
+		t.Fatalf("unexpected pre-install goal status %#v, %v", before.Goal, err)
+	}
+	installed, err := service.InstallPiDeskGoal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed.Installed || installed.UpdateAvailable || installed.Path == "" {
+		t.Fatalf("unexpected goal install result %#v", installed)
+	}
+	content, err := os.ReadFile(filepath.Join(extensions, piDeskGoalExtensionName))
+	if err != nil || len(content) == 0 {
+		t.Fatalf("goal extension was not written: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extensions, piDeskGoalExtensionName), []byte("user modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outdated, err := service.ListExtensions()
+	if err != nil || !outdated.Goal.UpdateAvailable {
+		t.Fatalf("expected goal update status %#v, %v", outdated.Goal, err)
+	}
+	if _, err := service.InstallPiDeskGoal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RemovePiDeskGoal(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := service.ListExtensions()
+	if err != nil || after.Goal.Installed || after.Goal.UpdateAvailable {
+		t.Fatalf("unexpected goal removal status %#v, %v", after.Goal, err)
+	}
+}
+
 func TestPiExtensionServiceRejectsInvalidSettings(t *testing.T) {
 	t.Parallel()
 	agent := filepath.Join(t.TempDir(), "agent")

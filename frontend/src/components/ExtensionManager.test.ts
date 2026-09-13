@@ -5,7 +5,7 @@ import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/intern
 import ExtensionManager from "./ExtensionManager.vue";
 
 const extensionMocks = vi.hoisted(() => ({
-  list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), listPackages: vi.fn(),
+  list: vi.fn(), installTodo: vi.fn(), removeTodo: vi.fn(), installGoal: vi.fn(), removeGoal: vi.fn(), listPackages: vi.fn(),
   installPackage: vi.fn(), updatePackage: vi.fn(), removePackage: vi.fn(), setPackageEnabled: vi.fn(),
 }));
 vi.mock("../services/extensions", () => ({ piExtensionService: extensionMocks }));
@@ -23,6 +23,11 @@ const baseSnapshot = {
     updateAvailable: false,
     legacyPath: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-deck-todo.ts",
     legacyInstalled: true,
+  },
+  goal: {
+    path: "C:\\Users\\dev\\.pi\\agent\\extensions\\pi-desk-goal.ts",
+    installed: false,
+    updateAvailable: false,
   },
 };
 const packageSnapshot = {
@@ -91,6 +96,26 @@ describe("ExtensionManager", () => {
     await remove.trigger("click");
     await flushPromises();
     expect(extensionMocks.removeTodo).toHaveBeenCalledOnce();
+  });
+
+  it("requires confirmation before removing Pi Desk Goal", async () => {
+    extensionMocks.list.mockResolvedValue({
+      ...baseSnapshot,
+      goal: { ...baseSnapshot.goal, installed: true },
+    });
+    extensionMocks.removeGoal.mockResolvedValue(undefined);
+    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Pi Desk Goal");
+    const remove = wrapper.get('[data-testid="remove-goal-extension"]');
+    await remove.trigger("click");
+    expect(extensionMocks.removeGoal).not.toHaveBeenCalled();
+    expect(remove.text()).toContain("Confirm remove");
+
+    await remove.trigger("click");
+    await flushPromises();
+    expect(extensionMocks.removeGoal).toHaveBeenCalledOnce();
   });
 
   it("installs, toggles, updates, and removes Pi packages", async () => {

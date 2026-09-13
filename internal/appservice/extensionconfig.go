@@ -24,6 +24,7 @@ import (
 const (
 	piDeskTodoExtensionName   = "pi-desk-todo.ts"
 	legacyTodoExtensionName   = "pi-deck-todo.ts"
+	piDeskGoalExtensionName   = "pi-desk-goal.ts"
 	maxExtensionSettingsBytes = 4 << 20
 	maxGlobalExtensionEntries = 1000
 	maxPackageSourceBytes     = 2048
@@ -33,10 +34,14 @@ const (
 //go:embed resources/pi-desk-todo.ts
 var bundledPiDeskTodoExtension []byte
 
+//go:embed resources/pi-desk-goal.ts
+var bundledPiDeskGoalExtension []byte
+
 type PiExtensionService struct {
 	agentDirectory string
 	directoryErr   error
 	todoSource     []byte
+	goalSource     []byte
 	workspaces     interface {
 		ResolvePath(string) (workspace.Record, error)
 	}
@@ -50,13 +55,13 @@ type PiExtensionService struct {
 func NewPiExtensionService(catalog *workspace.Catalog, locator *piruntime.Locator) *PiExtensionService {
 	directory, err := defaultPiAgentDirectory()
 	return &PiExtensionService{
-		agentDirectory: directory, directoryErr: err, todoSource: bundledPiDeskTodoExtension,
+		agentDirectory: directory, directoryErr: err, todoSource: bundledPiDeskTodoExtension, goalSource: bundledPiDeskGoalExtension,
 		workspaces: catalog, packageRunner: locatorPiPackageRunner{locator: locator},
 	}
 }
 
 func newPiExtensionService(agentDirectory string, todoSource []byte) *PiExtensionService {
-	return &PiExtensionService{agentDirectory: agentDirectory, todoSource: todoSource}
+	return &PiExtensionService{agentDirectory: agentDirectory, todoSource: todoSource, goalSource: bundledPiDeskGoalExtension}
 }
 
 type locatorPiPackageRunner struct{ locator *piruntime.Locator }
@@ -139,6 +144,45 @@ func (service *PiExtensionService) RemovePiDeskTodo() error {
 	path := filepath.Join(directory, piDeskTodoExtensionName)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove Pi Desk todo extension: %w", err)
+	}
+	return nil
+}
+
+func (service *PiExtensionService) InstallPiDeskGoal() (domain.PiDeskGoalExtensionStatus, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return domain.PiDeskGoalExtensionStatus{}, err
+	}
+	if len(service.goalSource) == 0 {
+		return domain.PiDeskGoalExtensionStatus{}, errors.New("Pi Desk goal extension source is unavailable")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return domain.PiDeskGoalExtensionStatus{}, fmt.Errorf("create Pi extension directory: %w", err)
+	}
+	targetPath := filepath.Join(directory, piDeskGoalExtensionName)
+	if err := atomic.WriteFile(targetPath, bytes.NewReader(service.goalSource)); err != nil {
+		return domain.PiDeskGoalExtensionStatus{}, fmt.Errorf("install Pi Desk goal extension: %w", err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		return domain.PiDeskGoalExtensionStatus{}, fmt.Errorf("protect Pi Desk goal extension: %w", err)
+	}
+	return service.goalStatus(directory)
+}
+
+func (service *PiExtensionService) RemovePiDeskGoal() error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	directory, err := service.extensionDirectory()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(directory, piDeskGoalExtensionName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove Pi Desk goal extension: %w", err)
 	}
 	return nil
 }
@@ -305,11 +349,16 @@ func (service *PiExtensionService) snapshot() (domain.PiExtensionSnapshot, error
 	if err != nil {
 		return domain.PiExtensionSnapshot{}, err
 	}
+	goalStatus, err := service.goalStatus(directory)
+	if err != nil {
+		return domain.PiExtensionSnapshot{}, err
+	}
 	return domain.PiExtensionSnapshot{
 		GlobalDirectory: directory,
 		SettingsPath:    settingsPath,
 		Extensions:      extensions,
 		Todo:            status,
+		Goal:            goalStatus,
 	}, nil
 }
 
@@ -499,6 +548,19 @@ func (service *PiExtensionService) todoStatus(directory string) (domain.PiDeskTo
 		status.LegacyBackupPath = backupPath
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return domain.PiDeskTodoExtensionStatus{}, fmt.Errorf("inspect legacy todo backup: %w", err)
+	}
+	return status, nil
+}
+
+func (service *PiExtensionService) goalStatus(directory string) (domain.PiDeskGoalExtensionStatus, error) {
+	targetPath := filepath.Join(directory, piDeskGoalExtensionName)
+	status := domain.PiDeskGoalExtensionStatus{Path: targetPath}
+	content, err := os.ReadFile(targetPath)
+	if err == nil {
+		status.Installed = true
+		status.UpdateAvailable = !bytes.Equal(content, service.goalSource)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.PiDeskGoalExtensionStatus{}, fmt.Errorf("read Pi Desk goal extension: %w", err)
 	}
 	return status, nil
 }

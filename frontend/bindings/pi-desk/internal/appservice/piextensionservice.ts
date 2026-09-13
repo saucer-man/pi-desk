@@ -13,6 +13,10 @@ export function InstallPackage(request: domain$0.PiPackageRequest): $Cancellable
     return $Call.ByID(3266037779, request);
 }
 
+export function InstallPiDeskGoal(): $CancellablePromise<domain$0.PiDeskGoalExtensionStatus> {
+    return $Call.ByID(4138424012);
+}
+
 export function InstallPiDeskTodo(): $CancellablePromise<domain$0.PiDeskTodoInstallResult> {
     return $Call.ByID(412651075);
 }
@@ -27,6 +31,10 @@ export function ListPackages(request: domain$0.ListPiPackagesRequest): $Cancella
 
 export function RemovePackage(request: domain$0.PiPackageRequest): $CancellablePromise<domain$0.PiPackageCommandResult> {
     return $Call.ByID(3426128442, request);
+}
+
+export function RemovePiDeskGoal(): $CancellablePromise<void> {
+    return $Call.ByID(1829327523);
 }
 
 export function RemovePiDeskTodo(): $CancellablePromise<void> {

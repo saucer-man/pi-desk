@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { AlertTriangle, CheckCircle2, Download, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
+import { AlertTriangle, CheckCircle2, Download, Goal, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -15,6 +15,7 @@ const changing = ref(false);
 const loadError = ref("");
 const notice = ref("");
 const removeArmed = ref(false);
+const goalRemoveArmed = ref(false);
 const packageSource = ref("");
 const packageScope = ref(PiPackageScope.PiPackageScopeGlobal);
 const packageBusy = ref("");
@@ -155,6 +156,44 @@ async function removeTodo() {
   }
 }
 
+async function installGoal() {
+  if (changing.value) return;
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installGoal();
+    notice.value = tr("settings.goalExtensionInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
+async function removeGoal() {
+  if (changing.value) return;
+  if (!goalRemoveArmed.value) {
+    goalRemoveArmed.value = true;
+    window.setTimeout(() => { goalRemoveArmed.value = false; }, 5000);
+    return;
+  }
+  changing.value = true;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.removeGoal();
+    notice.value = tr("settings.goalExtensionRemoved");
+    goalRemoveArmed.value = false;
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    changing.value = false;
+  }
+}
+
 onMounted(() => { void loadExtensions(); });
 </script>
 
@@ -196,6 +235,39 @@ onMounted(() => { void loadExtensions(); });
         </div>
       </div>
       <p v-if="snapshot?.todo.legacyInstalled" class="extension-warning"><AlertTriangle :size="14" />{{ tr("settings.legacyTodoExtensionWarning", { path: snapshot.todo.legacyPath || "" }) }}</p>
+      <div class="extension-feature-row" data-testid="goal-extension-row">
+        <Goal :size="18" />
+        <span>
+          <strong>Pi Desk Goal</strong>
+          <small>{{ tr("settings.goalExtensionHelp") }}</small>
+          <code :title="snapshot?.goal.path">{{ snapshot?.goal.path }}</code>
+        </span>
+        <em v-if="snapshot?.goal.installed && !snapshot.goal.updateAvailable" class="is-installed"><CheckCircle2 :size="12" />{{ tr("settings.extensionInstalled") }}</em>
+        <em v-else-if="snapshot?.goal.updateAvailable" class="is-update"><AlertTriangle :size="12" />{{ tr("settings.extensionUpdateAvailable") }}</em>
+        <em v-else>{{ tr("settings.extensionNotInstalled") }}</em>
+        <div class="extension-feature-actions">
+          <button
+            v-if="!snapshot?.goal.installed || snapshot.goal.updateAvailable"
+            data-testid="install-goal-extension"
+            class="text-button primary" :class="ui.buttonPrimary"
+            type="button"
+            :disabled="loading || changing"
+            @click="void installGoal()"
+          >
+            <Download :size="14" />{{ snapshot?.goal.updateAvailable ? tr("settings.updateExtension") : tr("settings.installExtension") }}
+          </button>
+          <button
+            v-else
+            data-testid="remove-goal-extension"
+            class="text-button danger" :class="ui.buttonDanger"
+            type="button"
+            :disabled="changing"
+            @click="void removeGoal()"
+          >
+            <Trash2 :size="14" />{{ goalRemoveArmed ? tr("settings.confirmRemoveExtension") : tr("settings.removeExtension") }}
+          </button>
+        </div>
+      </div>
       <p class="setting-status">{{ tr("settings.extensionRestartNeeded") }}</p>
       </section>
 

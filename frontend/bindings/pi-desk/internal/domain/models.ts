@@ -391,6 +391,12 @@ export interface OrphanSessionSummary {
     "messageCount": number;
 }
 
+export interface PiDeskGoalExtensionStatus {
+    "path": string;
+    "installed": boolean;
+    "updateAvailable": boolean;
+}
+
 export interface PiDeskTodoExtensionStatus {
     "path": string;
     "installed": boolean;
@@ -421,6 +427,7 @@ export interface PiExtensionSnapshot {
     "settingsPath": string;
     "extensions": PiExtensionSummary[] | null;
     "todo": PiDeskTodoExtensionStatus;
+    "goal": PiDeskGoalExtensionStatus;
 }
 
 export interface PiExtensionSummary {

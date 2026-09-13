@@ -1832,6 +1832,21 @@ export const useAppStore = defineStore("app", {
         this.attachmentsByThread[thread.id] = originalAttachments ?? [];
       }
     },
+    async sendGoalCommand(command: string) {
+      const thread = this.activeThread;
+      if (!thread || this.sessionOperationByThread[thread.id]) return;
+      if (this.requestRemoteReconnect(thread, "prompt")) return;
+      if (thread.sessionFile && this.transcriptStateByThread[thread.id] !== "loaded") {
+        await this.loadThreadTranscript(thread.id);
+        if (this.transcriptStateByThread[thread.id] !== "loaded") return;
+      }
+      if (thread.status === "running") {
+        const queue = this.pendingPromptsByThread[thread.id] ?? (this.pendingPromptsByThread[thread.id] = []);
+        queue.push({ id: createID("pending"), text: command, images: [], createdAt: nowISO() });
+        return;
+      }
+      await this.deliverPrompt(thread, command, [], undefined, false);
+    },
     async deliverPrompt(
       thread: ThreadSummary,
       message: string,

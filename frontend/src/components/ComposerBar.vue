@@ -7,10 +7,12 @@ import { MAX_ATTACHED_IMAGES, MAX_IMAGE_BASE64_CHARS, prepareImage, type Prepare
 import { formatFileMention } from "../utils/fileMentions";
 import { rankFuzzy } from "../utils/fuzzySearch";
 import { parsePiDeskTodoWidget, PI_DESK_TODO_WIDGET_KEY } from "../utils/todoWidget";
+import { parsePiDeskGoalWidget, PI_DESK_GOAL_WIDGET_KEY } from "../utils/goalWidget";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
 import MarkdownEditor from "./MarkdownEditor.vue";
 import PiDeskTodoPanel from "./PiDeskTodoPanel.vue";
+import PiDeskGoalPanel from "./PiDeskGoalPanel.vue";
 
 const appStore = useAppStore();
 const markdownEditor = ref<{ focus(): void; replaceMarkdown(value: string): void; handleEnter(event: KeyboardEvent): boolean; captureTextInsertion(): (text: string, separate?: boolean) => boolean }>();
@@ -105,7 +107,10 @@ const rawWidgetsAbove = computed(() => appStore.activeExtensionWidgets.filter((w
 const piDeskTodoWidget = computed(() => rawWidgetsAbove.value.find((widget) => widget.key.toLocaleLowerCase() === PI_DESK_TODO_WIDGET_KEY));
 const piDeskTodo = computed(() => parsePiDeskTodoWidget(piDeskTodoWidget.value));
 const piDeskTodoKey = computed(() => `${appStore.activeThreadId}:${piDeskTodoWidget.value?.instance ?? PI_DESK_TODO_WIDGET_KEY}`);
-const widgetsAbove = computed(() => rawWidgetsAbove.value.filter((widget) => widget !== piDeskTodoWidget.value || !piDeskTodo.value));
+const piDeskGoalWidget = computed(() => rawWidgetsAbove.value.find((widget) => widget.key.toLocaleLowerCase() === PI_DESK_GOAL_WIDGET_KEY));
+const piDeskGoal = computed(() => parsePiDeskGoalWidget(piDeskGoalWidget.value));
+const piDeskGoalKey = computed(() => `${appStore.activeThreadId}:${piDeskGoalWidget.value?.instance ?? PI_DESK_GOAL_WIDGET_KEY}`);
+const widgetsAbove = computed(() => rawWidgetsAbove.value.filter((widget) => (widget !== piDeskTodoWidget.value || !piDeskTodo.value) && (widget !== piDeskGoalWidget.value || !piDeskGoal.value)));
 const widgetsBelow = computed(() => appStore.activeExtensionWidgets.filter((widget) => widget.placement === "belowEditor"));
 const desktopCommands = computed<DesktopSlashCommand[]>(() => [
   { name: "skill", description: tr("composer.openSkillManagement"), source: "desktop", settingsSection: "skillManagement" },
@@ -594,6 +599,7 @@ onBeforeUnmount(() => {
       <button type="button" title="Stop retry" @click="void appStore.abortActiveRetry()"><X :size="14" /></button>
     </div>
     <div class="composer-input-stack" :class="{ 'has-todo': Boolean(piDeskTodo), 'has-queue': queuedMessages.length > 0 }">
+      <PiDeskGoalPanel v-if="piDeskGoal" :key="piDeskGoalKey" :goal="piDeskGoal" :running="agentRunning" @command="(command: string) => void appStore.sendGoalCommand(command)" />
       <PiDeskTodoPanel v-if="piDeskTodo" :key="piDeskTodoKey" :todo="piDeskTodo" />
       <div v-if="queuedMessages.length" class="queue-panel composer-stack-panel" :class="ui.panel" aria-live="polite">
       <div class="queue-list">
