@@ -875,6 +875,8 @@
   padding: 32px max(36px, calc((100% - 828px) / 2)) 20px;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Pinning is handled in JS; browser scroll anchoring only adds ±px jitter. */
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: auto;
@@ -5503,6 +5505,17 @@
 
 .mcp-editor .model-field > textarea {
   min-height: 210px;
+}
+
+.mcp-config-content .prompt-config-scope > button > span {
+  min-width: 0;
+}
+
+.mcp-config-content .prompt-config-scope button small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcp-disabled-field {

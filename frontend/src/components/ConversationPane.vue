@@ -105,12 +105,24 @@ function measureVirtualRow(element: Element | ComponentPublicInstance | null) {
 }
 
 function scrollToBottom() {
-  if (shouldVirtualize.value && messages.value.length > 0) {
-    virtualizer.value.scrollToIndex(messages.value.length - 1, { align: "end" });
-    return;
-  }
   const element = timeline.value;
+  // Pin to the exact bottom (padding included) so the streaming tail stays
+  // visible above the floating composer; estimate-based scrollToIndex fights
+  // the ResizeObserver size corrections while content streams in.
   if (element) element.scrollTop = element.scrollHeight;
+}
+
+// Coalesce autoscroll into one frame-aligned correction: per-delta scrolls
+// otherwise force extra layouts and let intermediate offsets reach the screen.
+let autoScrollFrame = 0;
+function scheduleAutoScroll() {
+  if (autoScrollFrame) return;
+  autoScrollFrame = requestAnimationFrame(() => {
+    autoScrollFrame = 0;
+    if (!stickToBottom.value) return;
+    scrollToBottom();
+    updateActiveNavigation();
+  });
 }
 
 function onTimelineScroll() {
@@ -264,19 +276,14 @@ watch(() => appStore.activeThreadId, async () => {
   updateActiveNavigation();
 });
 
-watch(streamSignal, async (_signal, previous) => {
+watch(streamSignal, (_signal, previous) => {
   const messageChanged = previous?.[1] !== lastMessage.value?.id;
   if (messageChanged && lastMessage.value?.role === "user") stickToBottom.value = true;
-  if (!stickToBottom.value) return;
-  await nextTick();
-  scrollToBottom();
+  if (stickToBottom.value) scheduleAutoScroll();
 });
 
-watch(virtualTotalSize, async () => {
-  if (!stickToBottom.value || !shouldVirtualize.value) return;
-  await nextTick();
-  scrollToBottom();
-  updateActiveNavigation();
+watch(virtualTotalSize, () => {
+  if (stickToBottom.value && shouldVirtualize.value) scheduleAutoScroll();
 });
 
 watch(navigationItems, (items) => {
@@ -298,6 +305,7 @@ onMounted(async () => {
   updateActiveNavigation();
 });
 onBeforeUnmount(() => {
+  if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame);
   document.removeEventListener("keydown", onDocumentKeydown, true);
   hideHoveredNavigation();
 });
