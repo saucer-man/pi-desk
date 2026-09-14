@@ -27,8 +27,19 @@ const lastMessage = computed(() => messages.value.at(-1));
 const streamSignal = computed(() => {
   const message = lastMessage.value;
   if (!message) return [appStore.activeThreadId, "", 0, 0, 0, 0, "", appStore.activeWaitingForOutput] as const;
-  const toolOutput = message.tools.reduce((total, tool) => total + tool.output.length, 0);
-  return [appStore.activeThreadId, message.id, message.text.length, message.thinking.length, message.tools.length, toolOutput, message.runNotice?.status ?? "", appStore.activeWaitingForOutput] as const;
+  let thinkingLength = message.thinking.length;
+  let toolCount = message.tools.length;
+  let toolOutput = message.tools.reduce((total, tool) => total + tool.output.length, 0);
+  // Merged assistant runs keep thinking and tools inside executionSteps with
+  // message.tools/thinking emptied out, so growth has to be read from there.
+  for (const step of message.executionSteps ?? []) {
+    if (step.kind === "thinking" && step.text) thinkingLength += step.text.length;
+    for (const tool of step.tools ?? []) {
+      toolCount += 1;
+      toolOutput += tool.output.length;
+    }
+  }
+  return [appStore.activeThreadId, message.id, message.text.length, thinkingLength, toolCount, toolOutput, message.runNotice?.status ?? "", appStore.activeWaitingForOutput] as const;
 });
 
 const virtualizer = useVirtualizer(computed(() => ({
