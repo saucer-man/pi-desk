@@ -4,6 +4,8 @@ import type {
   RepositoryFileDiff,
   RepositoryFilePreview,
   RepositorySnapshot,
+  SessionFileChange,
+  SessionFileChanges,
 } from "../../bindings/pi-desk/internal/domain";
 
 export type RepositoryWorkspaceReference = string | { workspaceId: string };
@@ -18,6 +20,13 @@ export const repositoryService = {
   },
   snapshot(workspace: RepositoryWorkspaceReference): Promise<RepositorySnapshot> {
     return RepositoryService.Snapshot(workspaceRequest(workspace));
+  },
+  async sessionFileChanges(workspace: RepositoryWorkspaceReference, sessionPath: string): Promise<SessionFileChange[]> {
+    const changes = await RepositoryService.SessionFileChanges({ ...workspaceRequest(workspace), sessionPath });
+    return changes?.files ?? [];
+  },
+  rollbackSessionFile(workspace: RepositoryWorkspaceReference, sessionPath: string, path: string): Promise<void> {
+    return RepositoryService.RollbackSessionFile({ ...workspaceRequest(workspace), sessionPath, path });
   },
   diff(workspace: RepositoryWorkspaceReference, path: string): Promise<RepositoryFileDiff> {
     return RepositoryService.Diff({ ...workspaceRequest(workspace), path });
@@ -51,4 +60,4 @@ export const repositoryService = {
   },
 };
 
-export type { RepositoryFileDiff, RepositoryFilePreview, RepositorySnapshot };
+export type { RepositoryFileDiff, RepositoryFilePreview, RepositorySnapshot, SessionFileChange, SessionFileChanges };

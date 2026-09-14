@@ -24,6 +24,34 @@ const workspaceLabel = computed(() => remoteWorkspace.value?.remoteRoot || appSt
 const filePreview = computed(() => appStore.activeRepositoryFilePreview);
 const filePreviewName = computed(() => appStore.activeRepositoryFilePreviewPath.split(/[\\/]/).pop() || appStore.activeRepositoryFilePreviewPath);
 const markdownRendered = ref(true);
+const sessionChanges = computed(() => appStore.activeSessionChanges);
+const sessionChangesError = computed(() => appStore.activeSessionChangesError);
+const rollbackArmed = ref<Record<string, boolean>>({});
+let rollbackArmTimer = 0;
+const rollbackActions = computed<Record<string, string>>(() => Object.fromEntries(sessionChanges.value.map((change) => [
+  change.path,
+  rollbackArmed.value[change.path] ? rollbackConfirmText(change.plan) : tr("inspector.rollback"),
+])));
+
+function rollbackConfirmText(plan: string): string {
+  if (plan === "git-restore") return tr("inspector.rollbackConfirmGit");
+  if (plan === "delete") return tr("inspector.rollbackConfirmDelete");
+  return tr("inspector.rollbackConfirmEdits");
+}
+
+function confirmRollback(path: string) {
+  if (!rollbackArmed.value[path]) {
+    rollbackArmed.value = { ...rollbackArmed.value, [path]: true };
+    window.clearTimeout(rollbackArmTimer);
+    rollbackArmTimer = window.setTimeout(() => {
+      rollbackArmed.value = {};
+    }, 5000);
+    return;
+  }
+  window.clearTimeout(rollbackArmTimer);
+  rollbackArmed.value = {};
+  void appStore.rollbackSessionFile(path);
+}
 const normalizedChangedFiles = computed(() => changedFiles.value.map((file) => ({
   ...file,
   path: file.path.replaceAll("\\", "/"),
@@ -145,6 +173,7 @@ onMounted(() => {
   document.addEventListener("visibilitychange", refreshPreviewWhenVisible);
 });
 onBeforeUnmount(() => {
+  window.clearTimeout(rollbackArmTimer);
   window.removeEventListener("focus", refreshPreview);
   document.removeEventListener("visibilitychange", refreshPreviewWhenVisible);
 });
@@ -238,6 +267,7 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
         <div v-if="appStore.activeRepositoryLoading && !repository" class="repository-state" :class="ui.empty"><LoaderCircle :size="18" class="is-spinning" /></div>
         <div v-else-if="appStore.activeRepositoryError && !repository" class="repository-state error-text" :class="ui.empty">{{ appStore.activeRepositoryError }}</div>
         <template v-else-if="fileTree.length">
+          <div v-if="sessionChangesError" class="diff-notice error-text">{{ sessionChangesError }}</div>
           <div v-if="fileListTruncated" class="diff-notice">{{ tr("inspector.firstFiles", { count: visibleFiles.length }) }}</div>
           <div class="file-tree">
             <FileTreeNode
@@ -245,9 +275,12 @@ watch(() => appStore.activeRepositoryFilePreviewPath, () => { markdownRendered.v
               :key="`${node.directory}-${node.path}`"
               :node="node"
               :change-statuses="changeStatusByPath"
+              :rollback-actions="rollbackActions"
+              :rollback-armed="rollbackArmed"
               @open="openTreeFile"
               @diff="appStore.openRepositoryDiff"
               @mention="appStore.insertFileMention"
+              @rollback="confirmRollback"
             />
           </div>
         </template>

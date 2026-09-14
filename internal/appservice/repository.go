@@ -15,6 +15,7 @@ import (
 	"pi-desk/internal/clipboard"
 	"pi-desk/internal/domain"
 	"pi-desk/internal/repository"
+	"pi-desk/internal/sessionindex"
 	"pi-desk/internal/workspace"
 
 	"github.com/natefinch/atomic"
@@ -38,6 +39,12 @@ type repositoryScanner interface {
 	Snapshot(context.Context, string) (repository.Snapshot, error)
 	Diff(context.Context, string, string) (repository.FileDiff, error)
 	Branches(context.Context, string) (repository.BranchInventory, error)
+	SessionChanges(context.Context, string, map[string][]sessionindex.FileOperation) ([]repository.SessionFileChange, error)
+	RestoreSessionFile(context.Context, string, string, []sessionindex.FileOperation) (string, error)
+}
+
+type sessionOperationsReader interface {
+	FileOperations(path string) ([]sessionindex.FileOperation, error)
 }
 
 type remoteRepositoryBackend interface {
@@ -58,6 +65,7 @@ type remoteRepositoryBinding struct {
 type RepositoryService struct {
 	catalog        repositoryWorkspaceResolver
 	scanner        repositoryScanner
+	sessions       sessionOperationsReader
 	openFile       func(string) error
 	openFileWith   func(string) error
 	revealFile     func(string) error
@@ -67,11 +75,12 @@ type RepositoryService struct {
 	remoteSeen     map[string]uint64
 }
 
-func NewRepositoryService(catalog *workspace.Catalog, scanner *repository.Scanner) *RepositoryService {
+func NewRepositoryService(catalog *workspace.Catalog, scanner *repository.Scanner, sessions sessionOperationsReader) *RepositoryService {
 	return &RepositoryService{
 		catalog:        catalog,
 		clipboardFiles: clipboard.FilePaths,
 		scanner:        scanner,
+		sessions:       sessions,
 		remote:         make(map[string]*remoteRepositoryBinding),
 		remoteSeen:     make(map[string]uint64),
 		openFile: func(path string) error {
@@ -311,6 +320,116 @@ func (service *RepositoryService) RevealFile(request domain.RepositoryFileReques
 		return err
 	}
 	return service.revealFile(path)
+}
+
+// sessionFileOperations parses the referenced session transcript and groups
+// its successful file-mutating tool calls by normalized workspace-relative
+// path. Tool calls that touched files outside the workspace are not reviewable
+// here and are skipped.
+func (service *RepositoryService) sessionFileOperations(record workspace.Record, sessionPath string) (map[string][]sessionindex.FileOperation, error) {
+	if record.Location.Kind == workspace.KindSSH {
+		return nil, errors.New("session file changes require a local workspace")
+	}
+	if service.sessions == nil {
+		return nil, errors.New("session transcript access is unavailable")
+	}
+	operations, err := service.sessions.FileOperations(strings.TrimSpace(sessionPath))
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[string][]sessionindex.FileOperation)
+	for _, operation := range operations {
+		relative, err := workspaceRelativePath(record.Path, operation.Path)
+		if err != nil {
+			continue
+		}
+		grouped[relative] = append(grouped[relative], operation)
+	}
+	return grouped, nil
+}
+
+func (service *RepositoryService) SessionFileChanges(request domain.SessionFileChangesRequest) (domain.SessionFileChanges, error) {
+	if service.catalog == nil || service.scanner == nil {
+		return domain.SessionFileChanges{}, errors.New("repository service is unavailable")
+	}
+	record, err := service.trustedWorkspace(request.WorkspaceID, request.WorkspacePath)
+	if err != nil {
+		return domain.SessionFileChanges{}, err
+	}
+	grouped, err := service.sessionFileOperations(record, request.SessionPath)
+	if err != nil {
+		return domain.SessionFileChanges{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), repositoryTimeout)
+	defer cancel()
+	changes, err := service.scanner.SessionChanges(ctx, record.Path, grouped)
+	if err != nil {
+		return domain.SessionFileChanges{}, err
+	}
+	result := domain.SessionFileChanges{Files: make([]domain.SessionFileChange, 0, len(changes))}
+	for _, change := range changes {
+		result.Files = append(result.Files, domain.SessionFileChange{
+			Path: change.Path, EditCalls: change.EditCalls, WriteCalls: change.WriteCalls, Plan: change.Plan,
+		})
+	}
+	return result, nil
+}
+
+func (service *RepositoryService) RollbackSessionFile(request domain.RollbackSessionFileRequest) error {
+	if service.catalog == nil || service.scanner == nil {
+		return errors.New("repository service is unavailable")
+	}
+	record, err := service.trustedWorkspace(request.WorkspaceID, request.WorkspacePath)
+	if err != nil {
+		return err
+	}
+	grouped, err := service.sessionFileOperations(record, request.SessionPath)
+	if err != nil {
+		return err
+	}
+	relative, err := workspaceRelativePath(record.Path, request.Path)
+	if err != nil {
+		return err
+	}
+	operations := grouped[relative]
+	if len(operations) == 0 {
+		return errors.New("the session recorded no changes for this file")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), repositoryTimeout)
+	defer cancel()
+	_, err = service.scanner.RestoreSessionFile(ctx, record.Path, relative, operations)
+	return err
+}
+
+// workspaceRelativePath maps a transcript tool-call path (absolute or
+// workspace-relative) onto a normalized workspace-relative slash path,
+// rejecting anything that escapes the workspace boundary.
+func workspaceRelativePath(root, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("file path is empty")
+	}
+	absolute := raw
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(root, filepath.FromSlash(absolute))
+	}
+	absolute = filepath.Clean(absolute)
+	root = filepath.Clean(root)
+	suffix := ""
+	if len(absolute) >= len(root) {
+		head, tail := absolute[:len(root)], absolute[len(root):]
+		if strings.EqualFold(head, root) && (tail == "" || tail[0] == filepath.Separator || tail[0] == '/') {
+			suffix = tail
+		}
+	}
+	if suffix == "" {
+		return "", errors.New("file path is outside the workspace")
+	}
+	relative := strings.TrimPrefix(filepath.ToSlash(suffix), "/")
+	if relative == "" || relative == "." || relative == ".." || strings.HasPrefix(relative, "../") {
+		return "", fmt.Errorf("file path %q does not reference a workspace file", raw)
+	}
+	return relative, nil
 }
 
 func (service *RepositoryService) trustedWorkspace(id, workspacePath string) (workspace.Record, error) {

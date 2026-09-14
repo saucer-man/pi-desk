@@ -42,8 +42,16 @@ export function RevealFile(request: domain$0.RepositoryFileRequest): $Cancellabl
     return $Call.ByID(2221038535, request);
 }
 
+export function RollbackSessionFile(request: domain$0.RollbackSessionFileRequest): $CancellablePromise<void> {
+    return $Call.ByID(3038729986, request);
+}
+
 export function SaveFileAs(request: domain$0.RepositorySaveFileRequest): $CancellablePromise<void> {
     return $Call.ByID(4265531131, request);
+}
+
+export function SessionFileChanges(request: domain$0.SessionFileChangesRequest): $CancellablePromise<domain$0.SessionFileChanges> {
+    return $Call.ByID(3091344059, request);
 }
 
 export function Snapshot(request: domain$0.RepositoryRequest): $CancellablePromise<domain$0.RepositorySnapshot> {

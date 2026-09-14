@@ -18,6 +18,30 @@ type RepositorySaveFileRequest struct {
 	OutputPath    string `json:"outputPath"`
 }
 
+type SessionFileChangesRequest struct {
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
+	SessionPath   string `json:"sessionPath"`
+}
+
+type SessionFileChange struct {
+	Path       string `json:"path"`
+	EditCalls  int    `json:"editCalls"`
+	WriteCalls int    `json:"writeCalls"`
+	Plan       string `json:"plan"`
+}
+
+type SessionFileChanges struct {
+	Files []SessionFileChange `json:"files"`
+}
+
+type RollbackSessionFileRequest struct {
+	WorkspaceID   string `json:"workspaceId,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
+	SessionPath   string `json:"sessionPath"`
+	Path          string `json:"path"`
+}
+
 type RepositoryFile struct {
 	Path string `json:"path"`
 	Name string `json:"name"`

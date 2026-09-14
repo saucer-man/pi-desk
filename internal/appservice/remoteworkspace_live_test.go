@@ -36,7 +36,7 @@ func TestLiveRemoteWorkspaceLifecycle(t *testing.T) {
 	}
 	catalog := workspace.NewCatalog(filepath.Join(t.TempDir(), "state.json"))
 	runtimeRegistry := remotessh.NewRuntimeRegistry()
-	repositoryService := NewRepositoryService(catalog, repository.New())
+	repositoryService := NewRepositoryService(catalog, repository.New(), nil)
 	terminalService := NewTerminalService(catalog)
 	terminalService.remote = terminalruntime.NewRemoteManager(ctx, nil)
 	backends, err := NewRemoteBackendCoordinator(catalog, repositoryService, terminalService)

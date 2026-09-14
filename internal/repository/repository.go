@@ -16,6 +16,9 @@ import (
 	"unicode/utf8"
 
 	"pi-desk/internal/gitexec"
+	"pi-desk/internal/sessionindex"
+
+	"github.com/natefinch/atomic"
 )
 
 const (
@@ -590,4 +593,146 @@ func boundedUTF8(value []byte, limit int) (string, bool) {
 		value = value[:len(value)-1]
 	}
 	return string(value), true
+}
+
+// Rollback plan kinds reported for session-touched files.
+const (
+	PlanRevertEdits = "revert-edits"
+	PlanGitRestore  = "git-restore"
+	PlanDeleteFile  = "delete"
+)
+
+type SessionFileChange struct {
+	Path       string
+	EditCalls  int
+	WriteCalls int
+	Plan       string
+}
+
+// SessionChanges summarizes how each session-touched workspace file can be
+// rolled back. Edit-only files are restored by reverse-applying the recorded
+// edits; rewritten files fall back to Git HEAD, or deletion when Git cannot
+// reconstruct the pre-session content.
+func (scanner *Scanner) SessionChanges(ctx context.Context, root string, operations map[string][]sessionindex.FileOperation) ([]SessionFileChange, error) {
+	isRepository := scanner.isRepository(ctx, root)
+	paths := make([]string, 0, len(operations))
+	for path := range operations {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	changes := make([]SessionFileChange, 0, len(paths))
+	for _, path := range paths {
+		change := SessionFileChange{Path: path}
+		for _, operation := range operations[path] {
+			if operation.Write {
+				change.WriteCalls++
+			} else {
+				change.EditCalls++
+			}
+		}
+		switch {
+		case change.WriteCalls == 0:
+			change.Plan = PlanRevertEdits
+		case !isRepository:
+			change.Plan = PlanDeleteFile
+		default:
+			change.Plan = PlanDeleteFile
+			if scanner.fileInHead(ctx, root, path) {
+				change.Plan = PlanGitRestore
+			}
+		}
+		changes = append(changes, change)
+	}
+	return changes, nil
+}
+
+// RestoreSessionFile rolls one session-touched workspace file back to its
+// pre-session state and returns the plan that was applied. Reversal is guarded:
+// every recorded replacement must match the current content exactly once, so a
+// file modified outside the recorded session fails instead of corrupting.
+func (scanner *Scanner) RestoreSessionFile(ctx context.Context, root, path string, operations []sessionindex.FileOperation) (string, error) {
+	if len(operations) == 0 {
+		return "", errors.New("the session recorded no changes for this file")
+	}
+	hasWrite := false
+	for _, operation := range operations {
+		if operation.Write {
+			hasWrite = true
+			break
+		}
+	}
+	if !hasWrite {
+		return PlanRevertEdits, scanner.revertRecordedEdits(root, path, operations)
+	}
+	if !scanner.isRepository(ctx, root) {
+		return PlanDeleteFile, scanner.removeSessionFile(ctx, root, path)
+	}
+	if scanner.fileInHead(ctx, root, path) {
+		pathspec := ":(top,literal)" + path
+		if _, err := scanner.runner.Run(ctx, root, "checkout", "HEAD", "--", pathspec); err != nil {
+			return "", fmt.Errorf("restore file from Git HEAD: %w", err)
+		}
+		return PlanGitRestore, nil
+	}
+	return PlanDeleteFile, scanner.removeSessionFile(ctx, root, path)
+}
+
+func (scanner *Scanner) revertRecordedEdits(root, path string, operations []sessionindex.FileOperation) error {
+	resolved, err := ResolveFile(root, path)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return fmt.Errorf("read workspace file: %w", err)
+	}
+	if len(data) > maxFileBytes {
+		return errors.New("workspace file exceeds the rollback size limit")
+	}
+	content := string(data)
+	for index := len(operations) - 1; index >= 0; index-- {
+		edits := operations[index].Edits
+		for editIndex := len(edits) - 1; editIndex >= 0; editIndex-- {
+			edit := edits[editIndex]
+			if edit.Old == edit.New {
+				continue
+			}
+			if count := strings.Count(content, edit.New); count != 1 {
+				return fmt.Errorf("recorded change no longer matches the file (%d matches found)", count)
+			}
+			content = strings.Replace(content, edit.New, edit.Old, 1)
+		}
+	}
+	if err := atomic.WriteFile(resolved, strings.NewReader(content)); err != nil {
+		return fmt.Errorf("write rolled-back file: %w", err)
+	}
+	return nil
+}
+
+func (scanner *Scanner) removeSessionFile(ctx context.Context, root, path string) error {
+	normalized, err := normalizeRelativePath(path)
+	if err != nil {
+		return err
+	}
+	absolute := filepath.Join(root, filepath.FromSlash(normalized))
+	if _, err := os.Stat(absolute); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect workspace file: %w", err)
+	}
+	if err := os.Remove(absolute); err != nil {
+		return fmt.Errorf("remove workspace file: %w", err)
+	}
+	if scanner.isRepository(ctx, root) {
+		if _, err := scanner.runner.Run(ctx, root, "rm", "--cached", "-q", "--ignore-unmatch", "--", ":(top,literal)"+normalized); err != nil {
+			return fmt.Errorf("unstage removed file: %w", err)
+		}
+	}
+	return nil
+}
+
+func (scanner *Scanner) fileInHead(ctx context.Context, root, path string) bool {
+	_, err := scanner.runner.Run(ctx, root, "cat-file", "-e", "HEAD:"+path)
+	return err == nil
 }

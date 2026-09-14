@@ -3,7 +3,7 @@ import { RuntimeState, type BootstrapState, type DesktopState, type SessionSnaps
 import { agentService, onPiEvent, type PiSessionEvent, type SessionBranches } from "../services/agent";
 import { catalogService } from "../services/catalog";
 import { checkForUpdates, checkRuntime as checkRuntimeStatus, getBootstrapState, notifyDesktop } from "../services/desktop";
-import { repositoryService, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference } from "../services/repository";
+import { repositoryService, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference, type SessionFileChange } from "../services/repository";
 import { remoteWorkspaceService } from "../services/remoteWorkspaces";
 import { onTerminalEvent, type TerminalEvent } from "../services/terminal";
 import { modelConfigService } from "../services/modelconfig";
@@ -846,6 +846,8 @@ export const useAppStore = defineStore("app", {
     repositoryFilePreviewLoadingByThread: {} as Record<string, boolean>,
     repositoryFilePreviewGenerationByThread: {} as Record<string, number>,
     repositoryFilePreviewErrorByThread: {} as Record<string, string>,
+    sessionChangesByThread: {} as Record<string, SessionFileChange[] | undefined>,
+    sessionChangesErrorByThread: {} as Record<string, string>,
     workspaceTrustUpdatingPath: "",
     workspaceTrustError: "",
     streamingBehavior: "steer" as StreamingBehavior,
@@ -1003,6 +1005,12 @@ export const useAppStore = defineStore("app", {
     },
     activeRepositoryFilePreviewError(state): string {
       return state.repositoryFilePreviewErrorByThread[state.activeThreadId] ?? "";
+    },
+    activeSessionChanges(state): SessionFileChange[] {
+      return state.sessionChangesByThread[state.activeThreadId] ?? [];
+    },
+    activeSessionChangesError(state): string {
+      return state.sessionChangesErrorByThread[state.activeThreadId] ?? "";
     },
     activeSessionBranches(state): SessionBranches | undefined {
       return state.sessionBranchesByThread[state.activeThreadId];
@@ -1491,6 +1499,8 @@ export const useAppStore = defineStore("app", {
         this.repositoryByWorkspace[key] = undefined;
         this.repositoryErrorByWorkspace[key] = "Workspace access is disabled";
         this.repositoryStaleByWorkspace[key] = true;
+        this.sessionChangesByThread[thread.id] = undefined;
+        this.sessionChangesErrorByThread[thread.id] = "";
         return;
       }
       if (this.repositoryLoadingByWorkspace[key]) return;
@@ -1503,6 +1513,7 @@ export const useAppStore = defineStore("app", {
         if (this.repositoryRefreshGenerationByWorkspace[key] !== generation) return;
         this.repositoryByWorkspace[key] = snapshot;
         this.repositoryStaleByWorkspace[key] = false;
+        void this.refreshSessionChanges(thread.id);
       } catch (error) {
         if (this.repositoryRefreshGenerationByWorkspace[key] !== generation) return;
         this.repositoryErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
@@ -1512,6 +1523,33 @@ export const useAppStore = defineStore("app", {
           this.repositoryLoadingByWorkspace[key] = false;
         }
       }
+    },
+    async refreshSessionChanges(threadID: string) {
+      const thread = this.threads.find((item) => item.id === threadID);
+      if (!thread || thread.trust !== "approve" || !thread.sessionFile || this.remoteWorkspaceForThread(thread)) {
+        this.sessionChangesByThread[threadID] = undefined;
+        this.sessionChangesErrorByThread[threadID] = "";
+        return;
+      }
+      try {
+        this.sessionChangesByThread[threadID] = await repositoryService.sessionFileChanges(repositoryReference(thread), thread.sessionFile);
+        this.sessionChangesErrorByThread[threadID] = "";
+      } catch (error) {
+        this.sessionChangesByThread[threadID] = undefined;
+        this.sessionChangesErrorByThread[threadID] = errorMessage(error);
+      }
+    },
+    async rollbackSessionFile(path: string) {
+      const thread = this.activeThread;
+      if (!thread || thread.trust !== "approve" || !thread.sessionFile || this.remoteWorkspaceForThread(thread)) return;
+      try {
+        await repositoryService.rollbackSessionFile(repositoryReference(thread), thread.sessionFile, path);
+      } catch (error) {
+        this.sessionChangesErrorByThread[thread.id] = errorMessage(error);
+        return;
+      }
+      this.sessionChangesErrorByThread[thread.id] = "";
+      await this.refreshActiveRepository();
     },
     async openRepositoryDiff(path: string, sessionDiff?: string) {
       const thread = this.activeThread;

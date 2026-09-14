@@ -3634,7 +3634,8 @@
 
 .file-tree-mention,
 .file-tree-toggle,
-.file-tree-change {
+.file-tree-change,
+.file-tree-rollback {
   display: grid;
   width: 26px;
   height: 26px;
@@ -3649,7 +3650,8 @@
 
 .file-tree-mention:hover,
 .file-tree-toggle:hover,
-.file-tree-change:hover {
+.file-tree-change:hover,
+.file-tree-rollback:hover {
   background: var(--bg-active);
   color: var(--text);
 }
@@ -4038,13 +4040,22 @@
   width: 22px;
 }
 
-.file-tree-mention {
+.file-tree-mention,
+.file-tree-rollback {
   opacity: 0;
 }
 
 .file-tree-row:hover .file-tree-mention,
-.file-tree-mention:focus-visible {
+.file-tree-mention:focus-visible,
+.file-tree-row:hover .file-tree-rollback,
+.file-tree-rollback:focus-visible,
+.file-tree-rollback.is-armed {
   opacity: 1;
+}
+
+.file-tree-rollback.is-armed {
+  color: var(--red);
+  background: var(--bg-active);
 }
 
 @media (hover: none) {

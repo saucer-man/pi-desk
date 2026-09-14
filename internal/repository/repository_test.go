@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"pi-desk/internal/sessionindex"
 )
 
 func TestParseStatusHandlesBranchTrackingAndRename(t *testing.T) {
@@ -226,4 +229,140 @@ func writeTestFile(t *testing.T, root, name, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRestoreSessionFileRevertsRecordedEditsInReverse(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	writeTestFile(t, root, "code.txt", "alpha\nbeta\ngamma\n")
+	scanner := New()
+	operations := []sessionindex.FileOperation{
+		{Path: "code.txt", Edits: []sessionindex.TextEdit{{Old: "beta", New: "BETA"}}},
+		{Path: "code.txt", Edits: []sessionindex.TextEdit{{Old: "BETA\ngamma", New: "BETA\ndelta"}}},
+	}
+	writeTestFile(t, root, "code.txt", "alpha\nBETA\ndelta\n")
+
+	plan, err := scanner.RestoreSessionFile(context.Background(), root, "code.txt", operations)
+	if err != nil || plan != PlanRevertEdits {
+		t.Fatalf("unexpected restore result: plan=%s err=%v", plan, err)
+	}
+	if content := readTestFile(t, root, "code.txt"); content != "alpha\nbeta\ngamma\n" {
+		t.Fatalf("unexpected restored content: %q", content)
+	}
+}
+
+func TestRestoreSessionFileRefusesContentThatNoLongerMatches(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "code.txt", "someone else edited\n")
+	operations := []sessionindex.FileOperation{
+		{Path: "code.txt", Edits: []sessionindex.TextEdit{{Old: "beta", New: "BETA"}}},
+	}
+	if _, err := New().RestoreSessionFile(context.Background(), root, "code.txt", operations); err == nil {
+		t.Fatal("expected a mismatching file to refuse rollback")
+	}
+}
+
+func TestRestoreSessionFileRestoresRewrittenTrackedFileFromHead(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	runGitTest(t, root, "init", "-q", "-b", "main")
+	runGitTest(t, root, "config", "user.email", "pi-desk@example.invalid")
+	runGitTest(t, root, "config", "user.name", "Pi Desk Test")
+	runGitTest(t, root, "config", "core.autocrlf", "false")
+	writeTestFile(t, root, "code.txt", "committed\n")
+	runGitTest(t, root, "add", ".")
+	runGitTest(t, root, "commit", "-qm", "initial")
+	writeTestFile(t, root, "code.txt", "overwritten by the session\n")
+
+	plan, err := New().RestoreSessionFile(context.Background(), root, "code.txt", []sessionindex.FileOperation{
+		{Path: "code.txt", Write: true},
+	})
+	if err != nil || plan != PlanGitRestore {
+		t.Fatalf("unexpected restore result: plan=%s err=%v", plan, err)
+	}
+	if content := readTestFile(t, root, "code.txt"); content != "committed\n" {
+		t.Fatalf("unexpected restored content: %q", content)
+	}
+}
+
+func TestRestoreSessionFileDeletesFileCreatedBySession(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	runGitTest(t, root, "init", "-q", "-b", "main")
+	runGitTest(t, root, "config", "user.email", "pi-desk@example.invalid")
+	runGitTest(t, root, "config", "user.name", "Pi Desk Test")
+	writeTestFile(t, root, "tracked.txt", "base\n")
+	runGitTest(t, root, "add", "tracked.txt")
+	runGitTest(t, root, "config", "core.autocrlf", "false")
+	runGitTest(t, root, "commit", "-qm", "initial")
+	writeTestFile(t, root, "created.txt", "new file\n")
+	runGitTest(t, root, "add", "created.txt")
+
+	plan, err := New().RestoreSessionFile(context.Background(), root, "created.txt", []sessionindex.FileOperation{
+		{Path: "created.txt", Write: true},
+	})
+	if err != nil || plan != PlanDeleteFile {
+		t.Fatalf("unexpected restore result: plan=%s err=%v", plan, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "created.txt")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected the created file to be deleted: err=%v", err)
+	}
+	output, err := exec.Command("git", "-C", root, "status", "--porcelain").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "" {
+		t.Fatalf("expected a clean worktree after deletion: err=%v output=%s", err, output)
+	}
+}
+
+func TestSessionChangesClassifiesRollbackPlans(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	runGitTest(t, root, "init", "-q", "-b", "main")
+	runGitTest(t, root, "config", "user.email", "pi-desk@example.invalid")
+	runGitTest(t, root, "config", "user.name", "Pi Desk Test")
+	writeTestFile(t, root, "edited.txt", "base\n")
+	writeTestFile(t, root, "tracked.txt", "base\n")
+	runGitTest(t, root, "add", ".")
+	runGitTest(t, root, "commit", "-qm", "initial")
+	writeTestFile(t, root, "created.txt", "new\n")
+	writeTestFile(t, root, "tracked.txt", "rewritten\n")
+
+	operations := map[string][]sessionindex.FileOperation{
+		"created.txt": {{Path: "created.txt", Write: true}},
+		"edited.txt":  {{Path: "edited.txt", Edits: []sessionindex.TextEdit{{Old: "base", New: "edited"}}}},
+		"tracked.txt": {{Path: "tracked.txt", Write: true}, {Path: "tracked.txt", Edits: []sessionindex.TextEdit{{Old: "a", New: "b"}}}},
+	}
+	changes, err := New().SessionChanges(context.Background(), root, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := make(map[string]SessionFileChange, len(changes))
+	for _, change := range changes {
+		plans[change.Path] = change
+	}
+	if plans["edited.txt"].Plan != PlanRevertEdits || plans["edited.txt"].EditCalls != 1 {
+		t.Fatalf("unexpected edit-only plan: %#v", plans["edited.txt"])
+	}
+	if plans["created.txt"].Plan != PlanDeleteFile || plans["created.txt"].WriteCalls != 1 {
+		t.Fatalf("unexpected created-file plan: %#v", plans["created.txt"])
+	}
+	if plans["tracked.txt"].Plan != PlanGitRestore || plans["tracked.txt"].WriteCalls != 1 || plans["tracked.txt"].EditCalls != 1 {
+		t.Fatalf("unexpected rewritten-file plan: %#v", plans["tracked.txt"])
+	}
+}
+
+func readTestFile(t *testing.T, root, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

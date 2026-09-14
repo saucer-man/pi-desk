@@ -13,7 +13,7 @@ import (
 
 func newTestRemoteCatalogCoordinator(t *testing.T, catalog *workspace.Catalog, registry *remotessh.RuntimeRegistry) *RemoteCatalogCoordinator {
 	t.Helper()
-	backends, err := NewRemoteBackendCoordinator(catalog, NewRepositoryService(catalog, repository.New()), NewTerminalService(catalog))
+	backends, err := NewRemoteBackendCoordinator(catalog, NewRepositoryService(catalog, repository.New(), nil), NewTerminalService(catalog))
 	if err != nil {
 		t.Fatal(err)
 	}

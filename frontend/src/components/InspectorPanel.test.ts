@@ -250,4 +250,61 @@ describe("InspectorPanel", () => {
     await wrapper.findAll(".markdown-preview-toggle button")[1].trigger("click");
     expect(wrapper.get('[aria-label="File preview content"]').text()).toContain("# Repo");
   });
+  it("requires a second click before rolling back a session-touched file", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-rollback", title: "Rollback", workspace: "repo", workspacePath: "D:\\repo", trust: "approve",
+        status: "idle", started: false, generation: 0,
+      }],
+      activeThreadId: "thread-rollback",
+      repositoryByWorkspace: { "d:/repo": {
+        files: [{ path: "src/main.go", name: "main.go" }],
+        git: { isRepository: true, branch: "main", files: [{ path: "src/main.go", indexStatus: " ", worktreeStatus: "M" }] },
+      } },
+      sessionChangesByThread: { "thread-rollback": [{ path: "src/main.go", editCalls: 1, writeCalls: 0, plan: "revert-edits" }] },
+    });
+    store.refreshActiveRepository = vi.fn().mockResolvedValue(undefined);
+    store.rollbackSessionFile = vi.fn().mockResolvedValue(undefined);
+
+    const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
+    const rollback = wrapper.get('button.file-tree-rollback');
+    expect(rollback.attributes("title")).toBe("Roll back session changes");
+
+    await rollback.trigger("click");
+    expect(store.rollbackSessionFile).not.toHaveBeenCalled();
+    expect(rollback.attributes("title")).toContain("Click again to reverse this session's edits");
+
+    await rollback.trigger("click");
+    expect(store.rollbackSessionFile).toHaveBeenCalledWith("src/main.go");
+  });
+
+  it("describes the delete plan for session-created files", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [{
+        id: "thread-created", title: "Created", workspace: "repo", workspacePath: "D:\\repo", trust: "approve",
+        status: "idle", started: false, generation: 0,
+      }],
+      activeThreadId: "thread-created",
+      repositoryByWorkspace: { "d:/repo": {
+        files: [{ path: "notes.md", name: "notes.md" }],
+        git: { isRepository: true, branch: "main", files: [{ path: "notes.md", indexStatus: "?", worktreeStatus: "?" }] },
+      } },
+      sessionChangesByThread: { "thread-created": [{ path: "notes.md", editCalls: 0, writeCalls: 1, plan: "delete" }] },
+    });
+    store.refreshActiveRepository = vi.fn().mockResolvedValue(undefined);
+    store.rollbackSessionFile = vi.fn().mockResolvedValue(undefined);
+
+    const wrapper = mount(InspectorPanel, { global: { plugins: [pinia] } });
+    const rollback = wrapper.get('button.file-tree-rollback');
+    expect(rollback.attributes("title")).toBe("Roll back session changes");
+
+    await rollback.trigger("click");
+    expect(rollback.attributes("title")).toBe("Click again to delete the file created by this session");
+  });
 });

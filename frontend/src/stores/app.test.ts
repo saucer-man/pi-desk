@@ -53,6 +53,8 @@ const mocks = vi.hoisted(() => ({
   respondExtensionUI: vi.fn(),
   getDiagnostics: vi.fn(),
   snapshotRepository: vi.fn(),
+  sessionFileChanges: vi.fn(),
+  rollbackSessionFile: vi.fn(),
   diffRepository: vi.fn(),
   openRepositoryFile: vi.fn(),
   openRepositoryFileWith: vi.fn(),
@@ -139,6 +141,8 @@ vi.mock("../services/repository", () => ({
     openFileWith: mocks.openRepositoryFileWith,
     previewFile: mocks.previewRepositoryFile,
     revealFile: mocks.revealRepositoryFile,
+    sessionFileChanges: mocks.sessionFileChanges,
+    rollbackSessionFile: mocks.rollbackSessionFile,
   },
 }));
 vi.mock("../services/remoteWorkspaces", () => ({
@@ -3453,5 +3457,58 @@ describe("app store", () => {
     expect(mocks.sendPrompt).not.toHaveBeenCalled();
     expect(store.scheduledTasks[0]).toMatchObject({ lastStatus: "failed" });
     expect(store.scheduledTasks[0].lastError).toContain("max");
+  });
+  it("loads session file changes when refreshing the repository", async () => {
+    const store = useAppStore();
+    store.threads = [{ id: "t1", title: "Task", workspace: "repo", workspacePath: "D:\\work\\repo", trust: "approve", status: "idle", started: false, generation: 0, sessionFile: "D:\\sessions\\repo\\a.jsonl" }];
+    store.activeThreadId = "t1";
+    mocks.snapshotRepository.mockResolvedValue({ files: [], git: { isRepository: true, files: [] } });
+    mocks.sessionFileChanges.mockResolvedValue([{ path: "src/main.go", editCalls: 2, writeCalls: 0, plan: "revert-edits" }]);
+
+    await store.refreshActiveRepository();
+
+    expect(mocks.sessionFileChanges).toHaveBeenCalledWith("D:\\work\\repo", "D:\\sessions\\repo\\a.jsonl");
+    expect(store.activeSessionChanges).toEqual([{ path: "src/main.go", editCalls: 2, writeCalls: 0, plan: "revert-edits" }]);
+    expect(store.activeSessionChangesError).toBe("");
+  });
+
+  it("rolls back a session file and refreshes the workspace", async () => {
+    const store = useAppStore();
+    store.threads = [{ id: "t1", title: "Task", workspace: "repo", workspacePath: "D:\\work\\repo", trust: "approve", status: "idle", started: false, generation: 0, sessionFile: "D:\\sessions\\repo\\a.jsonl" }];
+    store.activeThreadId = "t1";
+    mocks.rollbackSessionFile.mockResolvedValue(undefined);
+    mocks.snapshotRepository.mockResolvedValue({ files: [], git: { isRepository: true, files: [] } });
+    mocks.sessionFileChanges.mockResolvedValue([]);
+
+    await store.rollbackSessionFile("src/main.go");
+
+    expect(mocks.rollbackSessionFile).toHaveBeenCalledWith("D:\\work\\repo", "D:\\sessions\\repo\\a.jsonl", "src/main.go");
+    expect(store.activeSessionChangesError).toBe("");
+    expect(mocks.snapshotRepository).toHaveBeenCalled();
+  });
+
+  it("surfaces rollback failures without refreshing", async () => {
+    const store = useAppStore();
+    store.threads = [{ id: "t1", title: "Task", workspace: "repo", workspacePath: "D:\\work\\repo", trust: "approve", status: "idle", started: false, generation: 0, sessionFile: "D:\\sessions\\repo\\a.jsonl" }];
+    store.activeThreadId = "t1";
+    mocks.rollbackSessionFile.mockRejectedValueOnce(new Error("recorded change no longer matches the file"));
+
+    await store.rollbackSessionFile("src/main.go");
+
+    expect(store.activeSessionChangesError).toContain("recorded change no longer matches");
+    expect(mocks.snapshotRepository).not.toHaveBeenCalled();
+  });
+
+  it("skips session file changes for remote workspaces", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve" }];
+    store.threads = [{ id: "t2", title: "Remote", workspace: "remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0, sessionFile: "/tmp/a.jsonl" }];
+    store.activeThreadId = "t2";
+    store.sessionChangesByThread["t2"] = [{ path: "x", editCalls: 1, writeCalls: 0, plan: "revert-edits" }];
+
+    await store.refreshSessionChanges("t2");
+
+    expect(mocks.sessionFileChanges).not.toHaveBeenCalled();
+    expect(store.sessionChangesByThread["t2"]).toBeUndefined();
   });
 });

@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { AtSign, ChevronDown, ChevronRight, File, Folder, FolderOpen } from "lucide-vue-next";
+import { AtSign, ChevronDown, ChevronRight, File, Folder, FolderOpen, Undo2 } from "lucide-vue-next";
 import { ref } from "vue";
 import type { RepositoryTreeNode } from "../utils/fileMentions";
 
-const props = defineProps<{ node: RepositoryTreeNode; depth?: number; changeStatuses?: Record<string, string> }>();
+const props = defineProps<{
+  node: RepositoryTreeNode;
+  depth?: number;
+  changeStatuses?: Record<string, string>;
+  rollbackActions?: Record<string, string>;
+  rollbackArmed?: Record<string, boolean>;
+}>();
 const emit = defineEmits<{
   mention: [path: string, directory: boolean];
   open: [path: string];
   diff: [path: string];
+  rollback: [path: string];
 }>();
 const open = ref((props.depth ?? 0) === 0);
 
@@ -22,6 +29,10 @@ function forwardOpen(path: string) {
 
 function forwardDiff(path: string) {
   emit("diff", path);
+}
+
+function forwardRollback(path: string) {
+  emit("rollback", path);
 }
 </script>
 
@@ -55,6 +66,16 @@ function forwardDiff(path: string) {
         @click="emit('diff', node.path)"
       >{{ changeStatuses[node.path] }}</button>
       <span v-else class="file-tree-change-spacer" />
+      <button
+        v-if="!node.directory && rollbackActions?.[node.path]"
+        class="file-tree-rollback"
+        :class="{ 'is-armed': rollbackArmed?.[node.path] }"
+        type="button"
+        :title="rollbackActions[node.path]"
+        @click.stop="emit('rollback', node.path)"
+      >
+        <Undo2 :size="13" />
+      </button>
       <button class="file-tree-mention" type="button" :title="node.directory ? 'Mention folder' : 'Mention file'" @click="emit('mention', node.path, node.directory)">
         <AtSign :size="13" />
       </button>
@@ -66,9 +87,12 @@ function forwardDiff(path: string) {
         :node="child"
         :depth="(depth || 0) + 1"
         :change-statuses="changeStatuses"
+        :rollback-actions="rollbackActions"
+        :rollback-armed="rollbackArmed"
         @mention="forwardMention"
         @open="forwardOpen"
         @diff="forwardDiff"
+        @rollback="forwardRollback"
       />
     </div>
   </div>

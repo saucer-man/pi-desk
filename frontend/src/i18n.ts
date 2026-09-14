@@ -344,6 +344,10 @@ const messages = {
       firstFiles: "First {count}",
       noFiles: "No files",
       sessionChanges: "This session",
+      rollback: "Roll back session changes",
+      rollbackConfirmEdits: "Click again to reverse this session's edits and restore the file",
+      rollbackConfirmGit: "Click again to restore this file from Git HEAD; pre-session uncommitted changes cannot be preserved",
+      rollbackConfirmDelete: "Click again to delete the file created by this session",
     },
     browser: {
       live: "Live view of the managed browser",
@@ -1183,6 +1187,10 @@ const messages = {
       firstFiles: "前 {count} 个",
       noFiles: "没有文件",
       sessionChanges: "本轮操作",
+      rollback: "回滚会话变更",
+      rollbackConfirmEdits: "再次点击将反向应用本轮操作的编辑，恢复文件内容",
+      rollbackConfirmGit: "再次点击将从 Git HEAD 恢复此文件（会话前未提交的修改无法保留）",
+      rollbackConfirmDelete: "再次点击将删除本轮操作创建的文件",
     },
     browser: {
       live: "受管浏览器实时画面",

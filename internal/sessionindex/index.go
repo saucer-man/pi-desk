@@ -515,6 +515,138 @@ func (index *Index) Snapshot(path string) (Snapshot, error) {
 	}, nil
 }
 
+// TextEdit is one ordered old→new replacement recorded by an edit tool call.
+type TextEdit struct {
+	Old string
+	New string
+}
+
+// FileOperation is one file-mutating tool call (edit/write) on the active
+// branch in transcript order. Write operations replace the whole file, so the
+// pre-write content cannot be reconstructed from the transcript alone.
+type FileOperation struct {
+	Path  string
+	Write bool
+	Edits []TextEdit
+}
+
+// FileOperations returns every successful file-mutating tool call on the
+// session's active branch in chronological order. Failed calls are excluded so
+// a rollback never reverses an operation that never touched the file.
+func (index *Index) FileOperations(path string) ([]FileOperation, error) {
+	canonical, err := index.ValidatePath(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := readTranscriptEntries(canonical)
+	if err != nil {
+		return nil, err
+	}
+	return fileOperations(activeTranscriptPath(entries)), nil
+}
+
+func fileOperations(entries []rawEntry) []FileOperation {
+	failed := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Type != "message" || len(entry.Message) == 0 {
+			continue
+		}
+		var message struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"toolCallId"`
+			IsError    bool   `json:"isError"`
+		}
+		if json.Unmarshal(entry.Message, &message) != nil || message.Role != "toolResult" || !message.IsError || message.ToolCallID == "" {
+			continue
+		}
+		failed[message.ToolCallID] = struct{}{}
+	}
+	operations := make([]FileOperation, 0)
+	for _, entry := range entries {
+		if entry.Type != "message" || len(entry.Message) == 0 {
+			continue
+		}
+		var message struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(entry.Message, &message) != nil || message.Role != "assistant" {
+			continue
+		}
+		var blocks []struct {
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal(message.Content, &blocks) != nil {
+			continue
+		}
+		for _, block := range blocks {
+			if block.Type != "toolCall" {
+				continue
+			}
+			if _, failedCall := failed[block.ID]; block.ID != "" && failedCall {
+				continue
+			}
+			if operation, ok := fileOperationFromArguments(block.Name, block.Arguments); ok {
+				operations = append(operations, operation)
+			}
+		}
+	}
+	return operations
+}
+
+func fileOperationFromArguments(name string, arguments json.RawMessage) (FileOperation, bool) {
+	var args struct {
+		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+		FileName string `json:"filePath"`
+		File     string `json:"file"`
+		OldText  string `json:"oldText"`
+		NewText  string `json:"newText"`
+		Edits    []struct {
+			OldText string `json:"oldText"`
+			NewText string `json:"newText"`
+		} `json:"edits"`
+		Content *string `json:"content"`
+	}
+	if json.Unmarshal(arguments, &args) != nil {
+		return FileOperation{}, false
+	}
+	path := args.Path
+	for _, candidate := range []string{args.FilePath, args.FileName, args.File} {
+		if path == "" {
+			path = candidate
+		}
+	}
+	if strings.TrimSpace(path) == "" {
+		return FileOperation{}, false
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "write":
+		if args.Content == nil {
+			return FileOperation{}, false
+		}
+		return FileOperation{Path: path, Write: true}, true
+	case "edit":
+		var edits []TextEdit
+		for _, pair := range args.Edits {
+			if pair.OldText != pair.NewText {
+				edits = append(edits, TextEdit{Old: pair.OldText, New: pair.NewText})
+			}
+		}
+		if len(args.Edits) == 0 && args.OldText != args.NewText {
+			edits = append(edits, TextEdit{Old: args.OldText, New: args.NewText})
+		}
+		if len(edits) == 0 {
+			return FileOperation{}, false
+		}
+		return FileOperation{Path: path, Edits: edits}, true
+	}
+	return FileOperation{}, false
+}
+
 func addCompactionEstimates(entries []rawEntry) []rawEntry {
 	positions := make(map[string]int, len(entries))
 	for position, entry := range entries {

@@ -177,7 +177,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	repositoryService := appservice.NewRepositoryService(catalog, repository.New())
+	repositoryService := appservice.NewRepositoryService(catalog, repository.New(), sessionIndex)
 	terminalService := appservice.NewTerminalService(catalog)
 	browserService := appservice.NewBrowserService()
 	remoteBackends, err := appservice.NewRemoteBackendCoordinator(catalog, repositoryService, terminalService)

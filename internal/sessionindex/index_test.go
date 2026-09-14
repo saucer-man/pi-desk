@@ -891,3 +891,62 @@ func writeSession(t *testing.T, path, content string) {
 func quote(value string) string {
 	return `"` + strings.ReplaceAll(value, `\`, `\\`) + `"`
 }
+
+func TestIndexFileOperationsExtractsSuccessfulCallsInOrder(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "ops.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, path, strings.Join([]string{
+		`{"type":"session","version":3,"id":"ops","timestamp":"2026-09-01T08:00:00Z","cwd":"D:\repo"}`,
+		`{"type":"message","id":"root","parentId":null,"message":{"role":"user","content":"work"}}`,
+		`{"type":"message","id":"a1","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"e1","name":"edit","arguments":{"path":"D:/repo/src/main.go","edits":[{"oldText":"hello","newText":"hi"},{"oldText":"same","newText":"same"}]}}]}}`,
+		`{"type":"message","id":"r1","parentId":"a1","message":{"role":"toolResult","toolCallId":"e1","content":"ok"}}`,
+		`{"type":"message","id":"a2","parentId":"r1","message":{"role":"assistant","content":[{"type":"toolCall","id":"w1","name":"write","arguments":{"path":"notes.md","content":"written"}}]}}`,
+		`{"type":"message","id":"r2","parentId":"a2","message":{"role":"toolResult","toolCallId":"w1","isError":true,"content":"failed"}}`,
+		`{"type":"message","id":"a3","parentId":"r2","message":{"role":"assistant","content":[{"type":"toolCall","id":"e2","name":"Edit","arguments":{"oldText":"a","newText":"b","file_path":"src/util.go"}}]}}`,
+		`{"type":"message","id":"r3","parentId":"a3","message":{"role":"toolResult","toolCallId":"e2","content":"ok"}}`,
+		`{"type":"message","id":"a4","parentId":"r3","message":{"role":"assistant","content":[{"type":"toolCall","id":"b1","name":"bash","arguments":{"command":"rm src/main.go"}}]}}`,
+		`{"type":"message","id":"r4","parentId":"a4","message":{"role":"toolResult","toolCallId":"b1","content":"ok"}}`,
+	}, "\n")+"\n")
+
+	operations, err := New(root).FileOperations(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 2 {
+		t.Fatalf("unexpected operations: %#v", operations)
+	}
+	first := operations[0]
+	if first.Path != "D:/repo/src/main.go" || first.Write || len(first.Edits) != 1 || first.Edits[0].Old != "hello" || first.Edits[0].New != "hi" {
+		t.Fatalf("unexpected edit operation: %#v", first)
+	}
+	second := operations[1]
+	if second.Path != "src/util.go" || second.Write || len(second.Edits) != 1 || second.Edits[0].Old != "a" || second.Edits[0].New != "b" {
+		t.Fatalf("unexpected second edit operation: %#v", second)
+	}
+}
+
+func TestIndexFileOperationsFollowsActiveBranchAndKeepsEmptyWrites(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "branch.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, path, strings.Join([]string{
+		`{"type":"session","version":3,"id":"branch","timestamp":"2026-09-01T08:00:00Z","cwd":"D:\repo"}`,
+		`{"type":"message","id":"root","parentId":null,"message":{"role":"user","content":"work"}}`,
+		`{"type":"message","id":"forkA","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"old","name":"write","arguments":{"path":"stale.md","content":"old"}}]}}`,
+		`{"type":"message","id":"forkB","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"keep","name":"write","arguments":{"path":"kept.md","content":""}}]}}`,
+		`{"type":"message","id":"resultB","parentId":"forkB","message":{"role":"toolResult","toolCallId":"keep","content":"ok"}}`,
+	}, "\n")+"\n")
+
+	operations, err := New(root).FileOperations(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].Path != "kept.md" || !operations[0].Write {
+		t.Fatalf("expected only the active-branch empty write: %#v", operations)
+	}
+}

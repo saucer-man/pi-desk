@@ -711,6 +711,13 @@ export interface ResumeRemoteWorkspaceRequest {
     "workspaceId": string;
 }
 
+export interface RollbackSessionFileRequest {
+    "workspaceId"?: string;
+    "workspacePath"?: string;
+    "sessionPath": string;
+    "path": string;
+}
+
 export enum RuntimeState {
     /**
      * The Go zero value for the underlying type of the enum.
@@ -770,6 +777,23 @@ export interface SessionBranchEntry {
 export interface SessionBranches {
     "entries": SessionBranchEntry[] | null;
     "leafId"?: string;
+}
+
+export interface SessionFileChange {
+    "path": string;
+    "editCalls": number;
+    "writeCalls": number;
+    "plan": string;
+}
+
+export interface SessionFileChanges {
+    "files": SessionFileChange[] | null;
+}
+
+export interface SessionFileChangesRequest {
+    "workspaceId"?: string;
+    "workspacePath"?: string;
+    "sessionPath": string;
 }
 
 export interface SessionForkRequest {

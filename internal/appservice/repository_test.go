@@ -2,13 +2,16 @@ package appservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pi-desk/internal/domain"
 	"pi-desk/internal/repository"
+	"pi-desk/internal/sessionindex"
 	"pi-desk/internal/workspace"
 )
 
@@ -78,6 +81,14 @@ func (scanner *fakeRepositoryScanner) Diff(_ context.Context, root, path string)
 	result := scanner.diff
 	result.Path = path
 	return result, nil
+}
+
+func (*fakeRepositoryScanner) SessionChanges(context.Context, string, map[string][]sessionindex.FileOperation) ([]repository.SessionFileChange, error) {
+	return nil, nil
+}
+
+func (*fakeRepositoryScanner) RestoreSessionFile(context.Context, string, string, []sessionindex.FileOperation) (string, error) {
+	return "", nil
 }
 
 func TestRepositoryServiceRequiresRegisteredTrustedWorkspace(t *testing.T) {
@@ -251,4 +262,111 @@ func TestRepositoryServiceOnlyOperatesOnResolvedWorkspaceFiles(t *testing.T) {
 	if err := service.SaveFileAs(domain.RepositorySaveFileRequest{WorkspacePath: root, Path: "main.go", OutputPath: "relative.go"}); err == nil {
 		t.Fatal("expected a relative save destination to fail")
 	}
+}
+
+func newSessionChangeService(t *testing.T, workspacePath string) (*RepositoryService, string) {
+	t.Helper()
+	sessionsRoot := t.TempDir()
+	service := newRepositoryService(
+		fakeWorkspaceResolver{record: workspace.Record{
+			Path: workspacePath, Trust: "approve",
+			Location: workspace.Location{Kind: workspace.KindLocal, Local: workspace.LocalLocation{CanonicalPath: workspacePath}},
+		}},
+		repository.New(),
+	)
+	service.sessions = sessionindex.New(sessionsRoot)
+	return service, sessionsRoot
+}
+
+func jsonValue(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func writeChangeSession(t *testing.T, service *RepositoryService, operations ...string) string {
+	t.Helper()
+	root := service.sessions.(interface{ Root() string })
+	_ = root
+	return ""
+}
+
+func TestRepositoryServiceSessionFileChangesMapsAndFiltersOperations(t *testing.T) {
+	workspaceRoot := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "src", "main.go"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, sessionsRoot := newSessionChangeService(t, workspaceRoot)
+	sessionPath := writeSessionOperations(t, sessionsRoot, workspaceRoot,
+		`{"type":"message","id":"a1","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"e1","name":"edit","arguments":{"path":`+jsonValue(filepath.ToSlash(filepath.Join(workspaceRoot, "src", "main.go")))+`,"edits":[{"oldText":"hello","newText":"hi"}]}}]}}`,
+		`{"type":"message","id":"r1","parentId":"a1","message":{"role":"toolResult","toolCallId":"e1","content":"ok"}}`,
+		`{"type":"message","id":"a2","parentId":"r1","message":{"role":"assistant","content":[{"type":"toolCall","id":"w1","name":"write","arguments":{"path":` + jsonValue(filepath.Join(filepath.Dir(workspaceRoot), "outside.md")) + `,"content":"x"}}]}}`,
+		`{"type":"message","id":"r2","parentId":"a2","message":{"role":"toolResult","toolCallId":"w1","content":"ok"}}`,
+		`{"type":"message","id":"a3","parentId":"r2","message":{"role":"assistant","content":[{"type":"toolCall","id":"e2","name":"edit","arguments":{"path":"src/main.go","oldText":"hi","newText":"HEY"}}]}}`,
+		`{"type":"message","id":"r3","parentId":"a3","message":{"role":"toolResult","toolCallId":"e2","isError":true,"content":"failed"}}`,
+	)
+
+	changes, err := service.SessionFileChanges(domain.SessionFileChangesRequest{WorkspacePath: workspaceRoot, SessionPath: sessionPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes.Files) != 1 {
+		t.Fatalf("expected only the in-workspace file, got: %#v", changes.Files)
+	}
+	change := changes.Files[0]
+	if change.Path != "src/main.go" || change.EditCalls != 1 || change.WriteCalls != 0 || change.Plan != "revert-edits" {
+		t.Fatalf("unexpected change projection: %#v", change)
+	}
+}
+
+func TestRepositoryServiceRollbackSessionFileRestoresWorkspaceFile(t *testing.T) {
+	workspaceRoot := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(workspaceRoot, "src", "main.go")
+	if err := os.WriteFile(target, []byte("HEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, sessionsRoot := newSessionChangeService(t, workspaceRoot)
+	sessionPath := writeSessionOperations(t, sessionsRoot, workspaceRoot,
+		`{"type":"message","id":"a1","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"w1","name":"edit","arguments":{"path":"src/main.go","edits":[{"oldText":"hello","newText":"hi"},{"oldText":"hi","newText":"HEY"}]}}]}}`,
+		`{"type":"message","id":"r1","parentId":"a1","message":{"role":"toolResult","toolCallId":"w1","content":"ok"}}`,
+	)
+
+	if err := service.RollbackSessionFile(domain.RollbackSessionFileRequest{WorkspacePath: workspaceRoot, SessionPath: sessionPath, Path: "src/main.go"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello\n" {
+		t.Fatalf("file was not restored: %q", string(data))
+	}
+	if err := service.RollbackSessionFile(domain.RollbackSessionFileRequest{WorkspacePath: workspaceRoot, SessionPath: sessionPath, Path: "unrelated.txt"}); err == nil {
+		t.Fatal("expected an untouched file to fail rollback")
+	}
+}
+
+// writeSessionOperations seeds a minimal transcript under the service's
+// session root and returns its path.
+func writeSessionOperations(t *testing.T, sessionsRoot, workspaceRoot string, messages ...string) string {
+	t.Helper()
+	sessionPath := filepath.Join(sessionsRoot, "ws", "ops.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	header := `{"type":"session","version":3,"id":"ops","timestamp":"2026-09-01T08:00:00Z","cwd":` + jsonValue(workspaceRoot) + `}`
+	root := `{"type":"message","id":"root","parentId":null,"message":{"role":"user","content":"work"}}`
+	transcript := header + "\n" + root + "\n" + strings.Join(messages, "\n") + "\n"
+	if err := os.WriteFile(sessionPath, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sessionPath
 }
