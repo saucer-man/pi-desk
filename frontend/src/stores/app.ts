@@ -12,6 +12,7 @@ import { formatFileMention } from "../utils/fileMentions";
 import { MAX_ATTACHED_IMAGES, MAX_SOURCE_IMAGE_BYTES, type PreparedImage } from "../utils/imageAttachments";
 import { skillInvocationCommandText, skillInvocationTitleText } from "../utils/skillInvocation";
 import { runtimeErrorText } from "../utils/runtimeError";
+import { subagentSummaryFromResult, type SubagentTaskSummary } from "../utils/subagentTasks";
 import { buildToolDiff } from "../utils/toolDiff";
 import { setAppLanguage, tr } from "../i18n";
 import {
@@ -128,6 +129,7 @@ export interface ToolExecution {
   durationMs?: number;
   diff?: ToolDiff;
   images?: PreparedImage[];
+  subagents?: SubagentTaskSummary;
 }
 
 export interface ToolDiff {
@@ -3225,12 +3227,15 @@ export const useAppStore = defineStore("app", {
             assistant.tools.push(tool);
           }
           assistant.activeExecution = sessionEvent.event.type === "tool_execution_end" ? undefined : "tool";
-          const output = resultText(payload.partialResult ?? payload.result);
+          const rawResult = payload.partialResult ?? payload.result;
+          const output = resultText(rawResult);
           if (output) {
             const bounded = boundedToolOutput(output);
             tool.output = bounded.text;
             tool.truncated = bounded.truncated || undefined;
           }
+          const subagents = subagentSummaryFromResult(rawResult);
+          if (subagents) tool.subagents = subagents;
           if (sessionEvent.event.type === "tool_execution_end") {
             tool.resultReceived = true;
             tool.status = payload.isError ? "error" : "complete";

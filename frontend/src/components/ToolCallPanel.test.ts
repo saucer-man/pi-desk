@@ -89,17 +89,18 @@ describe("ToolCallPanel", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders subagent calls with a network icon and a pi-desktop style agent subtitle", () => {
+  it("renders subagent calls with a bot icon, an agent chip, and a task summary", () => {
     const wrapper = mount(ToolCallPanel, {
-      props: { tool: { id: "tool-6", name: "subagent", arguments: { agent: "scout", task: "find entry points" }, output: "done", status: "complete" } },
+      props: { tool: { id: "tool-6", name: "subagent", arguments: { agent: "scout", task: "find  entry points" }, output: "done", status: "complete" } },
     });
 
-    expect(wrapper.find("summary .lucide-network").exists()).toBe(true);
+    expect(wrapper.find("summary .lucide-bot").exists()).toBe(true);
     expect(wrapper.get(".tool-summary").text()).toBe("subagent");
-    expect(wrapper.get(".tool-subtitle").text()).toBe("scout");
+    expect(wrapper.get(".tool-agent-chip").text()).toBe("scout");
+    expect(wrapper.get(".tool-subtitle").text()).toBe("find entry points");
   });
 
-  it("summarizes parallel and chain subagent dispatches in the subtitle", () => {
+  it("summarizes parallel and chain subagent dispatches in the agent chip", () => {
     const parallel = mount(ToolCallPanel, {
       props: {
         tool: {
@@ -108,7 +109,7 @@ describe("ToolCallPanel", () => {
         },
       },
     });
-    expect(parallel.get(".tool-subtitle").text()).toBe("scout, planner ×3");
+    expect(parallel.get(".tool-agent-chip").text()).toBe("scout, planner ×3");
 
     const chain = mount(ToolCallPanel, {
       props: {
@@ -118,6 +119,32 @@ describe("ToolCallPanel", () => {
         },
       },
     });
-    expect(chain.get(".tool-subtitle").text()).toBe("scout → planner");
+    expect(chain.get(".tool-agent-chip").text()).toBe("scout → planner");
+  });
+
+  it("lists live per-delegate status and usage from subagent details", () => {
+    const wrapper = mount(ToolCallPanel, {
+      props: {
+        tool: {
+          id: "tool-9", name: "subagent", output: "working", status: "running",
+          subagents: {
+            mode: "parallel",
+            tasks: [
+              { agent: "scout", status: "ok", inputTokens: 1200, outputTokens: 345, cost: 0.0042, model: "z-ai/glm-5.3" },
+              { agent: "planner", status: "running", inputTokens: 0, outputTokens: 0, cost: 0 },
+              { agent: "writer", status: "error", inputTokens: 90, outputTokens: 0, cost: 0 },
+            ],
+          },        },
+      },
+    });
+
+    const rows = wrapper.findAll(".tool-subagent-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].get(".tool-subagent-name").text()).toBe("scout");
+    expect(rows[0].attributes("data-status")).toBe("ok");
+    expect(rows[0].get(".tool-subagent-meta").text()).toBe("↑1.2k ↓345 $0.0042");
+    expect(rows[1].attributes("data-status")).toBe("running");
+    expect(rows[1].find(".tool-subagent-meta").exists()).toBe(false);
+    expect(rows[2].attributes("data-status")).toBe("error");
   });
 });

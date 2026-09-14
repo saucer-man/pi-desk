@@ -1861,6 +1861,97 @@
   white-space: nowrap;
 }
 
+
+/* Subagent cards follow the pi-desktop delegate row language: an agent name
+   chip beside the tool name, a muted task summary, and per-delegate rows with
+   status dots and token usage in the expanded body. */
+.tool-agent-chip {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: calc(10.5px + var(--font-size-delta));
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: calc(11px + var(--font-size-delta));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subagents {
+  display: grid;
+}
+
+.tool-subagent-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  color: var(--text-secondary);
+  font-size: calc(11px + var(--font-size-delta));
+}
+
+.tool-subagent-row + .tool-subagent-row {
+  border-top: 1px solid var(--border);
+}
+
+.tool-subagent-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.tool-subagent-row[data-status="running"] .tool-subagent-dot {
+  background: var(--text-muted);
+}
+
+.tool-subagent-row[data-status="error"] .tool-subagent-dot {
+  background: var(--red);
+}
+
+.tool-subagent-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 550;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subagent-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: calc(10.5px + var(--font-size-delta));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subagent-meta {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Subagent cards carry a pi-desktop style subtitle naming the delegated agents;
    it takes the remaining trigger-row space so status and duration stay pinned right. */
 .tool-subtitle {

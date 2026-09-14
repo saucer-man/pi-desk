@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, Network, SquareTerminal, Wrench } from "lucide-vue-next";
+import { Bot, Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, SquareTerminal, Wrench } from "lucide-vue-next";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolExecution } from "../stores/app";
+import type { SubagentTaskState } from "../utils/subagentTasks";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
 
@@ -37,12 +38,16 @@ const summary = computed(() => {
 
 const statusLabel = computed(() => tr(({ running: "tools.running", complete: "tools.complete", error: "tools.failed" })[props.tool.status]));
 
-// Subagent calls follow the pi-desktop tool card language: a semantic Network
-// icon plus a muted mono subtitle naming the delegated agents and dispatch mode.
+// Subagent calls follow the pi-desktop delegate row language: a bot icon, an
+// agent name chip, and a muted task summary; the expanded body lists each
+// delegate with live status and token usage.
 const isSubagent = computed(() => props.tool.name === "subagent");
-const subagentSubtitle = computed(() => {
+const subagentValues = computed(() => (
+  props.tool.arguments && typeof props.tool.arguments === "object" ? props.tool.arguments as Record<string, unknown> : {}
+));
+const subagentAgents = computed(() => {
   if (!isSubagent.value) return "";
-  const values = props.tool.arguments && typeof props.tool.arguments === "object" ? props.tool.arguments as Record<string, unknown> : {};
+  const values = subagentValues.value;
   const agentName = (step: unknown): string => {
     const agent = (step && typeof step === "object" ? (step as Record<string, unknown>).agent : step);
     return typeof agent === "string" ? agent : "";
@@ -58,6 +63,35 @@ const subagentSubtitle = computed(() => {
   }
   return agentName(values.agent);
 });
+const subagentTaskPreview = computed(() => {
+  if (!isSubagent.value) return "";
+  const values = subagentValues.value;
+  const task = Array.isArray(values.tasks) && values.tasks.length > 0
+    ? (values.tasks[0] as Record<string, unknown>).task
+    : Array.isArray(values.chain) && values.chain.length > 0
+      ? (values.chain[0] as Record<string, unknown>).task
+      : values.task;
+  if (typeof task !== "string" || !task.trim()) return "";
+  const compact = task.replace(/\s+/g, " ").trim();
+  return compact.length > 96 ? `${compact.slice(0, 93)}...` : compact;
+});
+const subagentTasks = computed(() => props.tool.subagents?.tasks ?? []);
+
+function formatCompactTokens(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+function subagentUsageLabel(task: SubagentTaskState): string {
+  if (task.status === "running") return "";
+  const parts: string[] = [];
+  if (task.inputTokens) parts.push(`↑${formatCompactTokens(task.inputTokens)}`);
+  if (task.outputTokens) parts.push(`↓${formatCompactTokens(task.outputTokens)}`);
+  if (task.cost) parts.push(`$${task.cost.toFixed(4)}`);
+  return parts.join(" ");
+}
 const durationLabel = computed(() => {
   const duration = props.tool.durationMs;
   if (duration === undefined) return "";
@@ -102,12 +136,13 @@ onBeforeUnmount(() => {
   <details class="tool-call" :data-state="tool.status" :open="open" @toggle="syncOpen">
     <summary :class="ui.root">
       <ChevronRight class="disclosure-icon" :size="13" aria-hidden="true" />
-      <Network v-if="isSubagent" :size="15" aria-hidden="true" />
+      <Bot v-if="isSubagent" :size="15" aria-hidden="true" />
       <SquareTerminal v-else-if="tool.name === 'bash'" :size="15" aria-hidden="true" />
       <Wrench v-else :size="15" aria-hidden="true" />
       <span class="tool-summary-group">
         <span class="tool-summary">{{ summary }}</span>
-        <span v-if="subagentSubtitle" class="tool-subtitle" :title="subagentSubtitle">{{ subagentSubtitle }}</span>
+        <span v-if="subagentAgents" class="tool-agent-chip" :title="tr('tools.subagentAgent')">{{ subagentAgents }}</span>
+        <span v-if="subagentTaskPreview" class="tool-subtitle" :title="subagentTaskPreview">{{ subagentTaskPreview }}</span>
         <span v-if="durationLabel" class="tool-duration">{{ durationLabel }}</span>
         <span v-if="tool.diff" class="tool-diff-badge">diff</span>
         <span class="tool-status">
@@ -121,6 +156,18 @@ onBeforeUnmount(() => {
     <div v-if="tool.diff" class="tool-section tool-diff-section">
       <div class="tool-section-header"><span>{{ tool.diff.path }}</span></div>
       <pre class="tool-diff"><code><span v-for="(line, index) in tool.diff.text.split('\n')" :key="index" class="diff-line" :class="diffLineClass(line)">{{ `${line}\n` }}</span></code></pre>
+    </div>
+    <div v-if="subagentTasks.length" class="tool-section">
+      <div class="tool-section-header"><span>{{ tr("tools.subagentTasks") }}</span></div>
+      <div class="tool-subagents">
+        <div v-for="(task, index) in subagentTasks" :key="index" class="tool-subagent-row" :data-status="task.status">
+          <span class="tool-subagent-dot" aria-hidden="true" />
+          <span class="tool-subagent-name">{{ task.step ? `${task.step}. ` : "" }}{{ task.agent || tr("tools.subagentUnnamed") }}</span>
+          <span v-if="task.model" class="tool-subagent-model" :title="task.model">{{ task.model }}</span>
+          <LoaderCircle v-if="task.status === 'running'" :size="12" class="is-spinning" aria-hidden="true" />
+          <span v-if="subagentUsageLabel(task)" class="tool-subagent-meta">{{ subagentUsageLabel(task) }}</span>
+        </div>
+      </div>
     </div>
     <div v-if="inputText" class="tool-section">
       <div class="tool-section-header">

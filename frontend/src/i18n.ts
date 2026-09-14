@@ -279,6 +279,9 @@ const messages = {
       truncated: "Truncated in view",
       copyInput: "Copy tool input",
       copyOutput: "Copy tool output",
+      subagentAgent: "Subagent agents",
+      subagentTasks: "Subagent tasks",
+      subagentUnnamed: "Unnamed",
     },
     topbar: {
       branches: "Session branches",
@@ -1115,6 +1118,9 @@ const messages = {
       truncated: "显示内容已截断",
       copyInput: "复制工具输入",
       copyOutput: "复制工具输出",
+      subagentAgent: "子智能体",
+      subagentTasks: "子任务",
+      subagentUnnamed: "未命名",
     },
     topbar: {
       branches: "会话分支",
