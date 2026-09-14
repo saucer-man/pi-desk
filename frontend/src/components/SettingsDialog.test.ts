@@ -15,7 +15,7 @@ vi.mock("../services/modelconfig", () => ({ modelConfigService: { selectable: mo
 vi.mock("../services/prompts", () => ({ promptTemplateService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn() } }));
 vi.mock("../services/skills", () => ({ managedSkillService: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
 vi.mock("../services/extensions", () => ({ piExtensionService: { list: vi.fn().mockResolvedValue({ extensions: [], todo: {} }), installTodo: vi.fn(), removeTodo: vi.fn() } }));
-vi.mock("../services/mcpconfig", () => ({ mcpConfigService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn() } }));
+vi.mock("../services/mcpconfig", () => ({ mcpConfigService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), engineStatus: vi.fn(), importCandidates: vi.fn() } }));
 vi.mock("../services/repository", () => ({ repositoryService: {} }));
 
 describe("SettingsDialog", () => {

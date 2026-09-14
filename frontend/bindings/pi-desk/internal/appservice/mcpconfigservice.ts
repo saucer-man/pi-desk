@@ -19,8 +19,27 @@ export function DeleteMcpServer(request: domain$0.McpServerRequest): $Cancellabl
     return $Call.ByID(1555823142, request);
 }
 
+/**
+ * GetMcpEngineStatus reports whether pi-mcp-adapter is installed as a global
+ * Pi package and which config files would shadow the mcp.json files this
+ * service edits: home-level files beat the global one, and workspace-level
+ * .mcp.json / .agents/mcp.json beat the project one (pi-mcp-adapter reads
+ * higher-precedence files first).
+ */
+export function GetMcpEngineStatus(request: domain$0.McpEngineStatusRequest): $CancellablePromise<domain$0.McpEngineStatus> {
+    return $Call.ByID(2796697444, request);
+}
+
 export function GetMcpServer(request: domain$0.McpServerRequest): $CancellablePromise<domain$0.McpServer> {
     return $Call.ByID(246355267, request);
+}
+
+/**
+ * ListImportableMcpServers scans other hosts' MCP configuration files (JSON
+ * only; Codex's TOML is deliberately out of scope) for importable servers.
+ */
+export function ListImportableMcpServers(): $CancellablePromise<domain$0.McpImportCandidate[] | null> {
+    return $Call.ByID(4045350737);
 }
 
 export function ListMcpServers(request: domain$0.ListMcpServersRequest): $CancellablePromise<domain$0.McpConfigSnapshot> {

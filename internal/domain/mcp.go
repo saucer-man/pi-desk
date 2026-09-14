@@ -47,3 +47,26 @@ type UpsertMcpServerRequest struct {
 	Name          string         `json:"name"`
 	Definition    string         `json:"definition"`
 }
+
+// McpEngineStatus describes the pi-mcp-adapter package that connects Pi to MCP
+// servers, plus config files that would take precedence over the mcp.json
+// files Pi Desk edits.
+type McpEngineStatusRequest struct {
+	WorkspacePath string `json:"workspacePath,omitempty"`
+}
+
+type McpEngineStatus struct {
+	Source        string   `json:"source,omitempty"`
+	Installed     bool     `json:"installed"`
+	Enabled       bool     `json:"enabled"`
+	ShadowedPaths []string `json:"shadowedPaths,omitempty"`
+}
+
+// McpImportCandidate is a server found in another host's configuration file
+// (Claude Code, Claude Desktop, Cursor, VS Code). Host carries a display name.
+type McpImportCandidate struct {
+	Host       string `json:"host"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+}

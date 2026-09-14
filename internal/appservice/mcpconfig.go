@@ -23,6 +23,9 @@ import (
 const (
 	maxMcpConfigBytes = 4 << 20
 	maxMcpServerName  = 120
+	// pi-mcp-adapter is Pi's de facto MCP connection engine; Pi Desk edits its
+	// configuration and manages the package installation from the frontend.
+	mcpAdapterPackageFragment = "pi-mcp-adapter"
 )
 
 // McpConfigService edits Pi's global mcp.json. Imported host and project
@@ -168,6 +171,137 @@ func (service *McpConfigService) DeleteMcpServer(request domain.McpServerRequest
 	raw["mcpServers"] = servers
 	delete(raw, "mcp-servers")
 	return writeMcpConfig(path, raw)
+}
+
+// GetMcpEngineStatus reports whether pi-mcp-adapter is installed as a global
+// Pi package and which config files would shadow the mcp.json files this
+// service edits: home-level files beat the global one, and workspace-level
+// .mcp.json / .agents/mcp.json beat the project one (pi-mcp-adapter reads
+// higher-precedence files first).
+func (service *McpConfigService) GetMcpEngineStatus(request domain.McpEngineStatusRequest) (domain.McpEngineStatus, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	status := domain.McpEngineStatus{Enabled: true}
+	if service.agentDirectoryErr != nil || strings.TrimSpace(service.agentDirectory) == "" {
+		return status, nil
+	}
+	packages, err := listPiPackages(filepath.Join(filepath.Clean(service.agentDirectory), "settings.json"), domain.PiPackageScopeGlobal)
+	if err != nil {
+		return domain.McpEngineStatus{}, err
+	}
+	for _, pkg := range packages {
+		if strings.Contains(strings.ToLower(pkg.Source), mcpAdapterPackageFragment) {
+			status.Source, status.Installed, status.Enabled = pkg.Source, true, pkg.Enabled
+			break
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		status.ShadowedPaths = appendExistingFiles(status.ShadowedPaths,
+			filepath.Join(home, ".config", "mcp", "mcp.json"),
+			filepath.Join(home, ".agents", "mcp.json"),
+			filepath.Join(home, ".agents", "mcp", "mcp.json"),
+		)
+	}
+	if root := service.workspaceRoot(request.WorkspacePath); root != "" {
+		status.ShadowedPaths = appendExistingFiles(status.ShadowedPaths,
+			filepath.Join(root, ".mcp.json"),
+			filepath.Join(root, ".agents", "mcp.json"),
+		)
+	}
+	return status, nil
+}
+
+func (service *McpConfigService) workspaceRoot(workspacePath string) string {
+	if strings.TrimSpace(workspacePath) == "" || service.workspaces == nil {
+		return ""
+	}
+	record, err := service.workspaces.ResolvePath(strings.TrimSpace(workspacePath))
+	if err != nil || record.Location.Kind != workspace.KindLocal {
+		return ""
+	}
+	return record.Path
+}
+
+func appendExistingFiles(paths []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
+}
+
+// ListImportableMcpServers scans other hosts' MCP configuration files (JSON
+// only; Codex's TOML is deliberately out of scope) for importable servers.
+func (service *McpConfigService) ListImportableMcpServers() ([]domain.McpImportCandidate, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	candidates := []domain.McpImportCandidate{}
+	for _, source := range mcpImportSources() {
+		for name, definition := range readMcpImportServers(source.path, source.rootKey) {
+			entry, ok := definition.(map[string]any)
+			if !ok || transportCount(entry) != 1 {
+				continue
+			}
+			if _, err := validMcpServerName(name); err != nil {
+				continue
+			}
+			formatted, err := formatMcpDefinition(entry)
+			if err != nil {
+				continue
+			}
+			candidates = append(candidates, domain.McpImportCandidate{Host: source.host, Path: source.path, Name: name, Definition: formatted})
+		}
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		if candidates[left].Host != candidates[right].Host {
+			return candidates[left].Host < candidates[right].Host
+		}
+		return strings.ToLower(candidates[left].Name) < strings.ToLower(candidates[right].Name)
+	})
+	return candidates, nil
+}
+
+type mcpImportSource struct {
+	host    string
+	path    string
+	rootKey string
+}
+
+func mcpImportSources() []mcpImportSource {
+	sources := []mcpImportSource{}
+	if home, err := os.UserHomeDir(); err == nil {
+		sources = append(sources,
+			mcpImportSource{host: "Claude Code", path: filepath.Join(home, ".claude.json"), rootKey: "mcpServers"},
+			mcpImportSource{host: "Cursor", path: filepath.Join(home, ".cursor", "mcp.json"), rootKey: "mcpServers"},
+		)
+	}
+	if configDir, err := os.UserConfigDir(); err == nil {
+		sources = append(sources,
+			mcpImportSource{host: "Claude Desktop", path: filepath.Join(configDir, "Claude", "claude_desktop_config.json"), rootKey: "mcpServers"},
+			mcpImportSource{host: "VS Code", path: filepath.Join(configDir, "Code", "User", "mcp.json"), rootKey: "servers"},
+		)
+	}
+	return sources
+}
+
+// readMcpImportServers is best-effort: missing files, size overruns, JSONC
+// comments, and malformed roots all simply yield no candidates.
+func readMcpImportServers(path string, rootKey string) map[string]any {
+	content, err := os.ReadFile(path)
+	if err != nil || len(content) > maxMcpConfigBytes {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	var root map[string]any
+	if decoder.Decode(&root) != nil || root == nil {
+		return nil
+	}
+	servers, _ := root[rootKey].(map[string]any)
+	return servers
 }
 
 func (service *McpConfigService) globalPath() (string, error) {

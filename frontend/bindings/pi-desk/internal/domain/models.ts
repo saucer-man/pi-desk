@@ -338,6 +338,33 @@ export interface McpConfigSnapshot {
     "servers": McpServerSummary[] | null;
 }
 
+export interface McpEngineStatus {
+    "source"?: string;
+    "installed": boolean;
+    "enabled": boolean;
+    "shadowedPaths"?: string[] | null;
+}
+
+/**
+ * McpEngineStatus describes the pi-mcp-adapter package that connects Pi to MCP
+ * servers, plus config files that would take precedence over the mcp.json
+ * files Pi Desk edits.
+ */
+export interface McpEngineStatusRequest {
+    "workspacePath"?: string;
+}
+
+/**
+ * McpImportCandidate is a server found in another host's configuration file
+ * (Claude Code, Claude Desktop, Cursor, VS Code). Host carries a display name.
+ */
+export interface McpImportCandidate {
+    "host": string;
+    "path": string;
+    "name": string;
+    "definition": string;
+}
+
 export interface McpServer {
     "scope": McpConfigScope;
     "name": string;
