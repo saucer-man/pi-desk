@@ -3294,7 +3294,7 @@ export const useAppStore = defineStore("app", {
           if (payload.reason === "threshold" || payload.reason === "overflow") {
             thread.status = "running";
             this.waitingForOutputByThread[thread.id] = true;
-            this.sessionOperationByThread[thread.id] = tr("topbar.compacting");
+            this.sessionOperationByThread[thread.id] = "Compacting";
           }
           break;
         case "compaction_end":
@@ -3302,7 +3302,7 @@ export const useAppStore = defineStore("app", {
             thread.status = "running";
             this.waitingForOutputByThread[thread.id] = true;
           }
-          if (this.sessionOperationByThread[thread.id] === tr("topbar.compacting")) {
+          if (this.sessionOperationByThread[thread.id] === "Compacting") {
             this.sessionOperationByThread[thread.id] = undefined;
           }
           if (payload.errorMessage) {
