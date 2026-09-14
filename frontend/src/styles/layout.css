@@ -1861,7 +1861,6 @@
   white-space: nowrap;
 }
 
-
 /* Subagent cards follow the pi-desktop delegate row language: an agent name
    chip beside the tool name, a muted task summary, and per-delegate rows with
    status dots and token usage in the expanded body. */
@@ -1950,19 +1949,6 @@
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-}
-
-/* Subagent cards carry a pi-desktop style subtitle naming the delegated agents;
-   it takes the remaining trigger-row space so status and duration stay pinned right. */
-.tool-subtitle {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: calc(11px + var(--font-size-delta));
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .tool-duration {
