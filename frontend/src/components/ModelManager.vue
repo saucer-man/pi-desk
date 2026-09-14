@@ -20,6 +20,20 @@ import ModelQuotaDialog from "./ModelQuotaDialog.vue";
 import ModelTestDialog from "./ModelTestDialog.vue";
 
 const apiOptions = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
+const providerPresetPrefix = "preset:";
+const providerPresets = [
+  { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", api: "openai-completions" },
+  { id: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com", api: "anthropic-messages" },
+  { id: "google", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", api: "google-generative-ai" },
+  { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", api: "openai-completions" },
+  { id: "grok", label: "xAI Grok", baseUrl: "https://api.x.ai/v1", api: "openai-completions" },
+  { id: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", api: "openai-completions" },
+  { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", api: "openai-completions" },
+  { id: "qwen", label: "Alibaba Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", api: "openai-completions" },
+  { id: "kimi", label: "Moonshot Kimi", baseUrl: "https://api.moonshot.cn/v1", api: "openai-completions" },
+  { id: "zhipu", label: "Zhipu GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", api: "openai-completions" },
+  { id: "siliconflow", label: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1", api: "openai-completions" },
+] as const;
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const newProviderValue = "__new_provider__";
 const defaultProviderUserAgent = "codex_cli_rs/0.146.0 (Windows 11.0.26100; x86_64) Terminal";
@@ -227,6 +241,16 @@ function chooseProvider() {
   if (editor.providerChoice === newProviderValue) {
     editor.providerId = "";
     setProviderFields(undefined, true);
+    return;
+  }
+  const preset = editor.providerChoice.startsWith(providerPresetPrefix)
+    ? providerPresets.find((candidate) => candidate.id === editor.providerChoice.slice(providerPresetPrefix.length))
+    : undefined;
+  if (preset) {
+    editor.providerId = preset.id;
+    setProviderFields(undefined, true);
+    editor.baseUrl = preset.baseUrl;
+    editor.api = preset.api;
     return;
   }
   editor.providerId = editor.providerChoice;
@@ -674,6 +698,9 @@ onBeforeUnmount(() => {
             <select :class="ui.select" v-model="editor.providerChoice" @change="chooseProvider">
               <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.id }}</option>
               <option :value="newProviderValue">{{ tr("settings.newProvider") }}</option>
+              <optgroup :label="tr('settings.providerPresets')">
+                <option v-for="preset in providerPresets" :key="preset.id" :value="`${providerPresetPrefix}${preset.id}`">{{ preset.label }}</option>
+              </optgroup>
             </select>
           </label>
           <label class="model-field" :class="ui.field">

@@ -343,4 +343,20 @@ describe("ModelManager", () => {
     expect(wrapper.findAll('input[type="checkbox"]')[0].element).toHaveProperty("checked", true);
     expect(wrapper.findAll('input[type="checkbox"]')[1].element).toHaveProperty("checked", true);
   });
+  it("fills provider fields from a preset selection", async () => {
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    await wrapper.get('button.model-config-add-row').trigger("click");
+    const select = wrapper.get("select");
+    const presetOption = select.findAll("option").find((option) => option.element.value === "preset:deepseek");
+    expect(presetOption).toBeDefined();
+
+    presetOption!.element.selected = true;
+    await select.trigger("change");
+
+    expect((wrapper.get('[data-testid="provider-id"] input, input[data-testid="provider-id"]').element as HTMLInputElement).value).toBe("deepseek");
+    expect((wrapper.get('input[type="url"]').element as HTMLInputElement).value).toBe("https://api.deepseek.com");
+    expect(wrapper.get("form select").findAll("option").filter((option) => option.element.selected)[0]?.element.value).toBe("preset:deepseek");
+  });
 });
