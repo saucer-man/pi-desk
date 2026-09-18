@@ -327,15 +327,37 @@ export enum McpConfigScope {
 };
 
 /**
- * McpConfigSnapshot exposes only Pi-owned configuration layers. Imported host
- * configurations are deliberately not writable from Pi Desk.
+ * McpConfigSnapshot exposes Pi-owned writable layers plus the effective,
+ * read-only configuration resolved by pi-mcp-adapter.
  */
 export interface McpConfigSnapshot {
     "globalPath": string;
     "projectPath"?: string;
     "projectEnabled": boolean;
     "projectNotice"?: string;
+    "adapterNotice"?: string;
     "servers": McpServerSummary[] | null;
+    "effectiveServers": McpEffectiveServer[] | null;
+    "sources": McpConfigSource[] | null;
+}
+
+export interface McpConfigSource {
+    "id": string;
+    "label": string;
+    "path": string;
+    "scope": McpConfigScope;
+    "kind": string;
+    "exists": boolean;
+    "serverCount": number;
+}
+
+export interface McpEffectiveServer {
+    "scope": McpConfigScope;
+    "name": string;
+    "transport": string;
+    "endpoint"?: string;
+    "disabled": boolean;
+    "definition": string;
 }
 
 export interface McpEngineStatus {
@@ -347,8 +369,7 @@ export interface McpEngineStatus {
 
 /**
  * McpEngineStatus describes the pi-mcp-adapter package that connects Pi to MCP
- * servers, plus config files that would take precedence over the mcp.json
- * files Pi Desk edits.
+ * servers, plus shared config files the adapter also reads.
  */
 export interface McpEngineStatusRequest {
     "workspacePath"?: string;
@@ -386,6 +407,27 @@ export interface McpServerSummary {
     "transport": string;
     "endpoint"?: string;
     "disabled": boolean;
+}
+
+export interface McpServerTestResult {
+    "transport": string;
+    "protocolVersion"?: string;
+    "serverName"?: string;
+    "serverVersion"?: string;
+    "capabilities": string[] | null;
+    "tools": McpToolDetail[] | null;
+    "resources": string[] | null;
+    "prompts": string[] | null;
+    "toolCount": number;
+    "resourceCount": number;
+    "promptCount": number;
+    "durationMillis": number;
+}
+
+export interface McpToolDetail {
+    "name": string;
+    "description"?: string;
+    "inputSchema"?: string;
 }
 
 export interface ModelConfigSnapshot {
@@ -964,6 +1006,11 @@ export interface TerminalWriteRequest {
     "data": string;
 }
 
+export interface TestMcpServerRequest {
+    "workspacePath"?: string;
+    "definition": string;
+}
+
 export interface TestModelConfigRequest {
     "baseUrl": string;
     "api": string;
@@ -1057,6 +1104,7 @@ export interface WorkspaceApplication {
 
 export interface WorkspaceRequest {
     "id": string;
+    "path"?: string;
 }
 
 export interface WorkspaceSummary {

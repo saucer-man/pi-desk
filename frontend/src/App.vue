@@ -116,10 +116,10 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
       '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]': !appStore.sidebarCollapsed,
     }"
   >
-    <AppTopbar />
-    <AppSidebar />
+    <AppTopbar v-show="!appStore.settingsOpen" />
+    <AppSidebar v-show="!appStore.settingsOpen" />
     <PaneResizer
-      v-if="!appStore.sidebarCollapsed"
+      v-if="!appStore.settingsOpen && !appStore.sidebarCollapsed"
       side="left"
       :value="appStore.sidebarWidth"
       :min="MIN_SIDEBAR_WIDTH"
@@ -128,13 +128,13 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
       @resize="appStore.setSidebarWidth($event)"
       @commit="appStore.setSidebarWidth($event, true)"
     />
-    <main class="workspace-shell relative z-0 col-start-2 row-start-2 grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-[var(--bg-workspace)]">
+    <main v-show="!appStore.settingsOpen" class="workspace-shell relative z-0 col-start-2 row-start-2 grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-[var(--bg-workspace)]">
       <ScheduledTasksPage v-if="appStore.activePage === 'scheduledTasks'" />
       <ConversationPane v-else />
     </main>
-    <InspectorPanel v-if="appStore.inspectorOpen && appStore.activePage === 'task'" />
+    <InspectorPanel v-if="appStore.inspectorOpen && appStore.activePage === 'task'" v-show="!appStore.settingsOpen" />
     <PaneResizer
-      v-if="appStore.inspectorOpen && appStore.activePage === 'task'"
+      v-if="!appStore.settingsOpen && appStore.inspectorOpen && appStore.activePage === 'task'"
       side="right"
       :value="appStore.inspectorWidth"
       :min="MIN_INSPECTOR_WIDTH"

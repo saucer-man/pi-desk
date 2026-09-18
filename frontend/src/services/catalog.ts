@@ -24,8 +24,8 @@ export const catalogService = {
   async removeWorkspace(id: string): Promise<void> {
     await CatalogService.RemoveWorkspace({ id });
   },
-  async deleteWorkspaceSessions(id: string): Promise<void> {
-    await CatalogService.DeleteWorkspaceSessions({ id });
+  async deleteWorkspaceSessions(id: string, path?: string): Promise<void> {
+    await CatalogService.DeleteWorkspaceSessions(path ? { id, path } : { id });
   },
   async openWorkspace(id: string): Promise<void> {
     await CatalogService.OpenWorkspace({ id });

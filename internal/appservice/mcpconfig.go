@@ -2,19 +2,23 @@ package appservice
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"pi-desk/internal/domain"
+	"pi-desk/internal/processutil"
 	"pi-desk/internal/workspace"
 
 	"github.com/natefinch/atomic"
@@ -26,10 +30,184 @@ const (
 	// pi-mcp-adapter is Pi's de facto MCP connection engine; Pi Desk edits its
 	// configuration and manages the package installation from the frontend.
 	mcpAdapterPackageFragment = "pi-mcp-adapter"
+	mcpTestTimeout            = 20 * time.Second
 )
 
-// McpConfigService edits Pi's global mcp.json. Imported host and project
-// configurations are deliberately outside Pi Desk's writable surface.
+const mcpTestClientScript = `
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { createConnection } from "node:net";
+import { pathToFileURL } from "node:url";
+
+let source = "";
+for await (const chunk of process.stdin) source += chunk;
+const definition = JSON.parse(source);
+const sdkRoot = process.argv[1];
+const sdk = await import(pathToFileURL(join(sdkRoot, "dist", "index.mjs")).href);
+const stdio = await import(pathToFileURL(join(sdkRoot, "dist", "stdio.mjs")).href);
+const interpolate = value => String(value).replace(/\$\{([^}]+)\}/g, (_, name) => process.env[name] ?? "");
+const expandPath = value => value === "~" ? homedir() : value.startsWith("~/") || value.startsWith("~\\") ? join(homedir(), value.slice(2)) : isAbsolute(value) ? value : resolve(value);
+const names = values => values.map(value => String(value).slice(0, 240)).sort().slice(0, 200);
+const toolDetails = tools => tools.map(item => ({
+  name: String(item.name).slice(0, 240),
+  description: String(item.description ?? "").slice(0, 2000),
+  inputSchema: item.inputSchema ? JSON.stringify(item.inputSchema, null, 2).slice(0, 12000) : "",
+})).sort((left, right) => left.name.localeCompare(right.name)).slice(0, 200);
+let client;
+let transport;
+let stderrTail = "";
+
+class SocketTransport {
+  socket;
+  buffer = new sdk.ReadBuffer();
+  constructor(path) { this.path = path; }
+  async start() {
+    await new Promise((accept, reject) => {
+      const socket = createConnection(this.path);
+      this.socket = socket;
+      let connected = false;
+      socket.once("connect", () => { connected = true; accept(); });
+      socket.on("data", chunk => {
+        try {
+          this.buffer.append(chunk);
+          for (let message; (message = this.buffer.readMessage()) !== null;) this.onmessage?.(message);
+        } catch (error) { this.onerror?.(error instanceof Error ? error : new Error(String(error))); }
+      });
+      socket.on("error", error => { if (!connected) reject(error); this.onerror?.(error); });
+      socket.on("close", () => { this.buffer.clear(); this.onclose?.(); });
+    });
+  }
+  async send(message) {
+    if (!this.socket || this.socket.destroyed) throw new Error("MCP socket is not connected");
+    await new Promise((accept, reject) => this.socket.write(sdk.serializeMessage(message), error => error ? reject(error) : accept()));
+  }
+  async close() { this.buffer.clear(); this.socket?.destroy(); }
+}
+
+const makeClient = () => new sdk.Client({ name: "pi-desk-mcp-debugger", version: "1.0.0" });
+const requestOptions = { timeout: 15_000 };
+const connectHttp = async () => {
+  const headers = {};
+  for (const [name, value] of Object.entries(definition.headers ?? {})) headers[name] = interpolate(value);
+  if (definition.auth === "bearer") {
+    const token = definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : definition.bearerToken;
+    if (token) headers.Authorization = "Bearer " + interpolate(token);
+  }
+  const options = Object.keys(headers).length ? { requestInit: { headers } } : {};
+  const url = new URL(interpolate(definition.url));
+  const choices = definition.httpTransport === "sse"
+    ? [sdk.SSEClientTransport]
+    : definition.httpTransport === "streamable-http"
+      ? [sdk.StreamableHTTPClientTransport]
+      : [sdk.StreamableHTTPClientTransport, sdk.SSEClientTransport];
+  const errors = [];
+  for (const Transport of choices) {
+    const nextClient = makeClient();
+    const nextTransport = new Transport(url, options);
+    try {
+      await nextClient.connect(nextTransport, requestOptions);
+      return [nextClient, nextTransport];
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      await nextClient.close().catch(() => {});
+    }
+  }
+  throw new Error(errors.join("; "));
+};
+
+try {
+  if (definition.command) {
+    const env = { ...process.env };
+    for (const [name, value] of Object.entries(definition.env ?? {})) env[name] = interpolate(value);
+    transport = new stdio.StdioClientTransport({
+      command: definition.command,
+      args: (definition.args ?? []).map(interpolate),
+      env,
+      cwd: definition.cwd ? expandPath(interpolate(definition.cwd)) : process.cwd(),
+      stderr: "pipe",
+    });
+    transport.stderr?.on("data", chunk => { stderrTail = (stderrTail + String(chunk)).slice(-4000); });
+    client = makeClient();
+    await client.connect(transport, requestOptions);
+  } else if (definition.url) {
+    [client, transport] = await connectHttp();
+  } else {
+    transport = new SocketTransport(expandPath(interpolate(definition.socket)));
+    client = makeClient();
+    await client.connect(transport, requestOptions);
+  }
+
+  const capabilities = client.getServerCapabilities() ?? {};
+  const [toolResult, resourceResult, promptResult] = await Promise.all([
+    capabilities.tools ? client.listTools(undefined, requestOptions) : { tools: [] },
+    capabilities.resources ? client.listResources(undefined, requestOptions) : { resources: [] },
+    capabilities.prompts ? client.listPrompts(undefined, requestOptions) : { prompts: [] },
+  ]);
+  const server = client.getServerVersion() ?? {};
+  const tools = toolResult.tools ?? [];
+  const resources = resourceResult.resources ?? [];
+  const prompts = promptResult.prompts ?? [];
+  process.stdout.write(JSON.stringify({
+    transport: definition.command ? "stdio" : definition.url ? "http" : "socket",
+    protocolVersion: client.getNegotiatedProtocolVersion?.() ?? "",
+    serverName: server.name ?? "",
+    serverVersion: server.version ?? "",
+    capabilities: Object.keys(capabilities).sort(),
+    tools: toolDetails(tools),
+    resources: names(resources.map(item => item.name || item.uri)),
+    prompts: names(prompts.map(item => item.name)),
+    toolCount: tools.length,
+    resourceCount: resources.length,
+    promptCount: prompts.length,
+  }));
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(message + (stderrTail.trim() ? "\n\nServer stderr:\n" + stderrTail.trim() : ""));
+  process.exitCode = 1;
+} finally {
+  await client?.close().catch(() => {});
+}
+`
+
+const mcpConfigSnapshotScript = `
+import { pathToFileURL } from "node:url";
+const adapter = await import(pathToFileURL(process.argv[1]).href);
+const overridePath = process.argv[2];
+const cwd = process.argv[3];
+const config = adapter.loadMcpConfig(overridePath, cwd);
+const discovery = adapter.getMcpDiscoverySummary(overridePath, cwd);
+const provenance = typeof adapter.getServerProvenance === "function"
+  ? Object.fromEntries(adapter.getServerProvenance(overridePath, cwd))
+  : {};
+const sources = [
+  ...discovery.sources,
+  ...(discovery.imports || [])
+    .filter(source => discovery.hostConfigDiscovery === "on" || (config.imports || []).includes(source.kind))
+    .map(source => ({ ...source, id: "host-" + source.kind, label: source.kind, exists: true, scope: "global", kind: "host" })),
+  ...discovery.agentPlugins.map((plugin, index) => ({
+    id: "agent-plugin-" + index,
+    label: plugin.name || "Agent Plugin",
+    path: plugin.path,
+    exists: true,
+    scope: "global",
+    kind: "plugin",
+    serverCount: plugin.serverCount,
+  })),
+  ...(config.claudePlugins || []).filter(plugin => plugin.mcp).map((plugin, index) => ({
+    id: "claude-plugin-" + index,
+    label: "Claude Plugin",
+    path: plugin.path,
+    exists: true,
+    scope: "project",
+    kind: "plugin",
+    serverCount: 0,
+  })),
+];
+process.stdout.write(JSON.stringify({ servers: config.mcpServers || {}, provenance, sources }));
+`
+
+// McpConfigService edits Pi's global and trusted-workspace MCP configuration.
+// Imported host configurations remain outside Pi Desk's writable surface.
 type McpConfigService struct {
 	agentDirectory    string
 	agentDirectoryErr error
@@ -71,7 +249,98 @@ func (service *McpConfigService) ListMcpServers(request domain.ListMcpServersReq
 		snapshot.Servers = append(snapshot.Servers, projectServers...)
 	}
 	sortMcpServers(snapshot.Servers)
+	projectRoot := ""
+	if enabled {
+		projectRoot = filepath.Dir(filepath.Dir(projectPath))
+	}
+	effective, sources, err := service.loadAdapterMcpConfig(globalPath, projectRoot)
+	if err != nil {
+		snapshot.AdapterNotice = err.Error()
+	} else {
+		snapshot.EffectiveServers = effective
+		snapshot.Sources = sources
+	}
 	return snapshot, nil
+}
+
+type adapterMcpSnapshot struct {
+	Servers    map[string]any                     `json:"servers"`
+	Provenance map[string]adapterServerProvenance `json:"provenance"`
+	Sources    []domain.McpConfigSource           `json:"sources"`
+}
+
+type adapterServerProvenance struct {
+	Kind string `json:"kind"`
+}
+
+func (service *McpConfigService) loadAdapterMcpConfig(globalPath string, projectRoot string) ([]domain.McpEffectiveServer, []domain.McpConfigSource, error) {
+	modulePath := filepath.Join(service.agentDirectory, "npm", "node_modules", "pi-mcp-adapter", "dist", "config.js")
+	if info, err := os.Stat(modulePath); err != nil || !info.Mode().IsRegular() {
+		return nil, nil, nil
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		return nil, nil, errors.New("Node.js is required to read pi-mcp-adapter configuration")
+	}
+	cwd := projectRoot
+	if cwd == "" {
+		cwd = service.agentDirectory
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, node, "--input-type=module", "--eval", mcpConfigSnapshotScript, modulePath, globalPath, cwd)
+	processutil.ConfigureBackground(command)
+	command.Dir = cwd
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, nil, errors.New("reading pi-mcp-adapter configuration timed out")
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, nil, fmt.Errorf("read pi-mcp-adapter configuration: %s", message)
+	}
+	if stdout.Len() > maxMcpConfigBytes {
+		return nil, nil, fmt.Errorf("pi-mcp-adapter configuration exceeds the %d MiB safety limit", maxMcpConfigBytes>>20)
+	}
+	loaded := adapterMcpSnapshot{}
+	if err := json.Unmarshal(stdout.Bytes(), &loaded); err != nil {
+		return nil, nil, fmt.Errorf("parse pi-mcp-adapter configuration: %w", err)
+	}
+	effective := make([]domain.McpEffectiveServer, 0, len(loaded.Servers))
+	for name, definition := range loaded.Servers {
+		if _, err := validMcpServerName(name); err != nil {
+			continue
+		}
+		if _, ok := definition.(map[string]any); !ok {
+			continue
+		}
+		formatted, err := formatMcpDefinition(definition)
+		if err != nil {
+			continue
+		}
+		scope := domain.McpConfigScopeGlobal
+		if loaded.Provenance[name].Kind == "project" {
+			scope = domain.McpConfigScopeProject
+		}
+		effective = append(effective, domain.McpEffectiveServer{McpServerSummary: summarizeMcpServer(scope, name, definition), Definition: formatted})
+	}
+	sort.Slice(effective, func(left, right int) bool {
+		return strings.ToLower(effective[left].Name) < strings.ToLower(effective[right].Name)
+	})
+	if projectRoot == "" {
+		globalSources := loaded.Sources[:0]
+		for _, source := range loaded.Sources {
+			if source.Scope != domain.McpConfigScopeProject {
+				globalSources = append(globalSources, source)
+			}
+		}
+		loaded.Sources = globalSources
+	}
+	return effective, loaded.Sources, nil
 }
 
 func (service *McpConfigService) GetMcpServer(request domain.McpServerRequest) (domain.McpServer, error) {
@@ -173,11 +442,70 @@ func (service *McpConfigService) DeleteMcpServer(request domain.McpServerRequest
 	return writeMcpConfig(path, raw)
 }
 
+// TestMcpServer starts the current editor definition without saving it, then
+// asks the same MCP client library used by pi-mcp-adapter for server metadata.
+func (service *McpConfigService) TestMcpServer(request domain.TestMcpServerRequest) (domain.McpServerTestResult, error) {
+	_, definition, err := parseMcpDefinition(request.Definition)
+	if err != nil {
+		return domain.McpServerTestResult{}, err
+	}
+	clientPackage, err := service.mcpClientPackageDirectory()
+	if err != nil {
+		return domain.McpServerTestResult{}, err
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		return domain.McpServerTestResult{}, errors.New("Node.js is required to test MCP servers")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mcpTestTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, node, "--input-type=module", "--eval", mcpTestClientScript, clientPackage)
+	processutil.ConfigureBackground(command)
+	command.Stdin = strings.NewReader(definition)
+	if root := service.workspaceRoot(request.WorkspacePath); root != "" {
+		command.Dir = root
+	}
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	started := time.Now()
+	if err := command.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return domain.McpServerTestResult{}, fmt.Errorf("MCP connection test timed out after %s", mcpTestTimeout)
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return domain.McpServerTestResult{}, fmt.Errorf("MCP connection test failed: %s", message)
+	}
+
+	result := domain.McpServerTestResult{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return domain.McpServerTestResult{}, fmt.Errorf("read MCP test result: %w", err)
+	}
+	result.DurationMillis = time.Since(started).Milliseconds()
+	return result, nil
+}
+
+func (service *McpConfigService) mcpClientPackageDirectory() (string, error) {
+	if service.agentDirectoryErr != nil {
+		return "", service.agentDirectoryErr
+	}
+	for _, candidate := range []string{
+		filepath.Join(service.agentDirectory, "npm", "node_modules", "@modelcontextprotocol", "client"),
+		filepath.Join(service.agentDirectory, "npm", "node_modules", "pi-mcp-adapter", "node_modules", "@modelcontextprotocol", "client"),
+	} {
+		if info, err := os.Stat(filepath.Join(candidate, "dist", "index.mjs")); err == nil && info.Mode().IsRegular() {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("pi-mcp-adapter is not installed or is incomplete; install or update the MCP connection engine first")
+}
+
 // GetMcpEngineStatus reports whether pi-mcp-adapter is installed as a global
-// Pi package and which config files would shadow the mcp.json files this
-// service edits: home-level files beat the global one, and workspace-level
-// .mcp.json / .agents/mcp.json beat the project one (pi-mcp-adapter reads
-// higher-precedence files first).
+// Pi package and which shared config files pi-mcp-adapter also reads alongside
+// the Pi-owned global and project override files this service edits.
 func (service *McpConfigService) GetMcpEngineStatus(request domain.McpEngineStatusRequest) (domain.McpEngineStatus, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -206,7 +534,6 @@ func (service *McpConfigService) GetMcpEngineStatus(request domain.McpEngineStat
 	if root := service.workspaceRoot(request.WorkspacePath); root != "" {
 		status.ShadowedPaths = appendExistingFiles(status.ShadowedPaths,
 			filepath.Join(root, ".mcp.json"),
-			filepath.Join(root, ".agents", "mcp.json"),
 		)
 	}
 	return status, nil
@@ -287,8 +614,9 @@ func mcpImportSources() []mcpImportSource {
 	return sources
 }
 
-// readMcpImportServers is best-effort: missing files, size overruns, JSONC
-// comments, and malformed roots all simply yield no candidates.
+// readMcpImportServers is best-effort: missing files, size overruns, and
+// malformed roots all simply yield no candidates. Cursor and VS Code configs
+// are often JSONC, so comments are stripped as a fallback before giving up.
 func readMcpImportServers(path string, rootKey string) map[string]any {
 	content, err := os.ReadFile(path)
 	if err != nil || len(content) > maxMcpConfigBytes {
@@ -298,10 +626,63 @@ func readMcpImportServers(path string, rootKey string) map[string]any {
 	decoder.UseNumber()
 	var root map[string]any
 	if decoder.Decode(&root) != nil || root == nil {
-		return nil
+		decoder = json.NewDecoder(bytes.NewReader(stripJSONComments(content)))
+		decoder.UseNumber()
+		if decoder.Decode(&root) != nil || root == nil {
+			return nil
+		}
 	}
 	servers, _ := root[rootKey].(map[string]any)
 	return servers
+}
+
+// stripJSONComments removes // and /* */ comments outside of JSON strings.
+func stripJSONComments(content []byte) []byte {
+	out := make([]byte, 0, len(content))
+	inString, escaped, inLine, inBlock := false, false, false, false
+	for i := 0; i < len(content); i++ {
+		character := content[i]
+		if inLine {
+			if character == '\n' {
+				inLine = false
+				out = append(out, character)
+			}
+			continue
+		}
+		if inBlock {
+			if character == '*' && i+1 < len(content) && content[i+1] == '/' {
+				inBlock = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			out = append(out, character)
+			switch {
+			case escaped:
+				escaped = false
+			case character == '\\':
+				escaped = true
+			case character == '"':
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case character == '"':
+			inString = true
+		case character == '/' && i+1 < len(content) && content[i+1] == '/':
+			inLine = true
+			i++
+			continue
+		case character == '/' && i+1 < len(content) && content[i+1] == '*':
+			inBlock = true
+			i++
+			continue
+		}
+		out = append(out, character)
+	}
+	return out
 }
 
 func (service *McpConfigService) globalPath() (string, error) {

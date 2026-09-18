@@ -158,6 +158,60 @@ func TestCatalogServicePermanentlyDeletesOnlyWorkspaceSessions(t *testing.T) {
 	}
 }
 
+func TestCatalogServicePermanentlyDeletesDiscoveredWorkspaceSessions(t *testing.T) {
+	root := t.TempDir()
+	removedWorkspace := filepath.Join(root, "removed")
+	sessionPath := filepath.Join(root, "workspace.jsonl")
+	otherSessionPath := filepath.Join(root, "other.jsonl")
+	for _, path := range []string{sessionPath, otherSessionPath} {
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := newCatalogService(workspace.NewCatalog(filepath.Join(root, "state.json")), &fakeSessionLister{sessions: []sessionindex.Summary{
+		{Path: sessionPath, CWD: removedWorkspace},
+		{Path: otherSessionPath, CWD: root},
+	}}, nil)
+
+	if err := service.DeleteWorkspaceSessions(domain.WorkspaceRequest{ID: "discovered-session", Path: removedWorkspace}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("discovered workspace session still exists: %v", err)
+	}
+	if _, err := os.Stat(otherSessionPath); err != nil {
+		t.Fatalf("unrelated session was deleted: %v", err)
+	}
+}
+
+func TestCatalogServiceSkipsMissingLocalWorkspacesAndSessions(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing")
+	if err := os.Mkdir(missing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	catalog := workspace.NewCatalog(filepath.Join(root, "state.json"))
+	if _, err := catalog.Add(missing, "deny"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(missing); err != nil {
+		t.Fatal(err)
+	}
+	service := newCatalogService(catalog, &fakeSessionLister{sessions: []sessionindex.Summary{
+		{ID: "missing", Path: "missing.jsonl", CWD: missing},
+		{ID: "existing", Path: "existing.jsonl", CWD: root},
+	}}, nil)
+
+	workspaces, err := service.ListWorkspaces()
+	if err != nil || len(workspaces) != 0 {
+		t.Fatalf("missing workspaces = %#v, %v", workspaces, err)
+	}
+	sessions, err := service.ListSessions(domain.ListSessionsRequest{})
+	if err != nil || len(sessions) != 1 || sessions[0].ID != "existing" {
+		t.Fatalf("existing sessions = %#v, %v", sessions, err)
+	}
+}
+
 func TestCatalogServiceOpensOnlyRegisteredWorkspace(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
@@ -268,18 +322,19 @@ func TestCatalogServiceRejectsWorkspaceWhoseCanonicalBoundaryChanged(t *testing.
 }
 
 func TestCatalogServiceMapsSessions(t *testing.T) {
+	workspacePath := t.TempDir()
 	modified := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	index := &fakeSessionLister{sessions: []sessionindex.Summary{{
-		ID: "session-1", Path: "one.jsonl", CWD: "D:\\repo", Title: "Audit", ModifiedAt: modified, MessageCount: 4,
+		ID: "session-1", Path: "one.jsonl", CWD: workspacePath, Title: "Audit", ModifiedAt: modified, MessageCount: 4,
 	}}}
 	catalog := workspace.NewCatalog(filepath.Join(t.TempDir(), "state.json"))
 	service := newCatalogService(catalog, index, nil)
 
-	sessions, err := service.ListSessions(domain.ListSessionsRequest{WorkspacePath: "D:\\repo"})
+	sessions, err := service.ListSessions(domain.ListSessionsRequest{WorkspacePath: workspacePath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if index.workspace != "D:\\repo" || len(sessions) != 1 || sessions[0].Title != "Audit" || sessions[0].ModifiedAt != modified {
+	if index.workspace != workspacePath || len(sessions) != 1 || sessions[0].Title != "Audit" || sessions[0].ModifiedAt != modified {
 		t.Fatalf("unexpected sessions: %#v", sessions)
 	}
 }
@@ -411,6 +466,21 @@ func TestCatalogServicePersistsDesktopState(t *testing.T) {
 	}
 	if state.ActiveThreadID != "thread-1" || len(state.Threads) != 1 || state.Threads[0].WorkspaceID != workspaceRecord.ID || state.Threads[0].Draft != "continue" || !state.Threads[0].Unread || state.Preferences == nil || state.Preferences.Language != "zh-CN" || state.Preferences.FontFamily != "mono" || state.Preferences.FontSize != 15 || !state.Preferences.OfflineMode || state.Preferences.SidebarWidth != 344 || state.Preferences.InspectorWidth != 468 || state.Preferences.WorkspaceApplication != "vscode" {
 		t.Fatalf("unexpected desktop state: %#v", state)
+	}
+}
+
+func TestCatalogServicePersistsSessionAfterWorkspaceRemoval(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "removed")
+	service := newCatalogService(workspace.NewCatalog(filepath.Join(root, "state.json")), &fakeSessionLister{sessions: []sessionindex.Summary{{Path: "one.jsonl", CWD: workspacePath}}}, nil)
+	state := domain.DesktopState{Threads: []domain.DesktopThreadState{{ID: "thread-1", Title: "History", WorkspacePath: workspacePath, Trust: "deny", Status: "idle", SessionPath: "one.jsonl"}}}
+
+	if err := service.SaveDesktopState(state); err != nil {
+		t.Fatal(err)
+	}
+	state.Threads[0].WorkspacePath = filepath.Join(root, "other")
+	if err := service.SaveDesktopState(state); err == nil {
+		t.Fatal("mismatched unavailable workspace was accepted")
 	}
 }
 

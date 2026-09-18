@@ -81,6 +81,9 @@ func (service *CatalogService) ListWorkspaces() ([]domain.WorkspaceSummary, erro
 	}
 	result := make([]domain.WorkspaceSummary, 0, len(records))
 	for _, record := range records {
+		if record.Location.Kind == workspace.KindLocal && missingLocalDirectory(record.Path) {
+			continue
+		}
 		result = append(result, workspaceSummary(record))
 	}
 	return result, nil
@@ -113,7 +116,11 @@ func (service *CatalogService) RemoveWorkspace(request domain.WorkspaceRequest) 
 func (service *CatalogService) DeleteWorkspaceSessions(request domain.WorkspaceRequest) error {
 	record, err := service.catalog.ResolveID(strings.TrimSpace(request.ID))
 	if err != nil {
-		return err
+		workspacePath := filepath.Clean(strings.TrimSpace(request.Path))
+		if workspacePath == "." || !filepath.IsAbs(workspacePath) {
+			return err
+		}
+		record = workspace.Record{Path: workspacePath, Location: workspace.Location{Kind: workspace.KindLocal}}
 	}
 	workspacePath := ""
 	if record.Location.Kind == workspace.KindLocal {
@@ -246,6 +253,8 @@ func (service *CatalogService) ListSessions(request domain.ListSessionsRequest) 
 			if _, known := knownWorkspaceIDs[summary.AnchorWorkspaceID]; !known {
 				continue
 			}
+		} else if missingLocalDirectory(summary.CWD) {
+			continue
 		}
 		result = append(result, domain.SessionSummary{
 			ID:                summary.ID,
@@ -448,7 +457,10 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) error
 					return errors.New("SSH anchor sessions require a registered remote workspace identity")
 				}
 				canonical, err := workspace.CanonicalDirectory(workspacePath)
-				if err != nil || sessionPathKey(summary.CWD) != sessionPathKey(canonical) {
+				if err != nil {
+					canonical = filepath.Clean(workspacePath)
+				}
+				if !filepath.IsAbs(canonical) || sessionPathKey(summary.CWD) != sessionPathKey(canonical) {
 					return errors.New("session working directory does not match the thread workspace")
 				}
 				workspacePath = canonical
@@ -509,6 +521,11 @@ func sessionPathKey(path string) string {
 		return strings.ToLower(path)
 	}
 	return path
+}
+
+func missingLocalDirectory(path string) bool {
+	info, err := os.Stat(strings.TrimSpace(path))
+	return errors.Is(err, os.ErrNotExist) || err == nil && !info.IsDir()
 }
 
 func sessionTokenUsage(usage sessionindex.TokenUsage) domain.SessionTokenUsage {

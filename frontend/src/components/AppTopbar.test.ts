@@ -106,6 +106,33 @@ describe("AppTopbar", () => {
     expect(wrapper.find(".inspector-toggle").exists()).toBe(true);
   });
 
+  it("navigates backward and forward through visited tasks", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      threads: [
+        { id: "thread-1", title: "First", workspace: "repo", workspacePath: "D:\\repo", trust: "deny", status: "idle", started: false, generation: 0 },
+        { id: "thread-2", title: "Second", workspace: "repo", workspacePath: "D:\\repo", trust: "deny", status: "idle", started: false, generation: 0 },
+      ],
+      activeThreadId: "thread-1",
+    });
+    const wrapper = mount(AppTopbar, { global: { plugins: [pinia] } });
+
+    expect(wrapper.find(".topbar-brand strong").exists()).toBe(false);
+    expect(wrapper.get('[aria-label="Back"]').attributes("disabled")).toBeDefined();
+    store.selectThread("thread-2");
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[aria-label="Back"]').trigger("click");
+    expect(store.activeThreadId).toBe("thread-1");
+    await wrapper.get('[aria-label="Forward"]').trigger("click");
+    expect(store.activeThreadId).toBe("thread-2");
+    store.sidebarCollapsed = true;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[aria-label="Back"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Forward"]').exists()).toBe(false);
+  });
+
   it("shows the scheduled-task context without repository controls", () => {
     const pinia = createPinia();
     setActivePinia(pinia);

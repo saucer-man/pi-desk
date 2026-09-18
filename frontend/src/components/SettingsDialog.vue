@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { BarChart3, BookOpen, Boxes, Copy, Database, Download, ExternalLink, FileText, Info, PlugZap, Puzzle, RefreshCw, RotateCw, Search, Settings2, X } from "lucide-vue-next";
+import { ArrowLeft, BarChart3, BookOpen, Boxes, Copy, Database, Download, ExternalLink, FileText, Info, Palette, PlugZap, Puzzle, RefreshCw, RotateCw, Search, Settings2 } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { PiMaintenanceAction, type PiMaintenanceResult } from "../../bindings/pi-desk/internal/domain";
-import { useModalFocus } from "../composables/useModalFocus";
 import { maintainPi } from "../services/desktop";
 import { useAppStore, type QueueMode, type SettingsSection, type SlashCommand } from "../stores/app";
 import { tr } from "../i18n";
@@ -28,8 +27,6 @@ const maintenanceAction = ref<PiMaintenanceAction | null>(null);
 const maintenanceLoading = ref(false);
 const maintenanceError = ref("");
 const maintenanceResult = ref<PiMaintenanceResult | null>(null);
-const dialog = ref<HTMLElement | null>(null);
-useModalFocus(dialog, () => appStore.closeSettings());
 const filteredResources = computed(() => {
   const query = resourceQuery.value.trim().toLocaleLowerCase();
   return appStore.activeCommands.filter((command) => {
@@ -45,15 +42,25 @@ const resourceCounts = computed(() => ({
 }));
 const runtimeReady = computed(() => appStore.bootstrap?.runtime.state === "ready");
 const runtimeMissing = computed(() => appStore.bootstrap?.runtime.state === "missing");
-const currentProjectPath = computed(() => {
-  const thread = appStore.activeThread;
-  return thread?.workspacePath || appStore.workspaces.find((workspace) => workspace.id === thread?.workspaceId)?.path || "";
-});
 const visibleSettingsError = computed(() => (
   appStore.settingsError.trim().toLocaleLowerCase() === "workspace is not registered"
     ? ""
     : appStore.settingsError
 ));
+const sectionTitle = computed(() => {
+  const keys: Record<SettingsSection, string> = {
+    general: "general",
+    appearance: "appearance",
+    modelManagement: "modelManagement",
+    promptManagement: "promptManagement",
+    skillManagement: "skillManagement",
+    extensionManagement: "extensionManagement",
+    mcpManagement: "mcpServers",
+    statistics: "statistics",
+    resources: "runtimeResources",
+  };
+  return tr(`settings.${keys[section.value]}`);
+});
 
 async function copyRuntimePath() {
   const path = appStore.bootstrap?.runtime.command;
@@ -143,37 +150,38 @@ function sourceIcon(source: SlashCommand["source"]) {
 </script>
 
 <template>
-  <div class="dialog-backdrop" :class="ui.dialogBackdrop" @mousedown.self="appStore.closeSettings()">
-    <section
-      ref="dialog"
-      class="dialog-window settings-dialog"
-      :class="[ui.dialog, ui.dialogWide, ui.settingsControls]"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="settings-title"
-      tabindex="-1"
-    >
-      <header :class="ui.dialogHeader">
-        <div class="settings-title-path">
-          <h2 id="settings-title">{{ tr("settings.title") }}</h2>
-          <span class="settings-project-path" :title="currentProjectPath || tr('settings.noCurrentProject')">{{ tr("settings.currentProjectPath", { path: currentProjectPath || tr("settings.noCurrentProject") }) }}</span>
-        </div>
-        <button class="icon-button" :class="ui.iconButton" type="button" :title="tr('settings.close')" @click="appStore.closeSettings()"><X :size="17" /></button>
-      </header>
-      <div class="dialog-body settings-layout">
+  <section class="settings-dialog settings-page" :class="ui.settingsControls" :aria-label="tr('settings.title')">
+    <div class="settings-drag-region" aria-hidden="true" />
+    <div class="dialog-body settings-layout">
+      <aside class="settings-sidebar">
+        <div class="settings-sidebar-brand" aria-hidden="true">Pi</div>
+        <button data-testid="settings-back" class="settings-back" type="button" @click="appStore.closeSettings()"><ArrowLeft :size="17" /><span>{{ tr("settings.backToWorkspace") }}</span></button>
         <nav class="settings-nav" :aria-label="tr('settings.sections')">
-          <button type="button" :class="{ 'is-active': section === 'general' }" @click="section = 'general'"><Settings2 :size="15" /><span>{{ tr("settings.general") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'modelManagement' }" @click="section = 'modelManagement'"><Database :size="15" /><span>{{ tr("settings.modelManagement") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'promptManagement' }" @click="section = 'promptManagement'"><FileText :size="15" /><span>{{ tr("settings.promptManagement") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'skillManagement' }" @click="section = 'skillManagement'"><BookOpen :size="15" /><span>{{ tr("settings.skillManagement") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'extensionManagement' }" @click="section = 'extensionManagement'"><Puzzle :size="15" /><span>{{ tr("settings.extensionManagement") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'mcpManagement' }" @click="section = 'mcpManagement'"><PlugZap :size="15" /><span>{{ tr("settings.mcpManagement") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'statistics' }" @click="section = 'statistics'"><BarChart3 :size="15" /><span>{{ tr("settings.statistics") }}</span></button>
-          <button type="button" :class="{ 'is-active': section === 'resources' }" @click="section = 'resources'"><Boxes :size="15" /><span>{{ tr("settings.runtimeResources") }}</span></button>
-          <button class="settings-nav-about" type="button" @click="appStore.closeSettings(); appStore.openAbout()"><Info :size="15" /><span>{{ tr("appMenu.about") }}</span></button>
+          <section class="settings-nav-group">
+            <span>{{ tr("settings.basicSettings") }}</span>
+            <button type="button" :class="{ 'is-active': section === 'general' }" @click="section = 'general'"><Settings2 :size="18" /><span>{{ tr("settings.general") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'appearance' }" @click="section = 'appearance'"><Palette :size="18" /><span>{{ tr("settings.appearance") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'modelManagement' }" @click="section = 'modelManagement'"><Database :size="18" /><span>{{ tr("settings.modelManagement") }}</span></button>
+          </section>
+          <section class="settings-nav-group">
+            <span>{{ tr("settings.agentCapabilities") }}</span>
+            <button type="button" :class="{ 'is-active': section === 'promptManagement' }" @click="section = 'promptManagement'"><FileText :size="18" /><span>{{ tr("settings.promptManagement") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'skillManagement' }" @click="section = 'skillManagement'"><BookOpen :size="18" /><span>{{ tr("settings.skillManagement") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'extensionManagement' }" @click="section = 'extensionManagement'"><Puzzle :size="18" /><span>{{ tr("settings.extensionManagement") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'mcpManagement' }" @click="section = 'mcpManagement'"><PlugZap :size="18" /><span>{{ tr("settings.mcpManagement") }}</span></button>
+            <button type="button" :class="{ 'is-active': section === 'resources' }" @click="section = 'resources'"><Boxes :size="18" /><span>{{ tr("settings.runtimeResources") }}</span></button>
+          </section>
+          <section class="settings-nav-group">
+            <span>{{ tr("settings.dataAndStatistics") }}</span>
+            <button type="button" :class="{ 'is-active': section === 'statistics' }" @click="section = 'statistics'"><BarChart3 :size="18" /><span>{{ tr("settings.statistics") }}</span></button>
+          </section>
         </nav>
+        <button class="settings-nav-about" type="button" @click="appStore.closeSettings(); appStore.openAbout()"><Info :size="18" /><span>{{ tr("appMenu.about") }}</span></button>
+      </aside>
 
-        <div v-if="section === 'general'" class="settings-content settings-sections" :class="ui.settingsSections">
+      <main class="settings-main" :aria-label="sectionTitle">
+        <header v-if="section !== 'mcpManagement'" class="settings-view-header"><h1 id="settings-title">{{ sectionTitle }}</h1></header>
+        <div v-if="section === 'appearance'" class="settings-content settings-sections appearance-settings" :class="ui.settingsSections">
           <section>
             <h3>{{ tr("settings.appearance") }}</h3>
             <label class="setting-row setting-row-select" :class="ui.row">
@@ -207,6 +215,9 @@ function sourceIcon(source: SlashCommand["source"]) {
               </select>
             </label>
           </section>
+        </div>
+
+        <div v-else-if="section === 'general'" class="settings-content settings-sections" :class="ui.settingsSections">
           <section class="runtime-settings">
             <h3>{{ tr("settings.runtime") }}</h3>
             <dl>
@@ -287,6 +298,14 @@ function sourceIcon(source: SlashCommand["source"]) {
               <span><strong>{{ tr("settings.notifications") }}</strong><small>{{ tr("settings.notificationsHelp") }}</small></span>
               <input v-model="appStore.notificationsEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
             </label>
+            <div data-testid="sync-local-sessions-row" class="setting-row" :class="ui.row">
+              <span>
+                <strong>{{ tr("sidebar.syncSessions") }}</strong>
+                <small>{{ tr("settings.syncSessionsHelp") }}</small>
+                <small v-if="appStore.sessionSyncError" class="text-[var(--red)]" role="alert">{{ appStore.sessionSyncError }}</small>
+              </span>
+              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.sessionSyncLoading" :aria-busy="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.sessionSyncLoading }" />{{ appStore.sessionSyncLoading ? tr("settings.syncingSessions") : tr("sidebar.syncSessions") }}</button>
+            </div>
             <div data-testid="update-check-row" class="setting-row" :class="ui.row">
               <span><strong>{{ tr("settings.updates") }}</strong><small>{{ tr("settings.updatesHelp") }}</small></span>
               <div class="flex shrink-0 items-center gap-2">
@@ -332,7 +351,7 @@ function sourceIcon(source: SlashCommand["source"]) {
             <p v-if="runtimeError" class="form-error">{{ runtimeError }}</p>
           </div>
         </div>
-      </div>
-    </section>
-  </div>
+      </main>
+    </div>
+  </section>
 </template>

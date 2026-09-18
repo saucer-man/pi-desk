@@ -7,6 +7,8 @@ import type {
   McpImportCandidate,
   McpServer,
   McpServerRequest,
+  McpServerTestResult,
+  TestMcpServerRequest,
   UpsertMcpServerRequest,
 } from "../../bindings/pi-desk/internal/domain";
 
@@ -23,6 +25,9 @@ export const mcpConfigService = {
   delete(request: McpServerRequest): Promise<void> {
     return McpConfigService.DeleteMcpServer(request);
   },
+  test(request: TestMcpServerRequest): Promise<McpServerTestResult> {
+    return McpConfigService.TestMcpServer(request);
+  },
   engineStatus(request: McpEngineStatusRequest): Promise<McpEngineStatus> {
     return McpConfigService.GetMcpEngineStatus(request);
   },
@@ -38,6 +43,8 @@ export type {
   McpImportCandidate,
   McpServer,
   McpServerRequest,
+  McpServerTestResult,
   McpServerSummary,
+  TestMcpServerRequest,
   UpsertMcpServerRequest,
 } from "../../bindings/pi-desk/internal/domain";

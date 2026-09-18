@@ -246,7 +246,7 @@ export interface SlashCommand {
   path?: string;
 }
 
-export type SettingsSection = "general" | "modelManagement" | "promptManagement" | "skillManagement" | "extensionManagement" | "mcpManagement" | "statistics" | "resources";
+export type SettingsSection = "general" | "appearance" | "modelManagement" | "promptManagement" | "skillManagement" | "extensionManagement" | "mcpManagement" | "statistics" | "resources";
 
 interface RpcSlashCommand extends SlashCommand {
   sourceInfo?: {
@@ -1300,8 +1300,11 @@ export const useAppStore = defineStore("app", {
         throw new Error(stopFailure);
       }
       if (stopFailure) throw new Error(stopFailure);
-      if (deleteSessions) await catalogService.deleteWorkspaceSessions(id);
-      await catalogService.removeWorkspace(id);
+      if (deleteSessions) {
+        if (workspace.discovered) await catalogService.deleteWorkspaceSessions(id, workspace.path);
+        else await catalogService.deleteWorkspaceSessions(id);
+      }
+      if (!workspace.discovered) await catalogService.removeWorkspace(id);
       for (const thread of removedThreads) this.removeThreadState(thread.id);
       this.workspaces = this.workspaces.filter((item) => item.id !== id);
       this.scheduledTasks = this.scheduledTasks.filter((task) => task.workspaceId !== id);
@@ -3659,7 +3662,24 @@ export const useAppStore = defineStore("app", {
       this.sessionSyncLoading = true;
       this.sessionSyncError = "";
       try {
-        const sessions = await catalogService.listSessions() as CatalogSession[];
+        const [catalogWorkspaces, sessions] = await Promise.all([
+          catalogService.listWorkspaces(),
+          catalogService.listSessions() as Promise<CatalogSession[]>,
+        ]);
+        this.workspaces = catalogWorkspaces.map((workspace) => ({
+          ...workspace,
+          trust: workspace.trust as "approve" | "deny",
+          discovered: false,
+        }));
+        const sessionPaths = new Set(sessions.filter((session) => session.cwd).map((session) => pathKey(session.path)));
+        const workspaceIDs = new Set(this.workspaces.map((workspace) => workspace.id));
+        for (const thread of [...this.threads]) {
+          if ((thread.sessionFile && !sessionPaths.has(pathKey(thread.sessionFile)))
+            || (!thread.sessionFile && (!thread.workspaceId || !workspaceIDs.has(thread.workspaceId)))) {
+            this.removeThreadState(thread.id);
+          }
+        }
+        this.scheduledTasks = this.scheduledTasks.filter((task) => workspaceIDs.has(task.workspaceId));
         for (const session of sessions) {
           if (!session.cwd) continue;
           let workspace = session.anchorWorkspaceId
@@ -3681,6 +3701,10 @@ export const useAppStore = defineStore("app", {
           const existing = this.threads.find((thread) => thread.sessionFile && pathKey(thread.sessionFile) === sessionFileKey);
           if (existing) {
             existing.title = threadTitleText(session.title) || session.title;
+            existing.workspace = workspace.name;
+            existing.workspaceId = workspace.discovered ? undefined : workspace.id;
+            existing.workspacePath = workspace.path;
+            existing.trust = workspace.trust;
             existing.modifiedAt = session.modifiedAt;
             existing.messageCount = session.messageCount;
             existing.firstMessage = session.firstMessage;

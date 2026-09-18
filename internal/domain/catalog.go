@@ -75,7 +75,8 @@ type RenameWorkspaceRequest struct {
 }
 
 type WorkspaceRequest struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Path string `json:"path,omitempty"`
 }
 
 type WorkspaceApplication struct {

@@ -1128,6 +1128,49 @@ describe("app store", () => {
     expect(mocks.deleteWorkspaceSessions.mock.invocationCallOrder[0]).toBeLessThan(mocks.removeWorkspace.mock.invocationCallOrder[0]);
   });
 
+  it("permanently deletes a discovered workspace by its local path", async () => {
+    const store = useAppStore();
+    store.workspaces = [{ id: "discovered-session-1", name: "removed", path: "D:\\work\\removed", trust: "deny", discovered: true }];
+    store.threads = [{
+      id: "thread-1", title: "Old task", workspace: "removed", workspacePath: "D:\\work\\removed", trust: "deny",
+      status: "idle", started: false, generation: 0, sessionFile: "C:\\sessions\\old.jsonl",
+    }];
+
+    await store.removeWorkspace("discovered-session-1", true);
+
+    expect(mocks.deleteWorkspaceSessions).toHaveBeenCalledWith("discovered-session-1", "D:\\work\\removed");
+    expect(mocks.removeWorkspace).not.toHaveBeenCalled();
+    expect(store.workspaces).toEqual([]);
+    expect(store.threads).toEqual([]);
+  });
+
+  it("removes missing workspaces and sessions during local synchronization", async () => {
+    mocks.listWorkspaces.mockResolvedValueOnce([{ id: "workspace-live", name: "live", path: "D:\\work\\live", trust: "deny" }]);
+    mocks.listSessions.mockResolvedValueOnce([{
+      id: "session-live", path: "C:\\sessions\\live.jsonl", cwd: "D:\\work\\live", title: "Live task",
+      firstMessage: "Keep", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z", messageCount: 1,
+    }]);
+    const store = useAppStore();
+    store.workspaces = [
+      { id: "workspace-live", name: "old live", path: "D:\\work\\live", trust: "deny" },
+      { id: "workspace-missing", name: "missing", path: "D:\\work\\missing", trust: "deny" },
+      { id: "discovered-old", name: "old", path: "D:\\work\\old", trust: "deny", discovered: true },
+    ];
+    store.threads = [
+      { id: "thread-live", title: "Old title", workspace: "old live", workspaceId: "workspace-live", workspacePath: "D:\\work\\live", trust: "deny", status: "idle", started: false, generation: 0, sessionFile: "C:\\sessions\\live.jsonl" },
+      { id: "thread-missing-session", title: "Missing session", workspace: "old", workspacePath: "D:\\work\\old", trust: "deny", status: "idle", started: false, generation: 0, sessionFile: "C:\\sessions\\missing.jsonl" },
+      { id: "thread-missing-workspace", title: "Missing workspace", workspace: "missing", workspaceId: "workspace-missing", workspacePath: "D:\\work\\missing", trust: "deny", status: "idle", started: false, generation: 0 },
+    ];
+    store.activeThreadId = "thread-missing-session";
+
+    await store.syncLocalSessions();
+
+    expect(store.workspaces.map((workspace) => workspace.id)).toEqual(["workspace-live"]);
+    expect(store.threads.map((thread) => thread.id)).toEqual(["thread-live"]);
+    expect(store.threads[0]).toMatchObject({ title: "Live task", workspace: "live", workspaceId: "workspace-live" });
+    expect(store.activeThreadId).toBe("thread-live");
+  });
+
   it("selects a model before Pi starts and applies it after startup", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "approve");

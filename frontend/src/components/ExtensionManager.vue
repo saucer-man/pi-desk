@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { AlertTriangle, Bot, CheckCircle2, Download, Goal, Globe, Monitor, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
+import { AlertTriangle, Bot, Cable, CheckCircle2, Download, Goal, Globe, Monitor, Package, Puzzle, RefreshCw, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 import { PiExtensionOrigin, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
@@ -26,6 +26,8 @@ const packageBusy = ref("");
 const extensions = computed(() => (snapshot.value?.extensions ?? []).filter((extension) => extension.origin !== PiExtensionOrigin.PiExtensionOriginPackage));
 const packages = computed(() => packageSnapshot.value?.packages ?? []);
 const workspacePath = computed(() => appStore.activeThread?.workspacePath ?? "");
+const mcpAdapterPackageSource = "npm:pi-mcp-adapter";
+const mcpAdapterPackage = computed(() => packages.value.find((pkg) => pkg.source.toLowerCase().includes("pi-mcp-adapter")));
 
 function originLabel(origin: string) {
   if (origin === PiExtensionOrigin.PiExtensionOriginGlobal) return tr("settings.extensionOriginGlobal");
@@ -111,6 +113,38 @@ async function setPackageEnabled(pkg: PiPackageSummary) {
   try {
     await piExtensionService.setPackageEnabled({ ...packageRequest(pkg), enabled: !pkg.enabled });
     notice.value = pkg.enabled ? tr("settings.packageDisabled") : tr("settings.packageEnabled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
+  }
+}
+
+async function installMcpAdapter() {
+  if (packageBusy.value) return;
+  packageBusy.value = `install:${PiPackageScope.PiPackageScopeGlobal}:${mcpAdapterPackageSource}`;
+  loadError.value = "";
+  notice.value = "";
+  try {
+    await piExtensionService.installPackage({ source: mcpAdapterPackageSource, scope: PiPackageScope.PiPackageScopeGlobal, workspacePath: workspacePath.value });
+    notice.value = tr("settings.packageInstalled");
+    await loadExtensions();
+  } catch (cause) {
+    loadError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    packageBusy.value = "";
+  }
+}
+
+async function removeMcpAdapter() {
+  const pkg = mcpAdapterPackage.value;
+  if (!pkg || packageBusy.value || !window.confirm(tr("settings.confirmRemovePackage", { source: pkg.source }))) return;
+  packageBusy.value = `remove:${pkg.scope}:${pkg.source}`;
+  loadError.value = "";
+  try {
+    await piExtensionService.removePackage(packageRequest(pkg));
+    notice.value = tr("settings.packageRemoved");
     await loadExtensions();
   } catch (cause) {
     loadError.value = cause instanceof Error ? cause.message : String(cause);
@@ -484,16 +518,49 @@ onMounted(() => { void loadExtensions(); });
           </button>
         </div>
       </div>
+      <div class="extension-feature-row" data-testid="mcp-adapter-extension-row">
+        <Cable :size="18" />
+        <span>
+          <strong>pi-mcp-adapter</strong>
+          <small>{{ tr("settings.mcpAdapterExtensionHelp") }}</small>
+          <code :title="mcpAdapterPackage?.source || mcpAdapterPackageSource">{{ mcpAdapterPackage?.source || mcpAdapterPackageSource }}</code>
+        </span>
+        <em v-if="mcpAdapterPackage?.enabled" class="is-installed"><CheckCircle2 :size="12" />{{ tr("settings.extensionInstalled") }}</em>
+        <em v-else-if="mcpAdapterPackage" class="is-update">{{ tr("settings.mcpDisabled") }}</em>
+        <em v-else>{{ tr("settings.extensionNotInstalled") }}</em>
+        <div class="extension-feature-actions">
+          <button
+            v-if="!mcpAdapterPackage"
+            data-testid="install-mcp-adapter"
+            class="text-button primary" :class="ui.buttonPrimary"
+            type="button"
+            :disabled="Boolean(packageBusy)"
+            @click="void installMcpAdapter()"
+          >
+            <Download :size="14" />{{ packageBusy ? tr("settings.installingPackage" ) : tr("settings.installExtension") }}
+          </button>
+          <button
+            v-else
+            data-testid="remove-mcp-adapter"
+            class="text-button danger" :class="ui.buttonDanger"
+            type="button"
+            :disabled="Boolean(packageBusy)"
+            @click="void removeMcpAdapter()"
+          >
+            <Trash2 :size="14" />{{ tr("settings.removeExtension") }}
+          </button>
+        </div>
+      </div>
       <p class="setting-status">{{ tr("settings.extensionRestartNeeded") }}</p>
       </section>
 
       <p v-if="notice" class="setting-status is-success">{{ notice }}</p>
       <p v-if="loadError" class="form-error">{{ loadError }}</p>
 
-      <section class="installed-extensions" aria-labelledby="pi-packages-title">
+      <section class="installed-extensions" aria-labelledby="installed-extensions-title">
       <header>
-        <strong id="pi-packages-title">{{ tr("settings.piPackages") }}</strong>
-        <span>{{ packages.length }}</span>
+        <strong id="installed-extensions-title">{{ tr("settings.installedExtensions") }}</strong>
+        <span>{{ packages.length + extensions.length }}</span>
       </header>
       <div class="extension-package-install">
         <input :class="ui.input" v-model="packageSource" type="text" spellcheck="false" :placeholder="tr('settings.packageSource')" @keydown.enter.prevent="void installPackage()" />
@@ -504,7 +571,8 @@ onMounted(() => { void loadExtensions(); });
         <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="!packageSource.trim() || Boolean(packageBusy)" @click="void installPackage()"><Download :size="14" />{{ tr("settings.installPackage") }}</button>
       </div>
       <p v-if="packageSnapshot?.projectNotice" class="setting-status">{{ packageSnapshot.projectNotice }}</p>
-      <div v-if="packages.length" class="extension-list">
+      <div v-if="loading" class="settings-empty compact" :class="ui.empty"><RefreshCw :size="17" class="is-spinning" /><span>{{ tr("settings.loadingExtensions") }}</span></div>
+      <div v-else-if="packages.length || extensions.length" class="extension-list">
         <div v-for="pkg in packages" :key="`${pkg.scope}-${pkg.source}`" class="resource-row package-row" :class="ui.listItem">
           <Package :size="15" />
           <span><strong>{{ pkg.source }}</strong><small>{{ pkg.scope === PiPackageScope.PiPackageScopeProject ? tr("settings.packageScopeProject") : tr("settings.packageScopeGlobal") }}</small></span>
@@ -514,17 +582,6 @@ onMounted(() => { void loadExtensions(); });
             <button class="icon-button danger" :class="ui.iconButton" type="button" :title="tr('settings.removePackage')" :disabled="Boolean(packageBusy)" @click="void removePackage(pkg)"><Trash2 :size="14" /></button>
           </div>
         </div>
-      </div>
-      <div v-else-if="!loading" class="settings-empty compact" :class="ui.empty"><Package :size="17" /><span>{{ tr("settings.noPackages") }}</span></div>
-      </section>
-
-      <section class="installed-extensions" aria-labelledby="installed-extensions-title">
-      <header>
-        <strong id="installed-extensions-title">{{ tr("settings.installedExtensions") }}</strong>
-        <span>{{ extensions.length }}</span>
-      </header>
-      <div v-if="loading" class="settings-empty compact" :class="ui.empty"><RefreshCw :size="17" class="is-spinning" /><span>{{ tr("settings.loadingExtensions") }}</span></div>
-      <div v-else-if="extensions.length" class="extension-list">
         <div v-for="extension in extensions" :key="`${extension.origin}-${extension.path || extension.source}`" class="resource-row" :class="ui.listItem">
           <Package v-if="extension.origin === PiExtensionOrigin.PiExtensionOriginPackage" :size="15" />
           <Puzzle v-else :size="15" />

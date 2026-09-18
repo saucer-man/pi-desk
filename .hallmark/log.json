@@ -1,5 +1,14 @@
 [
   {
+    "date": "2026-09-16",
+    "scope": "app-page",
+    "macrostructure": "Workbench",
+    "theme": "codex-zcode-neutral",
+    "enrichment": "none",
+    "variation": "grouped settings rail, centered page title, spacious row cards, compact responsive icon rail",
+    "brief": "Pi Desk ZCode-style settings redesign"
+  },
+  {
     "date": "2026-09-12",
     "scope": "app",
     "macrostructure": "Workbench",

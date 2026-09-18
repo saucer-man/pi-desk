@@ -25,10 +25,12 @@ describe("teleported dialog theme inheritance", () => {
     const tokens = await tokensText();
     expect(tokens).toContain(":root[data-theme=\"light\"],\n.app-shell[data-theme=\"light\"]");
     expect(tokens).toContain(":root[data-theme=\"system\"],\n  .app-shell[data-theme=\"system\"]");
+    expect(tokens).toContain("--bg-settings: #f8f8f8");
   });
 
   it("publishes global font-family and root-size preference tokens", async () => {
     const tokens = await tokensText();
+    expect(tokens).toContain('--font-interface-body: "PingFang SC",');
     expect(tokens).toContain(':root[data-font-family="system"]');
     expect(tokens).toContain(':root[data-font-family="serif"]');
     expect(tokens).toContain(':root[data-font-family="mono"]');

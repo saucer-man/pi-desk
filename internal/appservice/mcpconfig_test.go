@@ -3,6 +3,7 @@ package appservice
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,73 @@ func TestMcpConfigServicePreservesUnknownFieldsAndManagesGlobalConfig(t *testing
 	globalContent, err := os.ReadFile(filepath.Join(agent, "mcp.json"))
 	if err != nil || !strings.Contains(string(globalContent), "toolPrefix") || !strings.Contains(string(globalContent), "X-Test") {
 		t.Fatalf("global unknown fields were not preserved: %v, %s", err, globalContent)
+	}
+}
+
+func TestMcpConfigServiceListsProjectPiOverride(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	projectConfig := filepath.Join(project, ".pi", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte(`{"mcpServers":{"local":{"command":"node","args":["server.js"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsupportedConfig := filepath.Join(project, ".agents", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(unsupportedConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unsupportedConfig, []byte(`{"mcpServers":{"ignored":{"command":"node"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := newMcpConfigService(filepath.Join(root, "agent"), fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
+
+	snapshot, err := service.ListMcpServers(domain.ListMcpServersRequest{WorkspacePath: project})
+	if err != nil || !snapshot.ProjectEnabled || snapshot.ProjectPath != projectConfig || len(snapshot.Servers) != 1 {
+		t.Fatalf("unexpected project MCP snapshot %#v, %v", snapshot, err)
+	}
+	if snapshot.Servers[0].Scope != domain.McpConfigScopeProject || snapshot.Servers[0].Name != "local" {
+		t.Fatalf("unexpected project MCP server %#v", snapshot.Servers[0])
+	}
+}
+
+func TestMcpConfigServiceUsesAdapterEffectiveConfiguration(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node.js is unavailable")
+	}
+	root := t.TempDir()
+	agent := filepath.Join(root, "agent")
+	moduleDirectory := filepath.Join(agent, "npm", "node_modules", "pi-mcp-adapter")
+	if err := os.MkdirAll(filepath.Join(moduleDirectory, "dist"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleDirectory, "package.json"), []byte(`{"type":"module"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	module := `
+export function loadMcpConfig() { return { mcpServers: { shared: { url: "https://example.test/mcp", headers: { "X-Test": "kept" } } } }; }
+export function getMcpDiscoverySummary() { return { sources: [{ id: "shared-project", label: "project standard MCP", path: "PROJECT/.mcp.json", exists: true, scope: "project", kind: "shared", serverCount: 1 }], agentPlugins: [] }; }
+export function getServerProvenance() { return new Map([["shared", { kind: "project" }]]); }
+`
+	if err := os.WriteFile(filepath.Join(moduleDirectory, "dist", "config.js"), []byte(module), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := newMcpConfigService(agent, fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
+
+	snapshot, err := service.ListMcpServers(domain.ListMcpServersRequest{WorkspacePath: project})
+	if err != nil || snapshot.AdapterNotice != "" || len(snapshot.EffectiveServers) != 1 || len(snapshot.Sources) != 1 {
+		t.Fatalf("unexpected adapter MCP snapshot %#v, %v", snapshot, err)
+	}
+	server := snapshot.EffectiveServers[0]
+	if server.Name != "shared" || server.Scope != domain.McpConfigScopeProject || !strings.Contains(server.Definition, "X-Test") {
+		t.Fatalf("unexpected effective MCP server %#v", server)
 	}
 }
 
@@ -79,6 +147,17 @@ func TestMcpConfigServiceRejectsProjectScopeAndUnsafeDefinitions(t *testing.T) {
 	}
 }
 
+func TestMcpConfigServiceTestServerValidatesBeforeStartingClient(t *testing.T) {
+	t.Parallel()
+	service := newMcpConfigService(filepath.Join(t.TempDir(), "agent"), nil)
+	if _, err := service.TestMcpServer(domain.TestMcpServerRequest{Definition: `{"disabled":true}`}); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("expected invalid definition error, got %v", err)
+	}
+	if _, err := service.TestMcpServer(domain.TestMcpServerRequest{Definition: `{"command":"node"}`}); err == nil || !strings.Contains(err.Error(), "install or update") {
+		t.Fatalf("expected missing adapter error, got %v", err)
+	}
+}
+
 func TestMcpConfigServiceEngineStatusDetectsAdapterAndShadowPaths(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
@@ -87,7 +166,7 @@ func TestMcpConfigServiceEngineStatusDetectsAdapterAndShadowPaths(t *testing.T) 
 	if err := os.MkdirAll(agent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agent, "settings.json"), []byte(`{"packages":["npm:other",{"source":"npm:@nicobailon/pi-mcp-adapter@1.2.0"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(agent, "settings.json"), []byte(`{"packages":["npm:other",{"source":"npm:pi-mcp-adapter@1.2.0"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	shadow := filepath.Join(root, ".config", "mcp", "mcp.json")
@@ -98,7 +177,7 @@ func TestMcpConfigServiceEngineStatusDetectsAdapterAndShadowPaths(t *testing.T) 
 		t.Fatal(err)
 	}
 	project := filepath.Join(root, "project")
-	projectShadows := []string{filepath.Join(project, ".mcp.json"), filepath.Join(project, ".agents", "mcp.json")}
+	projectShadows := []string{filepath.Join(project, ".mcp.json")}
 	for _, projectShadow := range projectShadows {
 		if err := os.MkdirAll(filepath.Dir(projectShadow), 0o700); err != nil {
 			t.Fatal(err)
@@ -113,7 +192,7 @@ func TestMcpConfigServiceEngineStatusDetectsAdapterAndShadowPaths(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Installed || !status.Enabled || status.Source != "npm:@nicobailon/pi-mcp-adapter@1.2.0" {
+	if !status.Installed || !status.Enabled || status.Source != "npm:pi-mcp-adapter@1.2.0" {
 		t.Fatalf("unexpected engine status %#v", status)
 	}
 	expectedShadows := append([]string{shadow}, projectShadows...)
@@ -145,7 +224,7 @@ func TestMcpConfigServiceListImportableMcpServersScansHostConfigs(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(cursor), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cursor, []byte(`{"mcpServers":{"git":{"command":"uvx","args":["mcp-server-git"]}}}`), 0o600); err != nil {
+	if err := os.WriteFile(cursor, []byte("// .cursor/mcp.json\n{\"mcpServers\":{\"git\":{\"command\":\"uvx\",\"args\":[\"mcp-server-git\"]}}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

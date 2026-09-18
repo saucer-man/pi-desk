@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { CalendarClock, Check, ChevronDown, ChevronRight, FolderGit2, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
+import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronDown, ChevronRight, FolderGit2, PanelLeftClose, PanelRightOpen } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useAppStore } from "../stores/app";
+import { type AppPage, useAppStore } from "../stores/app";
 import { tr } from "../i18n";
 
 const appStore = useAppStore();
@@ -13,6 +13,48 @@ const workspaceApplicationDisabled = computed(() => !activeWorkspaceApplication.
 const workspaceApplicationTitle = computed(() => workspaceApplicationDisabled.value
   ? tr("topbar.trustToOpen")
   : tr("topbar.openWithApplication", { application: activeWorkspaceApplication.value?.name ?? "" }));
+type NavigationTarget = { page: AppPage; threadId: string };
+const navigationHistory = ref<NavigationTarget[]>([]);
+const navigationIndex = ref(-1);
+let restoringNavigation = false;
+const currentNavigationTarget = computed<NavigationTarget>(() => ({ page: appStore.activePage, threadId: appStore.activeThreadId }));
+
+function sameNavigationTarget(left: NavigationTarget | undefined, right: NavigationTarget): boolean {
+  return left?.page === right.page && left.threadId === right.threadId;
+}
+
+function findNavigationIndex(direction: -1 | 1): number {
+  for (let index = navigationIndex.value + direction; index >= 0 && index < navigationHistory.value.length; index += direction) {
+    const target = navigationHistory.value[index];
+    if (target.page === "scheduledTasks" || appStore.threads.some((thread) => thread.id === target.threadId)) return index;
+  }
+  return -1;
+}
+
+const canNavigateBack = computed(() => findNavigationIndex(-1) >= 0);
+const canNavigateForward = computed(() => findNavigationIndex(1) >= 0);
+
+function navigateHistory(direction: -1 | 1) {
+  const index = findNavigationIndex(direction);
+  if (index < 0) return;
+  const target = navigationHistory.value[index];
+  navigationIndex.value = index;
+  restoringNavigation = true;
+  if (target.page === "scheduledTasks") appStore.openScheduledTasks();
+  else appStore.selectThread(target.threadId);
+  queueMicrotask(() => { restoringNavigation = false; });
+}
+
+watch(currentNavigationTarget, (target) => {
+  if (target.page === "task" && !target.threadId) return;
+  if (restoringNavigation) {
+    restoringNavigation = false;
+    return;
+  }
+  if (sameNavigationTarget(navigationHistory.value[navigationIndex.value], target)) return;
+  navigationHistory.value = [...navigationHistory.value.slice(0, navigationIndex.value + 1), target];
+  navigationIndex.value = navigationHistory.value.length - 1;
+}, { immediate: true });
 
 watch(() => appStore.activeThreadId, () => {
   workspaceApplicationMenuOpen.value = false;
@@ -65,7 +107,10 @@ onBeforeUnmount(() => {
   >
     <div class="topbar-brand flex min-w-0 items-center gap-2 border-r border-[var(--border)] px-3" aria-label="Pi Desk">
       <span class="topbar-brand-mark grid size-6 shrink-0 place-items-center rounded-md bg-[var(--text)] text-xs font-bold tracking-tight text-[var(--bg-workspace)]" aria-hidden="true">Pi</span>
-      <strong class="min-w-0 truncate font-display text-sm font-bold tracking-[-0.01em]">Pi Desk</strong>
+      <div v-if="!appStore.sidebarCollapsed" class="topbar-history flex items-center gap-0.5">
+        <button class="icon-button topbar-history-button" type="button" :title="tr('sidebar.back')" :aria-label="tr('sidebar.back')" :disabled="!canNavigateBack" @click="navigateHistory(-1)"><ArrowLeft :size="18" :stroke-width="1.8" /></button>
+        <button class="icon-button topbar-history-button" type="button" :title="tr('sidebar.forward')" :aria-label="tr('sidebar.forward')" :disabled="!canNavigateForward" @click="navigateHistory(1)"><ArrowRight :size="18" :stroke-width="1.8" /></button>
+      </div>
       <button
         v-if="!appStore.sidebarCollapsed"
         class="icon-button topbar-sidebar-toggle ml-auto inline-grid size-7 shrink-0 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] transition-colors duration-150 ease-out hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--focus)]"

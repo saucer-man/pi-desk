@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --font-interface-body: "Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-interface-body: "PingFang SC", "Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --font-interface-display: var(--font-interface-body);
   --font-interface-reading: var(--font-interface-body);
   --font-sans: var(--font-interface-body);
@@ -22,6 +22,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --bg-app: oklch(15% 0.006 255);
+  --bg-settings: var(--bg-app);
   --bg-sidebar: oklch(13.5% 0.006 255);
   --bg-workspace: oklch(18% 0.006 255);
   --bg-raised: oklch(21% 0.007 255);
@@ -155,6 +156,7 @@
 .app-shell[data-theme="light"] {
   color-scheme: light;
   --bg-app: oklch(97% 0.004 85);
+  --bg-settings: #f8f8f8;
   --bg-sidebar: oklch(95.5% 0.005 255);
   --bg-workspace: oklch(99% 0.003 85);
   --bg-raised: oklch(99% 0.003 85);
@@ -204,6 +206,7 @@
   .app-shell[data-theme="system"] {
     color-scheme: light;
     --bg-app: oklch(97% 0.004 85);
+    --bg-settings: #f8f8f8;
     --bg-sidebar: oklch(95.5% 0.005 255);
     --bg-workspace: oklch(99% 0.003 85);
     --bg-raised: oklch(99% 0.003 85);

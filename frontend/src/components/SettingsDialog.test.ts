@@ -29,14 +29,19 @@ describe("SettingsDialog", () => {
     store.preferencesChanged = vi.fn();
     store.appearanceChanged = vi.fn();
     store.closeSettings = vi.fn();
+    store.syncAndRestoreSessions = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
 
-    expect(wrapper.get(".settings-title-path").text()).toContain("Settings");
-    expect(wrapper.find(".settings-title-path strong").exists()).toBe(false);
-    expect(wrapper.get(".settings-title-path").text()).not.toContain("/ General");
-    expect(wrapper.get(".settings-project-path").text()).toBe("Current project path: None");
+    expect(wrapper.find(".dialog-backdrop").exists()).toBe(false);
+    expect(wrapper.get(".settings-page").attributes("role")).toBeUndefined();
+    expect(wrapper.get("h1").text()).toBe("General");
+    expect(wrapper.find(".settings-page-header").exists()).toBe(false);
+    expect(wrapper.find(".settings-project-path").exists()).toBe(false);
+    expect(wrapper.text()).toContain("Basic settings");
+    expect(wrapper.text()).toContain("Agent capabilities");
+    expect(wrapper.text()).toContain("Data and statistics");
     expect(wrapper.get(".settings-layout").classes()).not.toContain("px-5");
-    expect(wrapper.get(".settings-dialog").classes()).toEqual(expect.arrayContaining([
+    expect(wrapper.get(".settings-page").classes()).toEqual(expect.arrayContaining([
       "[&_.text-button]:!h-[34px]",
       "[&_.text-button]:!min-h-[34px]",
       "[&_.text-button]:!text-sm",
@@ -46,22 +51,32 @@ describe("SettingsDialog", () => {
       "[&_select]:!text-sm",
       "[&_input:not([type=checkbox]):not([type=radio])]:!h-[34px]",
       "[&_input[type=checkbox]]:!size-3.5",
+      "[&_.setting-row>input[type=checkbox]]:!h-[22px]",
+      "[&_.setting-row>input[type=checkbox]]:!w-[38px]",
       "[&_textarea]:!text-sm",
     ]));
-    expect(wrapper.findAll(".appearance-select")).toHaveLength(4);
-    for (const select of wrapper.findAll(".appearance-select")) {
-      expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
-      expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
-    }
+    expect(wrapper.get(".settings-sections").classes()).not.toContain("[&>section]:px-1");
     expect(wrapper.text()).not.toContain("Open a task to start Pi and change runtime behavior.");
     const updateRow = wrapper.get('[data-testid="update-check-row"]');
     expect(updateRow.find('input[type="checkbox"]').exists()).toBe(false);
     expect(updateRow.get('[data-testid="check-updates-now"]').text()).toContain("Check now");
     expect(updateRow.text()).toContain("Not checked");
+    const syncRow = wrapper.get('[data-testid="sync-local-sessions-row"]');
+    expect(syncRow.text()).toContain("Sync local sessions");
+    await syncRow.get("button").trigger("click");
+    expect(store.syncAndRestoreSessions).toHaveBeenCalledOnce();
 
     const checkboxes = wrapper.findAll('input[type="checkbox"]');
     await checkboxes[0].setValue(false);
     await checkboxes[1].setValue(true);
+
+    await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Appearance")!.trigger("click");
+    expect(wrapper.get("h1").text()).toBe("Appearance");
+    expect(wrapper.findAll(".appearance-select")).toHaveLength(4);
+    for (const select of wrapper.findAll(".appearance-select")) {
+      expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
+      expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
+    }
     await wrapper.get('select[aria-label="Theme"]').setValue("light");
     await wrapper.get('select[aria-label="Font"]').setValue("mono");
     await wrapper.get('select[aria-label="Font size"]').setValue("16");
@@ -73,7 +88,7 @@ describe("SettingsDialog", () => {
     expect(store.interfaceFontSize).toBe(16);
     expect(store.preferencesChanged).toHaveBeenCalledTimes(4);
     expect(store.appearanceChanged).toHaveBeenCalledOnce();
-    await wrapper.get('button[title="Close settings"]').trigger("click");
+    await wrapper.get('[data-testid="settings-back"]').trigger("click");
     expect(store.closeSettings).toHaveBeenCalledOnce();
   });
 
@@ -115,7 +130,7 @@ describe("SettingsDialog", () => {
     store.setAutoRetry = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
 
-    expect(wrapper.get(".settings-project-path").text()).toBe("Current project path: D:\\repo");
+    expect(wrapper.find(".settings-project-path").exists()).toBe(false);
 
     await wrapper.get('select[aria-label="Steering queue processing"]').setValue("all");
     await flushPromises();

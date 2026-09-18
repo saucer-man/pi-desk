@@ -8,12 +8,11 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  MessageCirclePlus,
   MoreHorizontal,
   PanelLeftOpen,
   Pencil,
   Plug,
-  Plus,
-  RefreshCw,
   Search,
   Settings,
   Sparkles,
@@ -45,6 +44,8 @@ const taskRenameOpen = ref(false);
 const taskRenameID = ref("");
 const taskRenameValue = ref("");
 const taskRenameInput = ref<HTMLInputElement>();
+const relativeTimeNow = ref(Date.now());
+let relativeTimeTimer: ReturnType<typeof setInterval> | undefined;
 const taskMenuThread = computed(() => appStore.threads.find((thread) => thread.id === taskMenu.value.threadId));
 const taskMenuWorkspace = computed(() => {
   const thread = taskMenuThread.value;
@@ -55,6 +56,21 @@ const taskMenuWorkspace = computed(() => {
 });
 const workspaceMenuItem = computed(() => appStore.workspaces.find((workspace) => workspace.id === workspaceMenu.value.workspaceID));
 const workspaceRemovalItem = computed(() => appStore.workspaces.find((workspace) => workspace.id === workspaceRemovalID.value));
+
+function relativeTime(value?: string): string {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return "";
+  const minutes = Math.max(0, Math.floor((relativeTimeNow.value - timestamp) / 60_000));
+  if (minutes < 1) return tr("sidebar.justNow");
+  if (minutes < 60) return tr("sidebar.relativeMinutes", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return tr("sidebar.relativeHours", { count: hours });
+  const days = Math.floor(hours / 24);
+  if (days < 30) return tr("sidebar.relativeDays", { count: days });
+  const months = Math.floor(days / 30);
+  if (months < 12) return tr("sidebar.relativeMonths", { count: months });
+  return tr("sidebar.relativeYears", { count: Math.floor(months / 12) });
+}
 
 function comparablePath(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "").replaceAll("\\", "/");
@@ -67,13 +83,21 @@ const workspaceGroups = computed(() => appStore.workspaces.map((workspace) => {
     : comparablePath(thread.workspacePath) === comparablePath(workspace.path));
   return { workspace, threads, threadCount: threads.length };
 }).filter((group) => !appStore.searchQuery.trim() || group.threadCount > 0));
+const defaultExpandedWorkspaceID = computed(() => {
+  const activeThread = appStore.activeThread;
+  const activeWorkspace = activeThread && appStore.workspaces.find((workspace) => workspace.kind === "ssh"
+    ? activeThread.workspaceId === workspace.id
+    : comparablePath(activeThread.workspacePath) === comparablePath(workspace.path));
+  return activeWorkspace?.id || workspaceGroups.value.find((group) => group.threadCount > 0)?.workspace.id || "";
+});
 
 watch(() => appStore.searchQuery, (query) => {
   if (query.trim()) void appStore.loadSessionSearchBodies();
 });
 
 function isWorkspaceCollapsed(workspaceID: string): boolean {
-  return collapsedWorkspaceIDs.value[workspaceID] === true;
+  if (appStore.searchQuery.trim()) return false;
+  return collapsedWorkspaceIDs.value[workspaceID] ?? workspaceID !== defaultExpandedWorkspaceID.value;
 }
 
 function toggleWorkspace(workspaceID: string) {
@@ -134,9 +158,9 @@ function closeWorkspaceMenu() {
   workspaceMenu.value.open = false;
 }
 
-async function openWorkspaceRename(target?: { id: string; name: string }) {
-  const workspace = target ?? workspaceMenuItem.value;
-  if (!target) closeWorkspaceMenu();
+async function openWorkspaceRename() {
+  const workspace = workspaceMenuItem.value;
+  closeWorkspaceMenu();
   if (!workspace || workspaceActionID.value) return;
   workspaceRenameID.value = workspace.id;
   workspaceRenameValue.value = workspace.name;
@@ -267,11 +291,13 @@ function onDocumentClick() {
 onMounted(() => {
   document.addEventListener("click", onDocumentClick);
   document.addEventListener("keydown", onDocumentKeydown);
+  relativeTimeTimer = setInterval(() => { relativeTimeNow.value = Date.now(); }, 60_000);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("click", onDocumentClick);
   document.removeEventListener("keydown", onDocumentKeydown);
+  if (relativeTimeTimer) clearInterval(relativeTimeTimer);
 });
 </script>
 
@@ -289,7 +315,7 @@ onBeforeUnmount(() => {
     </button>
     <nav v-else class="primary-nav grid gap-0.5 border-b border-[var(--border)] px-2.5 py-1.5" aria-label="Primary">
       <button v-if="!appStore.sidebarCollapsed" class="new-task-button flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.newTask')" :aria-label="tr('sidebar.newTask')" @click="appStore.openNewTask">
-        <SquarePen :size="17" />
+        <MessageCirclePlus :size="20" :stroke-width="1.7" />
         <span>{{ tr("sidebar.newTask") }}</span>
       </button>
       <button
@@ -301,17 +327,17 @@ onBeforeUnmount(() => {
         :aria-pressed="appStore.activePage === 'scheduledTasks'"
         @click="appStore.openScheduledTasks"
       >
-        <CalendarClock :size="16" />
+        <CalendarClock :size="20" :stroke-width="1.7" />
         <span>{{ tr("sidebar.scheduledTasks") }}</span>
       </button>
       <div class="primary-nav-row flex min-w-0 items-center">
         <button v-if="!appStore.sidebarCollapsed" class="primary-nav-search flex h-8 w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.openSearch')" :aria-label="tr('sidebar.openSearch')" :aria-pressed="appStore.searchOpen" @click="toggleSearch">
-          <Search :size="16" />
+          <Search :size="20" :stroke-width="1.7" />
           <span>{{ tr("sidebar.search") }}</span>
         </button>
       </div>
       <button v-if="!appStore.sidebarCollapsed" class="flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.review')" :aria-label="tr('sidebar.review')" :aria-pressed="appStore.inspectorOpen && appStore.inspectorTab === 'changes'" @click="appStore.toggleInspector('changes')">
-        <FileSearch :size="16" />
+        <FileSearch :size="20" :stroke-width="1.7" />
         <span>{{ tr("sidebar.review") }}</span>
       </button>
     </nav>
@@ -324,15 +350,6 @@ onBeforeUnmount(() => {
     <p v-if="!appStore.sidebarCollapsed && appStore.searchOpen" class="sidebar-search-help mx-5 mt-1 text-[calc(11px+var(--font-size-delta))] leading-relaxed text-[var(--text-muted)]">{{ tr("sidebar.searchHelp") }}</p>
 
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-2.5 pt-1.5">
-      <div class="section-heading flex h-7 items-center justify-between px-2 text-xs font-semibold text-[var(--text-secondary)]">
-        <span class="tracking-[-0.01em]">{{ tr("sidebar.workspaces") }}</span>
-        <div class="section-heading-actions flex items-center gap-0.5">
-          <button class="icon-button inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton" type="button" :title="tr('sidebar.syncSessions')" :disabled="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()">
-            <RefreshCw :size="15" :class="{ 'is-spinning': appStore.sessionSyncLoading }" />
-          </button>
-          <button class="icon-button inline-grid size-7 place-items-center rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]" :class="ui.iconButton" type="button" :title="tr('sidebar.addWorkspace')" @click="appStore.openNewTask"><Plus :size="15" /></button>
-        </div>
-      </div>
       <p v-if="appStore.catalogLoading" class="sidebar-empty mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]">{{ tr("sidebar.loading") }}</p>
       <p v-else-if="!appStore.catalogReady && appStore.catalogError" class="sidebar-empty error-text mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]" :title="appStore.catalogError">{{ tr("sidebar.unavailable") }}</p>
       <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-1">
@@ -358,7 +375,7 @@ onBeforeUnmount(() => {
             :title="group.workspace.kind === 'ssh' ? group.workspace.remoteRoot : group.workspace.path"
             @click="toggleWorkspace(group.workspace.id)"
           >
-            <Folder :size="16" />
+            <Folder :size="18" :stroke-width="1.7" />
             <span class="workspace-name min-w-0 flex-1 truncate">{{ group.workspace.name }}</span>
             <span
               v-if="group.workspace.kind === 'ssh'"
@@ -369,14 +386,6 @@ onBeforeUnmount(() => {
             <span v-if="group.workspace.kind === 'ssh'" class="workspace-kind-tag shrink-0 rounded-full border border-[var(--border-strong)] bg-[var(--bg-workspace)] px-1.5 py-0.5 text-[calc(9px+var(--font-size-delta))] font-semibold text-[var(--text-secondary)]">{{ tr("sidebar.remoteDirectory") }}</span>
           </button>
           <template v-if="group.workspace.id !== workspaceRenameID">
-            <button
-              class="icon-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] opacity-0 hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
-              type="button"
-              :aria-label="tr('sidebar.renameWorkspace')"
-              :title="tr('sidebar.renameWorkspace')"
-              :disabled="Boolean(workspaceActionID)"
-              @click.stop="void openWorkspaceRename(group.workspace)"
-            ><Pencil :size="14" /></button>
             <button
               class="icon-button workspace-menu-button inline-grid size-8 shrink-0 place-items-center rounded-lg border-0 bg-transparent text-[var(--text-muted)] opacity-0 hover:text-[var(--text)] focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50" :class="ui.iconButton"
               type="button"
@@ -399,6 +408,7 @@ onBeforeUnmount(() => {
             @contextmenu.prevent="openTaskMenu($event, thread.id)"
           >
             <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started text-[var(--text)]': thread.started }">{{ thread.title }}</span>
+            <time v-if="relativeTime(thread.modifiedAt || thread.createdAt)" class="thread-time" :datetime="thread.modifiedAt || thread.createdAt">{{ relativeTime(thread.modifiedAt || thread.createdAt) }}</time>
             <span
               v-if="thread.status === 'running' || thread.status === 'starting'"
               class="thread-status size-3.5 shrink-0 rounded-full border-2 border-[var(--border-strong)] border-t-[var(--text-secondary)] motion-reduce:animate-none"

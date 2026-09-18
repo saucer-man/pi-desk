@@ -86,10 +86,13 @@ describe("AppSidebar", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
-    const now = new Date().toISOString();
+    const now = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     store.$patch({
       catalogLoading: false,
-      workspaces: [{ id: "workspace-1", name: "pi-desk", path: "D:\\repo", trust: "deny" }],
+      workspaces: [
+        { id: "workspace-1", name: "pi-desk", path: "D:\\repo", trust: "deny" },
+        { id: "workspace-empty", name: "empty", path: "D:\\empty", trust: "deny" },
+      ],
       threads: [{
         id: "thread-1", title: "Inspect runtime", workspace: "pi-desk", workspacePath: "D:\\repo", trust: "deny",
         status: "idle", started: false, generation: 0, modifiedAt: now,
@@ -101,12 +104,19 @@ describe("AppSidebar", () => {
     expect(wrapper.find(".brand-mark").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Today");
     expect(wrapper.find(".date-heading").exists()).toBe(false);
+    expect(wrapper.find(".section-heading").exists()).toBe(false);
+    expect(wrapper.find('button[title="Sync local sessions"]').exists()).toBe(false);
+    expect(wrapper.find('button[title="Add workspace"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("Inspect runtime");
+    expect(wrapper.findAll(".workspace-row")[1].attributes("aria-expanded")).toBe("false");
+    expect(wrapper.text()).not.toContain("No tasks");
+    expect(wrapper.get(".thread-time").text()).toBe("2h");
     expect(wrapper.get(".workspace-header .workspace-row").find("small").exists()).toBe(false);
     expect(wrapper.get(".workspace-header .workspace-row").find(".row-tail").exists()).toBe(false);
+    expect(wrapper.find('.workspace-header button[aria-label="Rename workspace"]').exists()).toBe(false);
   });
 
-  it("groups remote tasks by WorkspaceID instead of their empty local paths", () => {
+  it("groups remote tasks by WorkspaceID instead of their empty local paths", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const store = useAppStore();
@@ -126,7 +136,10 @@ describe("AppSidebar", () => {
 
     expect(groups[0].text()).toContain("Task A");
     expect(groups[0].text()).not.toContain("Task B");
+    expect(groups[1].text()).not.toContain("Task B");
+    await groups[1].get(".workspace-row").trigger("click");
     expect(groups[1].text()).toContain("Task B");
+    expect(groups[1].text()).not.toContain("Task A");
   });
 
   it("orders workspace tasks by their latest activity and reacts to new replies", async () => {

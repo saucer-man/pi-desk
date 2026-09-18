@@ -1,30 +1,27 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { McpConfigScope, PiPackageScope } from "../../bindings/pi-desk/internal/domain";
+import { McpConfigScope } from "../../bindings/pi-desk/internal/domain";
+import { useAppStore, type WorkspaceSummary } from "../stores/app";
 import McpManager from "./McpManager.vue";
 
-const mcpMocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), engineStatus: vi.fn(), importCandidates: vi.fn() }));
-const extensionMocks = vi.hoisted(() => ({ installPackage: vi.fn(), updatePackage: vi.fn() }));
+const mcpMocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), test: vi.fn(), engineStatus: vi.fn(), importCandidates: vi.fn() }));
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
 vi.mock("../services/modelconfig", () => ({ modelConfigService: { selectable: vi.fn().mockResolvedValue([]) } }));
 vi.mock("../services/mcpconfig", () => ({ mcpConfigService: mcpMocks }));
-vi.mock("../services/extensions", () => ({ piExtensionService: extensionMocks }));
 vi.mock("../services/repository", () => ({ repositoryService: {} }));
 
-function mountManager() {
+function mountManager(workspaces: WorkspaceSummary[] = []) {
   const pinia = createPinia();
   setActivePinia(pinia);
+  useAppStore().workspaces = workspaces;
   return mount(McpManager, { global: { plugins: [pinia] } });
 }
 
 describe("McpManager", () => {
   beforeEach(() => {
     Object.values(mcpMocks).forEach((mock) => mock.mockReset());
-    extensionMocks.installPackage.mockReset();
-    extensionMocks.updatePackage.mockReset();
-    mcpMocks.engineStatus.mockResolvedValue({ installed: true, enabled: true, source: "npm:@nicobailon/pi-mcp-adapter" });
     mcpMocks.importCandidates.mockResolvedValue([]);
   });
 
@@ -46,42 +43,102 @@ describe("McpManager", () => {
 
     expect(wrapper.find(".settings-content-header").exists()).toBe(false);
     expect(wrapper.text()).toContain("docs");
-    const json = wrapper.get("textarea");
-    await json.setValue('{\n  "url": "https://example.test/v2/mcp",\n  "headers": {"X-Test": "value"}\n}\n');
-    await wrapper.get("form").trigger("submit");
+    await wrapper.get(".mcp-server-main").trigger("click");
+    await flushPromises();
+    await wrapper.get('input[placeholder="https://example.com/mcp"]').setValue("https://example.test/v2/mcp");
+    await wrapper.get("[data-testid='mcp-editor']").trigger("submit");
     await flushPromises();
     expect(mcpMocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ originalName: "docs", name: "docs" }));
     expect(JSON.parse(mcpMocks.upsert.mock.calls[0][0].definition).headers).toEqual({ "X-Test": "value" });
   });
 
-  it("shows project MCP availability for the active workspace", async () => {
+  it("uses the selected project path in the new-server scope hint", async () => {
     mcpMocks.list.mockResolvedValue({
       globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json",
+      projectEnabled: true,
+      projectPath: "D:\\repo\\.pi\\mcp.json",
+      servers: [], effectiveServers: [], sources: [],
+    });
+    const wrapper = mountManager([{ id: "repo", name: "repo", path: "D:\\repo", trust: "approve" }]);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mcp-scope-target"]').setValue("D:\\repo");
+    await flushPromises();
+    await wrapper.get('[data-testid="new-mcp-server"]').trigger("click");
+    expect(mcpMocks.list).toHaveBeenLastCalledWith({ workspacePath: "D:\\repo" });
+    expect(wrapper.get(".mcp-editor-scope").text()).toContain("D:\\repo\\.pi\\mcp.json");
+    expect(wrapper.get(".mcp-editor-scope").text()).not.toContain("~/.pi/agent/mcp.json");
+  });
+
+  it("shows every effective server and config source reported by pi-mcp-adapter", async () => {
+    mcpMocks.list.mockResolvedValue({
+      globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json",
+      projectEnabled: true,
+      projectPath: "D:\\repo\\.pi\\mcp.json",
       servers: [],
+      effectiveServers: [{
+        scope: McpConfigScope.McpConfigScopeProject, name: "shared", transport: "http", endpoint: "https://example.test/mcp", disabled: false,
+        definition: '{\n  "url": "https://example.test/mcp"\n}\n',
+      }],
+      sources: [
+        { id: "shared-global", label: "user-global standard MCP", path: "C:\\Users\\dev\\.config\\mcp\\mcp.json", exists: true, scope: McpConfigScope.McpConfigScopeGlobal, kind: "shared", serverCount: 1 },
+        { id: "shared-project", label: "project standard MCP", path: "D:\\repo\\.mcp.json", exists: true, scope: McpConfigScope.McpConfigScopeProject, kind: "shared", serverCount: 1 },
+      ],
+    });
+    const wrapper = mountManager([{ id: "repo", name: "repo", path: "D:\\repo", trust: "approve" }]);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="mcp-scope-target"]').setValue("D:\\repo");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Loaded by adapter");
+    expect(wrapper.text()).toContain("shared");
+    await wrapper.get(".mcp-source-group summary").trigger("click");
+    expect(wrapper.text()).toContain("D:\\repo\\.mcp.json");
+    await wrapper.get(".mcp-effective-row").trigger("click");
+    expect(wrapper.get(".mcp-complete-json textarea").attributes("readonly")).toBeDefined();
+    expect(wrapper.find("button[type='submit']").exists()).toBe(false);
+  });
+
+  it("does not render connection-engine management on the MCP page", async () => {
+    mcpMocks.list.mockResolvedValue({ globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json", servers: [] });
+    const wrapper = mountManager();
+    await flushPromises();
+
+    expect(wrapper.find("[data-testid='mcp-engine']").exists()).toBe(false);
+    expect(mcpMocks.engineStatus).not.toHaveBeenCalled();
+  });
+
+  it("tests the unsaved definition and shows discovered MCP interfaces", async () => {
+    mcpMocks.list.mockResolvedValue({ globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json", servers: [] });
+    mcpMocks.test.mockResolvedValue({
+      transport: "http", protocolVersion: "2026-07-28", serverName: "docs", serverVersion: "1.2.0",
+      capabilities: ["tools", "resources"],
+      tools: [
+        { name: "search", description: "Search documentation", inputSchema: '{\n  "type": "object"\n}' },
+        { name: "read", description: "Read a document", inputSchema: "" },
+      ],
+      resources: ["docs://index"], prompts: [],
+      toolCount: 2, resourceCount: 1, promptCount: 0, durationMillis: 38,
     });
     const wrapper = mountManager();
     await flushPromises();
 
-    expect(mcpMocks.list).toHaveBeenCalledWith({ workspacePath: "" });
-    expect(wrapper.text()).toContain("Global MCP");
-    expect(wrapper.text()).toContain("Project MCP servers require a trusted workspace.");
-    const projectOption = wrapper.findAll("option").find((option) => option.element.value === McpConfigScope.McpConfigScopeProject);
-    expect(projectOption?.attributes("disabled")).toBeDefined();
-  });
-
-  it("offers to install the pi-mcp-adapter engine when missing", async () => {
-    mcpMocks.engineStatus.mockResolvedValue({ installed: false, enabled: false });
-    mcpMocks.list.mockResolvedValue({ globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json", servers: [] });
-    extensionMocks.installPackage.mockResolvedValue({ output: "" });
-    const wrapper = mountManager();
+    await wrapper.get('[data-testid="new-mcp-server"]').trigger("click");
+    await wrapper.findAll(".mcp-editor-tabs button")[1].trigger("click");
+    await wrapper.get(".mcp-complete-json textarea").setValue('{"docs":{"url":"https://example.test/mcp","headers":{"X-Test":"draft"}}}');
+    const testButton = wrapper.findAll("button").find((button) => button.text().includes("Test connection"));
+    await testButton!.trigger("click");
     await flushPromises();
 
-    const card = wrapper.get("[data-testid='mcp-engine']");
-    expect(card.text()).toContain("pi-mcp-adapter is not installed");
-    await card.get("button").trigger("click");
-    await flushPromises();
-    expect(extensionMocks.installPackage).toHaveBeenCalledWith({ scope: PiPackageScope.PiPackageScopeGlobal, source: "npm:@nicobailon/pi-mcp-adapter", workspacePath: "" });
-    expect(mcpMocks.engineStatus).toHaveBeenCalledTimes(2);
+    expect(mcpMocks.test).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: "" }));
+    expect(JSON.parse(mcpMocks.test.mock.calls[0][0].definition)).toEqual({ url: "https://example.test/mcp", headers: { "X-Test": "draft" } });
+    const result = wrapper.get("[data-testid='mcp-test-result']");
+    expect(result.text()).toContain("Connection successful · docs 1.2.0");
+    expect(result.text()).toContain("Search documentation");
+    expect(result.text()).toContain("Input schema");
+    expect(result.get("details pre").text()).toContain('"type": "object"');
+    expect(wrapper.find(".mcp-editor-footer").exists()).toBe(true);
+    expect(mcpMocks.upsert).not.toHaveBeenCalled();
   });
 
   it("imports servers from other hosts and flags configured names", async () => {
@@ -97,8 +154,7 @@ describe("McpManager", () => {
     const wrapper = mountManager();
     await flushPromises();
 
-    const toggle = wrapper.findAll("button").find((button) => button.text().includes("Import from other tools"));
-    await toggle!.trigger("click");
+    await wrapper.get('button[title="Import from other tools"]').trigger("click");
     await flushPromises();
 
     const rows = wrapper.findAll(".mcp-import-row");
