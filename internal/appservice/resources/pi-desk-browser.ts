@@ -14,8 +14,7 @@
  *   tools exist for the model.
  * - Session authorization: the first tool call per session asks the user
  *   through ctx.ui.confirm. Declining keeps every tool disabled.
- * - Domain gate: navigation to non-localhost hosts asks once per host per
- *   session; localhost is always allowed.
+ * - Navigation is unrestricted by design: any http/https URL may be opened.
  * - Kill switch: every tool checks the run's AbortSignal, so the client's
  *   stop button cancels pending actions.
  * - Page content is treated as data, never as instructions.
@@ -133,11 +132,6 @@ function findChromium(): string {
 	throw new Error("No Chromium browser found. Install Google Chrome or Microsoft Edge, then retry.");
 }
 
-function isLocalHost(hostname: string): boolean {
-	const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	return host === "localhost" || host === "127.0.0.1" || host === "::1";
-}
-
 // Parses "ctrl+shift+T" style specs into one CDP key event definition.
 function parseKey(spec: string): { definition: KeyDefinition; modifiers: number } {
 	let modifiers = 0;
@@ -187,7 +181,6 @@ export default function (pi: ExtensionAPI) {
 	let socket: WebSocket | undefined;
 	let pageEnabled = false;
 	let nextCallId = 0;
-	const approvedHosts = new Set<string>();
 	let pendingCalls = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	let loadWaiters: Array<() => void> = [];
 
@@ -462,15 +455,6 @@ export default function (pi: ExtensionAPI) {
 			if (raw !== "about:blank" && parsed.protocol !== "http:" && parsed.protocol !== "https:") {
 				return textResult(`Only http:, https: and about:blank URLs are supported, got: ${parsed.protocol}`);
 			}
-			if (raw !== "about:blank" && !isLocalHost(parsed.hostname) && !approvedHosts.has(parsed.hostname)) {
-				if (!ctx.hasUI) return textResult(`Navigation to ${parsed.hostname} requires a client that can show a confirmation dialog.`);
-				const approved = await ctx.ui.confirm(
-					"Allow navigation",
-					`Allow Pi to open ${parsed.hostname} in the managed browser for the rest of this session?`,
-				);
-				if (!approved) return textResult(`Navigation to ${parsed.hostname} was not approved.`);
-				approvedHosts.add(parsed.hostname);
-			}
 			await ensureBrowser(signal);
 			await ensurePageEnabled();
 			const loaded = waitLoad(NAV_TIMEOUT_MS);
@@ -637,6 +621,5 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async () => {
 		authorized = false;
 		frame = undefined;
-		approvedHosts.clear();
 	});
 }
