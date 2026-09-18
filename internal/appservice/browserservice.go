@@ -60,23 +60,6 @@ func (service *BrowserService) ServiceShutdown() error {
 	return nil
 }
 
-// Status reports whether the panel can attach right now.
-func (service *BrowserService) Status() (domain.BrowserStatus, error) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.client != nil {
-		return domain.BrowserStatus{Attached: true, URL: service.url, Title: service.title, ProfileDir: service.profileDir}, nil
-	}
-	if _, _, err := browser.ReadPortFile(service.profileDir); err != nil {
-		return domain.BrowserStatus{ProfileDir: service.profileDir}, nil
-	}
-	target, err := browser.DiscoverPage(service.profileDir)
-	if err != nil {
-		return domain.BrowserStatus{ProfileDir: service.profileDir}, nil
-	}
-	return domain.BrowserStatus{URL: target.URL, Title: target.Title, ProfileDir: service.profileDir}, nil
-}
-
 // Start attaches to the managed browser and begins the screencast.
 func (service *BrowserService) Start() (domain.BrowserStatus, error) {
 	service.mu.Lock()

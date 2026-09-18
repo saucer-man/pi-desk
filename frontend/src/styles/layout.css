@@ -7919,6 +7919,11 @@ article.mcp-server-row {
   line-height: 1.5;
 }
 
+.browser-empty small {
+  color: var(--text-muted);
+  font-size: calc(10.5px + var(--font-size-delta));
+}
+
 .is-sidebar-collapsed .primary-nav {
   justify-items: center;
   padding: 3px;

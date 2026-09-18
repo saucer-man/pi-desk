@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { Globe, LoaderCircle, Monitor, RefreshCw } from "lucide-vue-next";
+import { Globe, LoaderCircle, RefreshCw } from "lucide-vue-next";
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { browserService, onBrowserEvent, type BrowserEvent } from "../services/browser";
 import { tr } from "../i18n";
@@ -15,6 +15,35 @@ const error = ref("");
 let disposeEvent: (() => void) | undefined;
 let latest: { cssWidth: number; cssHeight: number } | undefined;
 let decodeQueued = false;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let disposed = false;
+
+// The managed browser is launched by the extension on the agent's first
+// browser tool call — usually after this panel has already mounted. Poll
+// until it appears instead of staying stuck on the empty state.
+function poll() {
+  if (disposed || attached.value) return;
+  if (!loading.value) {
+    loading.value = true;
+    void browserService
+      .start()
+      .then((status) => {
+        attached.value = true;
+        url.value = status.url || "";
+        error.value = "";
+      })
+      .catch((cause) => {
+        // "Browser not running" is the expected pre-first-use state, not a failure.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (!/not running/i.test(message)) error.value = message;
+      })
+      .finally(() => {
+        loading.value = false;
+      });
+  }
+  if (disposed || attached.value) return;
+  if (!retryTimer) retryTimer = setTimeout(() => { retryTimer = undefined; poll(); }, 2000);
+}
 
 // The canvas keeps the frame's natural resolution and CSS constrains it, so
 // click mapping only needs the rect-to-image scale plus the frame's
@@ -38,6 +67,7 @@ function handleEvent(event: BrowserEvent) {
   }
   if (event.type === "detached") {
     attached.value = false;
+    poll();
     return;
   }
   if (event.type === "navigated") {
@@ -65,24 +95,6 @@ function handleEvent(event: BrowserEvent) {
       decodeQueued = false;
     };
     image.src = `data:image/jpeg;base64,${event.dataB64}`;
-  }
-}
-
-async function connect() {
-  if (loading.value) return;
-  loading.value = true;
-  error.value = "";
-  try {
-    const status = await browserService.start();
-    attached.value = status.attached;
-    url.value = status.url || "";
-  } catch (cause) {
-    attached.value = false;
-    const message = cause instanceof Error ? cause.message : String(cause);
-    // "Browser not running" is the expected pre-first-use state, not a failure.
-    if (!/not running/i.test(message)) error.value = message;
-  } finally {
-    loading.value = false;
   }
 }
 
@@ -130,10 +142,12 @@ function handleWheel(event: WheelEvent) {
 
 onMounted(() => {
   disposeEvent = onBrowserEvent(handleEvent);
-  void connect();
+  poll();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
+  if (retryTimer) clearTimeout(retryTimer);
   disposeEvent?.();
   void browserService.stop();
 });
@@ -147,7 +161,7 @@ onBeforeUnmount(() => {
       <span v-if="url" class="terminal-cwd" :title="url">{{ url }}</span>
       <div class="terminal-actions">
         <LoaderCircle v-if="loading" :size="14" class="is-spinning" />
-        <button v-else class="icon-button" :class="ui.iconButton" type="button" :title="tr('browser.reconnect')" @click="void connect()"><RefreshCw :size="14" /></button>
+        <button v-else class="icon-button" :class="ui.iconButton" type="button" :title="tr('browser.reconnect')" @click="poll()"><RefreshCw :size="14" /></button>
       </div>
     </div>
     <div class="browser-stage">
@@ -162,10 +176,11 @@ onBeforeUnmount(() => {
         @wheel.prevent="handleWheel($event)"
         @keydown="handleKeydown($event)"
       />
-      <div v-if="!attached && !loading && !error" class="terminal-empty" :class="ui.empty">
+      <div v-if="!attached && !error" class="terminal-empty" :class="ui.empty">
         <div class="browser-empty">
-          <Monitor :size="18" />
-          <span>{{ tr("browser.notRunning") }}</span>
+          <LoaderCircle :size="16" class="is-spinning" />
+          <span>{{ tr("browser.waiting") }}</span>
+          <small>{{ tr("browser.notRunning") }}</small>
         </div>
       </div>
     </div>

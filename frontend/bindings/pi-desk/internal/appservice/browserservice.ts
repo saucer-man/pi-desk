@@ -46,13 +46,6 @@ export function Start(): $CancellablePromise<domain$0.BrowserStatus> {
 }
 
 /**
- * Status reports whether the panel can attach right now.
- */
-export function Status(): $CancellablePromise<domain$0.BrowserStatus> {
-    return $Call.ByID(2637721612);
-}
-
-/**
  * Stop detaches from the managed browser. The browser itself keeps running.
  */
 export function Stop(): $CancellablePromise<void> {

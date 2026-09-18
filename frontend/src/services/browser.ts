@@ -14,9 +14,6 @@ export interface BrowserEvent {
 }
 
 export const browserService = {
-  status(): Promise<BrowserStatus> {
-    return BrowserService.Status();
-  },
   start(): Promise<BrowserStatus> {
     return BrowserService.Start();
   },

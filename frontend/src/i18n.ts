@@ -361,7 +361,8 @@ const messages = {
       live: "Live view of the managed browser",
       disconnected: "Not attached to the managed browser",
       reconnect: "Reconnect",
-      notRunning: "The managed browser is not running yet. Ask Pi in the conversation to use a browser tool, and the live view appears here.",
+      waiting: "Waiting for the managed browser to start…",
+      notRunning: "The managed browser starts when Pi first uses a browser tool in the conversation.",
     },
     settings: {
       title: "Settings",
@@ -1273,7 +1274,8 @@ const messages = {
       live: "受管浏览器实时画面",
       disconnected: "未连接受管浏览器",
       reconnect: "重新连接",
-      notRunning: "受管浏览器尚未运行。在对话中让 Pi 使用浏览器工具后，此处会显示实时画面。",
+      waiting: "等待受管浏览器启动…",
+      notRunning: "受管浏览器会在 Pi 于对话中首次使用浏览器工具时自动启动。",
     },
     settings: {
       title: "设置",
