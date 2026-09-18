@@ -48,6 +48,10 @@ export interface BrowserKeyRequest {
     "modifiers"?: number;
 }
 
+export interface BrowserOpenURLRequest {
+    "url": string;
+}
+
 export interface BrowserStatus {
     "attached": boolean;
     "url"?: string;

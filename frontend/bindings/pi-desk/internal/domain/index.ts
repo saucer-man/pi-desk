@@ -18,6 +18,7 @@ export type {
     BootstrapState,
     BrowserClickRequest,
     BrowserKeyRequest,
+    BrowserOpenURLRequest,
     BrowserStatus,
     BrowserTextInputRequest,
     BrowserWheelRequest,

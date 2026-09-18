@@ -32,6 +32,15 @@ export function Key(request: domain$0.BrowserKeyRequest): $CancellablePromise<vo
 }
 
 /**
+ * OpenURL navigates the managed browser to a URL the user clicked in the
+ * conversation. Unlike agent navigation this is user-initiated, so no domain
+ * gate applies. The panel is expected to auto-activate on the frontend.
+ */
+export function OpenURL(request: domain$0.BrowserOpenURLRequest): $CancellablePromise<domain$0.BrowserStatus> {
+    return $Call.ByID(3772911123, request);
+}
+
+/**
  * Scroll injects a mouse wheel event at CSS-pixel page coordinates.
  */
 export function Scroll(request: domain$0.BrowserWheelRequest): $CancellablePromise<void> {

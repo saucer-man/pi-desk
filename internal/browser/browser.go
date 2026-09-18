@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,9 +23,10 @@ import (
 )
 
 const (
-	portFileName    = "DevToolsActivePort"
-	discoverTimeout = 3 * time.Second
-	callTimeout     = 20 * time.Second
+	portFileName      = "DevToolsActivePort"
+	discoverTimeout   = 3 * time.Second
+	callTimeout       = 20 * time.Second
+	launchWaitTimeout = 15 * time.Second
 )
 
 var ErrBrowserNotRunning = errors.New("managed browser is not running; ask Pi to use a browser tool first")
@@ -71,6 +73,58 @@ type Target struct {
 	PageWS string
 	URL    string
 	Title  string
+}
+
+// Locate finds an installed Chromium executable, preferring Chrome over Edge.
+func Locate() (string, error) {
+	candidates := []struct{ root, rest string }{
+		{os.Getenv("ProgramFiles"), `Google\Chrome\Application\chrome.exe`},
+		{os.Getenv("ProgramFiles(x86)"), `Google\Chrome\Application\chrome.exe`},
+		{os.Getenv("LocalAppData"), `Google\Chrome\Application\chrome.exe`},
+		{os.Getenv("ProgramFiles"), `Microsoft\Edge\Application\msedge.exe`},
+		{os.Getenv("ProgramFiles(x86)"), `Microsoft\Edge\Application\msedge.exe`},
+	}
+	for _, candidate := range candidates {
+		if candidate.root == "" {
+			continue
+		}
+		path := filepath.Join(candidate.root, candidate.rest)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", errors.New("no Chromium browser found; install Google Chrome or Microsoft Edge")
+}
+
+// Launch starts a detached managed Chromium with the dedicated profile and
+// waits for its DevTools endpoint. Safe to race with the extension's own
+// launcher: a second invocation with the same user data directory forwards
+// to the running instance.
+func Launch(profileDir string) (Target, error) {
+	executable, err := Locate()
+	if err != nil {
+		return Target{}, err
+	}
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		return Target{}, fmt.Errorf("create browser profile directory: %w", err)
+	}
+	command := exec.Command(executable,
+		"--remote-debugging-port=0", "--user-data-dir="+profileDir,
+		"--no-first-run", "--no-default-browser-check",
+		"--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
+		"about:blank")
+	if err := command.Start(); err != nil {
+		return Target{}, fmt.Errorf("start managed browser: %w", err)
+	}
+	go func() { _ = command.Wait() }()
+	deadline := time.Now().Add(launchWaitTimeout)
+	for time.Now().Before(deadline) {
+		if target, discoverErr := DiscoverPage(profileDir); discoverErr == nil {
+			return target, nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return Target{}, errors.New("timed out waiting for the managed browser to start")
 }
 
 type cdpTargetInfo struct {

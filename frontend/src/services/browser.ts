@@ -17,6 +17,9 @@ export const browserService = {
   start(): Promise<BrowserStatus> {
     return BrowserService.Start();
   },
+  openUrl(url: string): Promise<BrowserStatus> {
+    return BrowserService.OpenURL({ url });
+  },
   stop(): Promise<void> {
     return BrowserService.Stop();
   },

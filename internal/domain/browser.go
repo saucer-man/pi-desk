@@ -7,6 +7,10 @@ type BrowserStatus struct {
 	ProfileDir string `json:"profileDir,omitempty"`
 }
 
+type BrowserOpenURLRequest struct {
+	URL string `json:"url"`
+}
+
 type BrowserClickRequest struct {
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`

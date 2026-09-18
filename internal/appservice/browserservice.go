@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,28 +71,80 @@ func (service *BrowserService) Start() (domain.BrowserStatus, error) {
 	if service.client != nil {
 		return domain.BrowserStatus{Attached: true, URL: service.url, Title: service.title, ProfileDir: service.profileDir}, nil
 	}
+	_, status, err := service.attachLocked()
+	return status, err
+}
+
+// attachLocked dials the managed browser and starts the screencast, launching
+// the browser when it is not running. The caller must hold service.mu.
+func (service *BrowserService) attachLocked() (*browser.Client, domain.BrowserStatus, error) {
 	target, err := browser.DiscoverPage(service.profileDir)
+	if errors.Is(err, browser.ErrBrowserNotRunning) {
+		target, err = browser.Launch(service.profileDir)
+	}
 	if err != nil {
-		return domain.BrowserStatus{}, err
+		return nil, domain.BrowserStatus{}, err
 	}
 	client, err := browser.Dial(context.Background(), target.PageWS)
 	if err != nil {
-		return domain.BrowserStatus{}, err
+		return nil, domain.BrowserStatus{}, err
 	}
 	client.OnEvent = func(method string, params json.RawMessage) { service.onCDPEvent(client, method, params) }
 	if err := client.Call("Page.enable", nil, nil); err != nil {
 		client.Close()
-		return domain.BrowserStatus{}, err
+		return nil, domain.BrowserStatus{}, err
 	}
 	if err := client.Call("Page.startScreencast", map[string]any{"format": "jpeg", "quality": 60, "maxWidth": 1600, "maxHeight": 1600}, nil); err != nil {
 		client.Close()
-		return domain.BrowserStatus{}, err
+		return nil, domain.BrowserStatus{}, err
 	}
 	service.client = client
 	service.url, service.title = target.URL, target.Title
 	go service.watchClosed(client)
 	service.emit(domain.BrowserEvent{Type: "attached", URL: target.URL, Title: target.Title})
-	return domain.BrowserStatus{Attached: true, URL: target.URL, Title: target.Title, ProfileDir: service.profileDir}, nil
+	return client, domain.BrowserStatus{Attached: true, URL: target.URL, Title: target.Title, ProfileDir: service.profileDir}, nil
+}
+
+// OpenURL navigates the managed browser to a URL the user clicked in the
+// conversation. Unlike agent navigation this is user-initiated, so no domain
+// gate applies. The panel is expected to auto-activate on the frontend.
+func (service *BrowserService) OpenURL(request domain.BrowserOpenURLRequest) (domain.BrowserStatus, error) {
+	raw := strings.TrimSpace(request.URL)
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return domain.BrowserStatus{}, errors.New("only http and https URLs can be opened in the managed browser")
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.emit == nil {
+		return domain.BrowserStatus{}, errors.New("browser service is not ready")
+	}
+	client := service.client
+	if client == nil {
+		if _, _, attachErr := service.attachLocked(); attachErr != nil {
+			return domain.BrowserStatus{}, attachErr
+		}
+		client = service.client
+	}
+	navigate := func(target *browser.Client) error {
+		return target.Call("Page.navigate", map[string]string{"url": raw}, nil)
+	}
+	if err := navigate(client); err != nil {
+		// The browser may have died since attach; relaunch once before failing.
+		client.Close()
+		if service.client == client {
+			service.client = nil
+		}
+		if _, _, attachErr := service.attachLocked(); attachErr != nil {
+			return domain.BrowserStatus{}, err
+		}
+		if err := navigate(service.client); err != nil {
+			return domain.BrowserStatus{}, err
+		}
+	}
+	service.url, service.title = raw, ""
+	service.emit(domain.BrowserEvent{Type: "navigated", URL: raw})
+	return domain.BrowserStatus{Attached: true, URL: raw, ProfileDir: service.profileDir}, nil
 }
 
 // Stop detaches from the managed browser. The browser itself keeps running.
