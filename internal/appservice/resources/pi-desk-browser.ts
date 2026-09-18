@@ -12,15 +12,14 @@
  * Safety model:
  * - The extension is opt-in: pi-desk installs the file, and until then no
  *   tools exist for the model.
- * - Session authorization: the first tool call per session asks the user
- *   through ctx.ui.confirm. Declining keeps every tool disabled.
- * - Navigation is unrestricted by design: any http/https URL may be opened.
+ * - No runtime permission prompts by product decision (2026-09-19): tools
+ *   act immediately once the extension is installed, on any http/https URL.
  * - Kill switch: every tool checks the run's AbortSignal, so the client's
  *   stop button cancels pending actions.
  * - Page content is treated as data, never as instructions.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
@@ -176,7 +175,6 @@ function parseKey(spec: string): { definition: KeyDefinition; modifiers: number 
 }
 
 export default function (pi: ExtensionAPI) {
-	let authorized = false;
 	let frame: Frame | undefined;
 	let socket: WebSocket | undefined;
 	let pageEnabled = false;
@@ -188,25 +186,6 @@ export default function (pi: ExtensionAPI) {
 		if (process.platform !== "win32") {
 			return "Browser tools currently support Windows only.";
 		}
-		return undefined;
-	}
-
-	async function ensureAuthorized(ctx: ExtensionContext, signal: AbortSignal | undefined): Promise<string | undefined> {
-		const guard = guardText();
-		if (guard) return guard;
-		if (signal?.aborted) return "Action cancelled.";
-		if (authorized) return undefined;
-		if (!ctx.hasUI) {
-			return "Browser control requires a client that can show a confirmation dialog. Ask the user to enable it in Pi Desk and retry in that client.";
-		}
-		const approved = await ctx.ui.confirm(
-			"Enable browser control",
-			"Pi will be able to open and operate the managed browser window for the rest of this session. Continue?",
-		);
-		if (!approved) {
-			return "Browser control was not authorized for this session. No pages were opened or operated.";
-		}
-		authorized = true;
 		return undefined;
 	}
 
@@ -442,9 +421,10 @@ export default function (pi: ExtensionAPI) {
 			"If the user's request involves signing in, stop and ask them to sign in inside the managed browser window.",
 		],
 		parameters: NavigateParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			const raw = (params.url ?? "").trim();
 			let parsed: URL;
 			try {
@@ -479,9 +459,10 @@ export default function (pi: ExtensionAPI) {
 			"Prefer fullPage only for reading long content; coordinates are only valid on viewport screenshots.",
 		],
 		parameters: ScreenshotParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			await ensureBrowser(signal);
 			await ensurePageEnabled();
 			const fullPage = params.fullPage === true;
@@ -523,9 +504,10 @@ export default function (pi: ExtensionAPI) {
 			"Use clicks=2 for double click and button='right' for context menus.",
 		],
 		parameters: ClickParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			const invalid = validatePoint(params.x, params.y);
 			if (invalid) return textResult(invalid);
 			const point = pagePoint(params.x, params.y);
@@ -552,9 +534,10 @@ export default function (pi: ExtensionAPI) {
 			"Use browser_key for single keys and shortcuts instead of typing their names.",
 		],
 		parameters: TypeParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			const text = params.text ?? "";
 			if (text.length === 0) return textResult("Nothing to type: text is empty.");
 			if (text.length > MAX_TYPE_CHARS) return textResult(`Text exceeds ${MAX_TYPE_CHARS} characters (${text.length}). Split it into smaller calls.`);
@@ -574,9 +557,10 @@ export default function (pi: ExtensionAPI) {
 			"Focus the right element first; shortcuts go to whatever has keyboard focus.",
 		],
 		parameters: KeyParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			const key = (params.key ?? "").trim();
 			if (!key) return textResult('key is required, for example "ctrl+a".');
 			if (key.length > 64) return textResult("key spec is too long.");
@@ -603,9 +587,10 @@ export default function (pi: ExtensionAPI) {
 			"Use notches to control distance; 3 (default) is roughly a screenful.",
 		],
 		parameters: ScrollParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const denied = await ensureAuthorized(ctx, signal);
-			if (denied) return textResult(denied);
+		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+			const guard = guardText();
+			if (guard) return textResult(guard);
+			if (signal?.aborted) return textResult("Action cancelled.");
 			const invalid = validatePoint(params.x, params.y);
 			if (invalid) return textResult(invalid);
 			const point = pagePoint(params.x, params.y);
@@ -619,7 +604,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async () => {
-		authorized = false;
 		frame = undefined;
 	});
 }

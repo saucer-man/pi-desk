@@ -469,8 +469,6 @@ func TestBundledPiDeskBrowserGuardsBrowserControl(t *testing.T) {
 		`name: "browser_key"`,
 		`name: "browser_scroll"`,
 		`name: "browser_screenshot"`,
-		"ctx.ui.confirm(",
-		"Browser control was not authorized for this session",
 		"signal?.aborted",
 		"process.platform !== \"win32\"",
 		"--remote-debugging-port=0",
@@ -486,10 +484,11 @@ func TestBundledPiDeskBrowserGuardsBrowserControl(t *testing.T) {
 	if strings.Contains(content, "user-data-dir=C:\\Users") {
 		t.Fatal("bundled browser extension must not use the user's daily profile")
 	}
-	// Navigation is unrestricted by product decision (2026-09-19): the
-	// per-domain approval gate must stay removed.
-	if strings.Contains(content, "approvedHosts") || strings.Contains(content, "Allow navigation") {
-		t.Fatal("bundled browser extension must not gate navigation per domain")
+	// No runtime permission prompts by product decision (2026-09-19): tools
+	// act immediately, navigation is unrestricted, and the abort signal
+	// stays as the only runtime kill switch.
+	if strings.Contains(content, "ui.confirm") || strings.Contains(content, "ensureAuthorized") || strings.Contains(content, "approvedHosts") {
+		t.Fatal("bundled browser extension must not gate tools behind permission prompts")
 	}
 }
 
