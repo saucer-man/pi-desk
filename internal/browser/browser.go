@@ -232,14 +232,27 @@ func (client *Client) read() {
 	}
 }
 
-func (client *Client) ackScreencastFrame(params json.RawMessage) {
-	var frame struct {
-		SessionID string `json:"sessionId"`
-	}
-	if json.Unmarshal(params, &frame) != nil || frame.SessionID == "" {
+// notify writes a CDP command without waiting for its reply. The reader
+// goroutine uses it for screencast acks — waiting there would deadlock the
+// read loop against its own response.
+func (client *Client) notify(method string, params any) {
+	payload, err := json.Marshal(cdpMessage{Method: method, Params: mustJSON(params)})
+	if err != nil {
 		return
 	}
-	_ = client.Call("Page.screencastFrameAck", map[string]string{"sessionId": frame.SessionID}, nil)
+	client.connMu.Lock()
+	_ = client.conn.WriteMessage(websocket.TextMessage, payload)
+	client.connMu.Unlock()
+}
+
+func (client *Client) ackScreencastFrame(params json.RawMessage) {
+	var frame struct {
+		SessionID int64 `json:"sessionId"`
+	}
+	if json.Unmarshal(params, &frame) != nil || frame.SessionID == 0 {
+		return
+	}
+	client.notify("Page.screencastFrameAck", map[string]any{"sessionId": frame.SessionID})
 }
 
 func (client *Client) takePending(id int64) chan cdpMessage {

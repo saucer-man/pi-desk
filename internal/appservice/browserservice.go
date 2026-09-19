@@ -89,7 +89,12 @@ func (service *BrowserService) attachLocked() (*browser.Client, domain.BrowserSt
 	if err != nil {
 		return nil, domain.BrowserStatus{}, err
 	}
-	client.OnEvent = func(method string, params json.RawMessage) { service.onCDPEvent(client, method, params) }
+	// Capture emit at attach time: the callback runs on the client's reader
+	// goroutine and must never take service.mu, which the caller holds across
+	// blocking CDP calls — locking here would stall the read loop until its
+	// own responses time out.
+	emit := service.emit
+	client.OnEvent = func(method string, params json.RawMessage) { service.onCDPEvent(emit, method, params) }
 	if err := client.Call("Page.enable", nil, nil); err != nil {
 		client.Close()
 		return nil, domain.BrowserStatus{}, err
@@ -172,12 +177,8 @@ func (service *BrowserService) watchClosed(client *browser.Client) {
 	}
 }
 
-func (service *BrowserService) onCDPEvent(client *browser.Client, method string, params json.RawMessage) {
-	service.mu.Lock()
-	emit := service.emit
-	attached := service.client == client
-	service.mu.Unlock()
-	if emit == nil || !attached {
+func (service *BrowserService) onCDPEvent(emit func(domain.BrowserEvent), method string, params json.RawMessage) {
+	if emit == nil {
 		return
 	}
 	switch method {
