@@ -33,6 +33,13 @@ function firstRuleBody(layout: string, selector: string): string {
 }
 
 describe("application rail alignment", () => {
+  it("keeps the browser flush and centers the empty-page icon", async () => {
+    const layout = await layoutText();
+    expect(firstRuleBody(layout, ".inspector-content.browser-panel")).toMatch(/padding:\s*0/);
+    expect(firstRuleBody(layout, ".browser-toolbar")).toContain("var(--bg-settings)");
+    expect(firstRuleBody(layout, ".browser-toolbar .browser-address")).toContain("var(--bg-card)");
+    expect(firstRuleBody(layout, ".browser-empty > svg")).toMatch(/margin:\s*0 auto 24px/);
+  });
   it("pins both workspace rails to the same grid row without a top offset", async () => {
     const layout = await layoutText();
     const shared = firstRuleBody(layout, `.workspace-shell,
@@ -51,15 +58,29 @@ describe("file preview density", () => {
     const layout = await layoutText();
     expect(firstRuleBody(layout, ".inspector")).toMatch(/grid-template-rows:\s*34px minmax\(0, 1fr\)/);
     expect(firstRuleBody(layout, ".inspector-header")).toMatch(/min-height:\s*34px/);
-    expect(firstRuleBody(layout, ".file-preview-toolbar")).toMatch(/height:\s*34px/);
+    expect(firstRuleBody(layout, ".inspector-file-header.file-preview-toolbar")).toMatch(/height:\s*49px/);
     expect(layout).toMatch(/\.inspector-tabs button\s*{[^}]*display:\s*flex[^}]*align-items:\s*center/s);
-    expect(layout).toMatch(/\.file-preview-toolbar \.file-preview-toolbar-button\s*{[^}]*width:\s*24px !important[^}]*height:\s*24px !important[^}]*padding:\s*0 !important/s);
-    expect(layout).toMatch(/\.file-preview-row\s*{[^}]*grid-template-columns:\s*28px max-content/s);
-    expect(layout).toMatch(/\.file-preview-line-number\s*{[^}]*padding:\s*0[^}]*text-align:\s*left/s);
-    expect(layout).toMatch(/\.file-preview-line-text\s*{[^}]*padding:\s*0 8px/s);
-    expect(layout).toMatch(/\.file-preview-content \.tok-definitionKeyword,[\s\S]*color:\s*var\(--preview-declaration\)/);
-    expect(layout).toMatch(/\.file-preview-content \.tok-definition,[\s\S]*color:\s*var\(--preview-symbol\)/);
-    expect(layout).toMatch(/\.file-preview-content \.tok-string,[\s\S]*color:\s*var\(--preview-string\)/);
+    expect(layout).toMatch(/\.inspector\.is-code-view\s*{[^}]*grid-template-rows:\s*minmax\(0, 1fr\)/s);
+    expect(layout).toMatch(/\.file-preview-row\s*{[^}]*grid-template-columns:\s*48px max-content/s);
+    expect(firstRuleBody(layout, ".file-preview-content")).toMatch(/padding:\s*0 0 12px/);
+    expect(layout).toMatch(/\.file-preview-line-number\s*{[^}]*padding:\s*0 14px 0 0[^}]*text-align:\s*right/s);
+    expect(layout).toMatch(/\.file-preview-line-text\s*{[^}]*padding:\s*0 12px/s);
+    expect(layout).toContain(":is(.file-preview-content, .diff-line-text)");
+    expect(firstRuleBody(layout, ".diff-section pre")).toMatch(/padding:\s*0 0 12px/);
+    expect(firstRuleBody(layout, ".diff-section pre > code")).toMatch(/display:\s*block[^}]*width:\s*max-content[^}]*min-width:\s*100%/s);
+    expect(layout).toMatch(/\.diff-line\s*{[^}]*grid-template-columns:\s*48px max-content/s);
+    expect(layout).toContain('data-code-wrap="wrap"');
+  });
+
+  it("uses the sampled ZCode spreadsheet geometry", async () => {
+    const layout = await layoutText();
+    expect(firstRuleBody(layout, ".file-spreadsheet-preview")).toMatch(/background:\s*var\(--sheet-bg\)/);
+    expect(firstRuleBody(layout, ".spreadsheet-scroll")).toMatch(/overflow:\s*auto/);
+    expect(firstRuleBody(layout, ".spreadsheet-grid")).toMatch(/border-spacing:\s*0/);
+    expect(layout).toMatch(/\.spreadsheet-grid th,[^}]*height:\s*24px[^}]*padding:\s*0 8px[^}]*border-right:\s*1px solid var\(--sheet-border\)/s);
+    expect(firstRuleBody(layout, ".spreadsheet-grid thead th")).toMatch(/position:\s*sticky[^}]*min-width:\s*120px/s);
+    expect(firstRuleBody(layout, ".spreadsheet-grid tbody th")).toMatch(/width:\s*44px[^}]*min-width:\s*44px/s);
+    expect(firstRuleBody(layout, ".spreadsheet-tabs")).toMatch(/min-height:\s*36px[^}]*overflow-x:\s*auto/s);
   });
 });
 
@@ -97,6 +118,13 @@ describe("message editor theme colors", () => {
   });
 });
 
+describe("settings management surfaces", () => {
+  it("keeps the MCP page on the shared settings background", async () => {
+    const layout = await layoutText();
+    expect(layout).toMatch(/\.mcp-config-content\s*{[^}]*background:\s*var\(--bg-settings\)/s);
+  });
+});
+
 describe("skill invocation messages", () => {
   it("renders skill metadata as a compact row that cannot expand the user bubble", async () => {
     const layout = await layoutText();
@@ -113,6 +141,8 @@ describe("streamed assistant output alignment", () => {
     const output = firstRuleBody(layout, ".execution-process-details > .markdown-body");
     expect(output).toMatch(/margin-left:\s*-4px/);
     expect(output).toMatch(/padding:\s*4px 0/);
+    expect(firstRuleBody(layout, ".execution-process > summary")).toMatch(/background:\s*var\(--bg-card\)/);
+    expect(firstRuleBody(layout, ".composer")).toMatch(/background:\s*var\(--bg-composer\)/);
   });
 });
 

@@ -23,8 +23,10 @@
   text-rendering: optimizeLegibility;
   --bg-app: oklch(15% 0.006 255);
   --bg-settings: var(--bg-app);
+  --bg-card: var(--bg-raised);
   --bg-sidebar: oklch(13.5% 0.006 255);
   --bg-workspace: oklch(18% 0.006 255);
+  --bg-conversation: var(--bg-workspace);
   --bg-raised: oklch(21% 0.007 255);
   --bg-hover: oklch(24.5% 0.007 255);
   --bg-active: oklch(28% 0.008 255);
@@ -34,6 +36,10 @@
   --bg-composer: oklch(20% 0.007 255);
   --bg-user-message: oklch(24% 0.007 255);
   --bg-panel: oklch(18% 0.006 255);
+  --panel-surface: var(--bg-panel);
+  --panel-selected: var(--bg-hover);
+  --panel-rule: var(--border);
+  --panel-muted: var(--text-secondary);
   --border: oklch(29% 0.007 255);
   --border-strong: oklch(37% 0.008 255);
   --text: oklch(94% 0.006 255);
@@ -61,14 +67,28 @@
   --diff-delete-text: #edaaa6;
   --diff-hunk-bg: rgb(76 112 151 / 18%);
   --diff-hunk-text: #b0c8e2;
-  --preview-bg: #ffffff;
-  --preview-fg: #585858;
-  --preview-muted: #666666;
-  --preview-keyword: #d53538;
-  --preview-declaration: #751ed9;
-  --preview-symbol: #bd5800;
-  --preview-string: #008809;
-  --preview-operator: #0071ea;
+  --preview-toolbar-bg: #0d1117;
+  --preview-bg: #0d1117;
+  --preview-gutter-bg: #0d1117;
+  --preview-border: #30363d;
+  --preview-fg: #e6edf3;
+  --preview-muted: #8b949e;
+  --preview-keyword: #ff7b72;
+  --preview-declaration: #d2a8ff;
+  --preview-symbol: #ffa657;
+  --preview-string: #a5d6ff;
+  --preview-operator: #79c0ff;
+  --diff-add-gutter-bg: #193c2b;
+  --diff-add-mark: #3fb950;
+  --diff-delete-gutter-bg: #3c2022;
+  --diff-delete-mark: #f85149;
+  --sheet-bg: #0d1117;
+  --sheet-header-bg: #161b22;
+  --sheet-cell-bg: #0d1117;
+  --sheet-border: #30363d;
+  --sheet-text: #e6edf3;
+  --sheet-muted: #8b949e;
+  --sheet-active: #e6edf3;
   --overlay: oklch(8% 0.006 255 / 58%);
   --shadow-menu: 0 10px 28px oklch(8% 0.006 255 / 32%);
   --shadow-raised: 0 1px 2px oklch(8% 0.006 255 / 20%);
@@ -126,6 +146,116 @@
   --dur-long: var(--motion-panel);
 }
 
+.app-shell[data-theme][data-code-theme$="-light"],
+.app-shell[data-theme][data-code-theme="catppuccin-latte"] {
+  --preview-toolbar-bg: #f6f6f6;
+  --preview-bg: #ffffff;
+  --preview-gutter-bg: #ffffff;
+  --preview-border: #e0e0e0;
+  --preview-title: #242424;
+  --diff-add-bg: #e3f2e3;
+  --diff-add-gutter-bg: #e8f3e8;
+  --diff-add-text: #0d9f45;
+  --diff-add-mark: #0dbe4e;
+  --diff-delete-bg: #ffe4e0;
+  --diff-delete-gutter-bg: #fde9e6;
+  --diff-delete-text: #ef3340;
+  --diff-delete-mark: #ff2e3f;
+  --diff-hunk-bg: #efefef;
+  --diff-hunk-text: #7a7a7a;
+  --diff-gap-bg: #f0f0f0;
+}
+
+.app-shell[data-theme][data-code-theme$="-dark"],
+.app-shell[data-theme][data-code-theme="catppuccin-mocha"] {
+  --preview-toolbar-bg: var(--preview-bg);
+  --preview-gutter-bg: var(--preview-bg);
+  --preview-border: rgb(255 255 255 / 12%);
+  --preview-title: var(--preview-fg);
+  --diff-add-bg: rgb(46 160 67 / 20%);
+  --diff-add-gutter-bg: rgb(46 160 67 / 14%);
+  --diff-add-text: #56d364;
+  --diff-add-mark: #3fb950;
+  --diff-delete-bg: rgb(248 81 73 / 20%);
+  --diff-delete-gutter-bg: rgb(248 81 73 / 14%);
+  --diff-delete-text: #ff7b72;
+  --diff-delete-mark: #f85149;
+  --diff-hunk-bg: rgb(110 118 129 / 18%);
+  --diff-hunk-text: #8b949e;
+  --diff-gap-bg: var(--preview-border);
+}
+
+.app-shell[data-theme="light"] {
+  --panel-surface: #ffffff;
+  --panel-selected: #f3f3f3;
+  --panel-rule: #ededed;
+  --panel-muted: #737373;
+  --sheet-bg: #f8f8f8;
+  --sheet-header-bg: #f6f6f6;
+  --sheet-cell-bg: #ffffff;
+  --sheet-border: #e0e0e0;
+  --sheet-text: #242424;
+  --sheet-muted: #747474;
+  --sheet-active: #242424;
+}
+
+@media (prefers-color-scheme: light) {
+  .app-shell[data-theme="system"] {
+    --panel-surface: #ffffff;
+    --panel-selected: #f3f3f3;
+    --panel-rule: #ededed;
+    --panel-muted: #737373;
+    --sheet-bg: #f8f8f8;
+    --sheet-header-bg: #f6f6f6;
+    --sheet-cell-bg: #ffffff;
+    --sheet-border: #e0e0e0;
+    --sheet-text: #242424;
+    --sheet-muted: #747474;
+    --sheet-active: #242424;
+  }
+}
+
+.app-shell[data-code-theme="github-light"] {
+  --preview-fg: #24292f; --preview-muted: #6e7781; --preview-keyword: #cf222e;
+  --preview-declaration: #8250df; --preview-symbol: #953800; --preview-string: #0a3069; --preview-operator: #0550ae;
+}
+.app-shell[data-code-theme="github-dark"] {
+  --preview-bg: #0d1117; --preview-fg: #e6edf3; --preview-muted: #8b949e; --preview-keyword: #ff7b72;
+  --preview-declaration: #d2a8ff; --preview-symbol: #ffa657; --preview-string: #a5d6ff; --preview-operator: #79c0ff;
+}
+.app-shell[data-code-theme="vitesse-light"] {
+  --preview-fg: #393a34; --preview-muted: #a0ada0; --preview-keyword: #ab5959;
+  --preview-declaration: #2f798a; --preview-symbol: #b07d48; --preview-string: #b56959; --preview-operator: #1e754f;
+}
+.app-shell[data-code-theme="vitesse-dark"] {
+  --preview-bg: #121212; --preview-fg: #dbd7caee; --preview-muted: #758575dd; --preview-keyword: #cb7676;
+  --preview-declaration: #4d9375; --preview-symbol: #d4976c; --preview-string: #c98a7d; --preview-operator: #80a665;
+}
+.app-shell[data-code-theme="minimal-light"] {
+  --preview-fg: #2f2f2f; --preview-muted: #8a8a8a; --preview-keyword: #d53538;
+  --preview-declaration: #751ed9; --preview-symbol: #bd5800; --preview-string: #008809; --preview-operator: #0071ea;
+}
+.app-shell[data-code-theme="minimal-dark"] {
+  --preview-bg: #161616; --preview-fg: #e8e8e8; --preview-muted: #858585; --preview-keyword: #ff6b73;
+  --preview-declaration: #c09aff; --preview-symbol: #ff9960; --preview-string: #76c995; --preview-operator: #70b7ff;
+}
+.app-shell[data-code-theme="github-hc-light"] {
+  --preview-bg: #ffffff; --preview-fg: #0e1116; --preview-muted: #57606a; --preview-keyword: #a0111f;
+  --preview-declaration: #6639ba; --preview-symbol: #702c00; --preview-string: #032f62; --preview-operator: #0349b4;
+}
+.app-shell[data-code-theme="github-hc-dark"] {
+  --preview-bg: #0a0c10; --preview-fg: #f0f3f6; --preview-muted: #9ea7b3; --preview-keyword: #ff9492;
+  --preview-declaration: #dbb7ff; --preview-symbol: #ffb757; --preview-string: #addcff; --preview-operator: #91cbff;
+}
+.app-shell[data-code-theme="catppuccin-latte"] {
+  --preview-bg: #eff1f5; --preview-fg: #4c4f69; --preview-muted: #8c8fa1; --preview-keyword: #d20f39;
+  --preview-declaration: #8839ef; --preview-symbol: #fe640b; --preview-string: #40a02b; --preview-operator: #1e66f5;
+}
+.app-shell[data-code-theme="catppuccin-mocha"] {
+  --preview-bg: #1e1e2e; --preview-fg: #cdd6f4; --preview-muted: #7f849c; --preview-keyword: #f38ba8;
+  --preview-declaration: #cba6f7; --preview-symbol: #fab387; --preview-string: #a6e3a1; --preview-operator: #89b4fa;
+}
+
 :root[data-font-family="system"] {
   --font-interface-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   --font-interface-display: var(--font-interface-body);
@@ -157,15 +287,17 @@
   color-scheme: light;
   --bg-app: oklch(97% 0.004 85);
   --bg-settings: #f8f8f8;
+  --bg-card: #ffffff;
   --bg-sidebar: oklch(95.5% 0.005 255);
   --bg-workspace: oklch(99% 0.003 85);
+  --bg-conversation: #f8f8f8;
   --bg-raised: oklch(99% 0.003 85);
   --bg-hover: oklch(94.5% 0.006 255);
   --bg-active: oklch(91.5% 0.007 255);
   --bg-selected: oklch(92% 0.028 255);
   --bg-menu: oklch(99% 0.003 85);
   --bg-code: oklch(97% 0.004 85);
-  --bg-composer: oklch(99% 0.003 85);
+  --bg-composer: var(--bg-card);
   --bg-user-message: oklch(94.5% 0.005 85);
   --bg-panel: oklch(99% 0.003 85);
   --border: oklch(90% 0.006 255);
@@ -207,15 +339,17 @@
     color-scheme: light;
     --bg-app: oklch(97% 0.004 85);
     --bg-settings: #f8f8f8;
+    --bg-card: #ffffff;
     --bg-sidebar: oklch(95.5% 0.005 255);
     --bg-workspace: oklch(99% 0.003 85);
+    --bg-conversation: #f8f8f8;
     --bg-raised: oklch(99% 0.003 85);
     --bg-hover: oklch(94.5% 0.006 255);
     --bg-active: oklch(91.5% 0.007 255);
     --bg-selected: oklch(92% 0.028 255);
     --bg-menu: oklch(99% 0.003 85);
     --bg-code: oklch(97% 0.004 85);
-    --bg-composer: oklch(99% 0.003 85);
+    --bg-composer: var(--bg-card);
     --bg-user-message: oklch(94.5% 0.005 85);
     --bg-panel: oklch(99% 0.003 85);
     --border: oklch(90% 0.006 255);

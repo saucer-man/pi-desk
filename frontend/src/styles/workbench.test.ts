@@ -11,10 +11,17 @@ async function workbenchText(): Promise<string> {
 }
 
 describe("responsive workbench layout", () => {
+  it("keeps the dynamic workbench out of the shell grid flow", async () => {
+    const css = await workbenchText();
+    expect(css).toMatch(/\.inspector\.panel-workbench\s*{[^}]*position:\s*absolute[^}]*display:\s*flex/s);
+    expect(css).toMatch(/\.app-shell\.is-inspector-expanded \.panel-workbench\s*{[^}]*width:\s*auto/s);
+    expect(css).toMatch(/\.panel-body\.has-tree\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(160px, 32%\)/s);
+  });
   it("uses one application topbar and a two-column shell", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/--topbar-height:\s*44px/);
     expect(css).toMatch(/\.app-menubar\s*{\s*display:\s*none/);
+    expect(css).toMatch(/\.topbar\s*{[^}]*background:\s*var\(--bg-conversation\)/s);
     expect(css).toMatch(/grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\)/);
     expect(css).toMatch(/grid-template-rows:\s*var\(--topbar-height\) minmax\(0, 1fr\)/);
     expect(css).toMatch(/\.inspector\s*{[^}]*grid-template-rows:\s*34px minmax\(0, 1fr\)/s);
@@ -31,7 +38,7 @@ describe("responsive workbench layout", () => {
   it("keeps the reading and composer axes bounded", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/--conversation-content-width:\s*880px/);
-    expect(css).toMatch(/\.conversation-pane\s*{[^}]*--bg-workspace:\s*var\(--bg-settings\)/s);
+    expect(css).toMatch(/\.conversation-pane\s*{[^}]*--bg-workspace:\s*var\(--bg-conversation\)/s);
     expect(css).toMatch(/--composer-overlay-reserve:\s*0px/);
     expect(css).toMatch(/\.conversation-scroll-region\s*{[^}]*grid-column:\s*1[^}]*grid-row:\s*1 \/ -1/s);
     expect(css).toMatch(/\.timeline\s*{[^}]*width:\s*100%[^}]*padding:\s*24px var\(--conversation-inline-space\) calc\(var\(--composer-overlay-reserve\) \+ 20px\)[^}]*scroll-padding-bottom:\s*var\(--composer-overlay-reserve\)/s);
@@ -77,7 +84,7 @@ describe("responsive workbench layout", () => {
   it("gives markdown file previews a calm reading layout", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/\.file-preview-toolbar\s*{[^}]*min-height:\s*40px[^}]*padding:\s*0 10px/s);
-    expect(css).toMatch(/\.markdown-preview-toggle\s*{[^}]*min-height:\s*40px[^}]*background:\s*var\(--bg-workspace\)/s);
+    expect(css).toMatch(/\.markdown-preview-toggle\s*{[^}]*min-height:\s*40px[^}]*background:\s*var\(--bg-conversation\)/s);
     expect(css).toMatch(/\.file-markdown-preview\s*{[^}]*padding:\s*32px max\(28px, calc\(\(100% - var\(--conversation-content-width\)\) \/ 2\)\) 72px[^}]*scrollbar-gutter:\s*stable/s);
     expect(css).toMatch(/\.file-markdown-preview h1\s*{[^}]*font-size:\s*calc\(24px \+ var\(--font-size-delta\)\)[^}]*letter-spacing:\s*-0\.02em/s);
     expect(css).toMatch(/\.file-markdown-preview h2\s*{[^}]*margin:\s*32px 0 12px[^}]*font-size:\s*calc\(19px \+ var\(--font-size-delta\)\)/s);
@@ -101,8 +108,13 @@ describe("responsive workbench layout", () => {
     expect(css).toMatch(/\.settings-nav button\s*{[^}]*width:\s*100%[^}]*min-height:\s*42px[^}]*border-radius:\s*var\(--radius-lg\)[^}]*font-size:\s*var\(--font-size-body\)/s);
     expect(css).toMatch(/\.settings-view-header h1\s*{[^}]*font-size:\s*calc\(32px \+ var\(--font-size-delta\)\)[^}]*letter-spacing:\s*-0\.035em/s);
     expect(css).toMatch(/\.settings-main \.setting-row\s*{[^}]*min-height:\s*72px[^}]*padding:\s*var\(--space-md\) var\(--space-lg\)/s);
-    expect(css).toMatch(/\.settings-main \.settings-sections\s*{[^}]*grid-auto-rows:\s*max-content/s);
-    expect(css).toMatch(/\.settings-main \.settings-sections h3\s*{[^}]*display:\s*flex[^}]*min-height:\s*64px[^}]*align-items:\s*center[^}]*padding:\s*0 var\(--space-lg\)/s);
+    expect(css).toMatch(/\.settings-main > \.settings-content\s*{[^}]*background:\s*var\(--bg-settings\) !important/s);
+    expect(css).toMatch(/\.settings-main \.settings-sections\s*{[^}]*grid-auto-rows:\s*max-content[^}]*gap:\s*var\(--space-xl\)/s);
+    expect(css).toMatch(/\.settings-main \.settings-sections > section\s*{[^}]*display:\s*grid[^}]*gap:\s*var\(--space-md\)[^}]*border:\s*0[^}]*background:\s*transparent/s);
+    expect(css).toMatch(/\.settings-main \.settings-card\s*{[^}]*border:\s*1px solid var\(--border\)[^}]*border-radius:\s*var\(--radius-lg\)[^}]*background:\s*var\(--bg-card\)[^}]*overflow:\s*hidden/s);
+    expect(css).toMatch(/\.settings-main \.setting-row\s*{[^}]*background:\s*transparent/s);
+    expect(css).toMatch(/\.settings-main \.settings-section-title\s*{[^}]*margin:\s*0[^}]*padding:\s*0[^}]*border:\s*0/s);
+    expect(css).toMatch(/\.settings-main \.settings-card > \.setting-row:last-child\s*{[^}]*border-bottom:\s*0/s);
     expect(css).toMatch(/\.settings-main \.setting-row-select select\s*{[^}]*width:\s*256px !important[^}]*height:\s*40px !important[^}]*flex:\s*0 0 256px !important/s);
     expect(css).toMatch(/\.settings-page\.settings-dialog \.settings-main \.setting-row > input\[type="checkbox"\]\s*{[^}]*width:\s*38px !important[^}]*height:\s*22px !important[^}]*margin:\s*0/s);
     expect(css).toMatch(/\.settings-page\.settings-dialog \.settings-main \.setting-row > input\[type="checkbox"\]\s*{[^}]*background-position:\s*left 1px center[^}]*background-size:\s*18px 18px/s);
@@ -114,6 +126,9 @@ describe("responsive workbench layout", () => {
   it("keeps management screens aligned with the wider settings rhythm", async () => {
     const css = await workbenchText();
     expect(css).toMatch(/\.settings-dialog \.model-manager-layout,[^}]*grid-template-columns:\s*248px minmax\(0, 1fr\) !important/s);
+    expect(css).toMatch(/\.settings-dialog \.model-manager-layout,[^}]*background:\s*var\(--bg-settings\)/s);
+    expect(css).toMatch(/\.settings-dialog \.model-config-list,[^}]*background:\s*var\(--bg-settings\) !important/s);
+    expect(css).toMatch(/\.settings-dialog \.model-editor,[^}]*background:\s*var\(--bg-settings\) !important/s);
     expect(css).toMatch(/\.settings-dialog \.model-config-list > button,[^}]*min-height:\s*42px !important/s);
     expect(css).toMatch(/\.settings-dialog \.skill-list \.prompt-config-scope > button,[^}]*min-height:\s*62px !important/s);
     expect(css).toMatch(/\.settings-dialog \.model-field > textarea\s*{[^}]*min-height:\s*96px !important/s);

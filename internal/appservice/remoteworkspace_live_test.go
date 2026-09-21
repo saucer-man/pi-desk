@@ -128,7 +128,7 @@ func TestLiveRemoteWorkspaceLifecycle(t *testing.T) {
 		t.Fatalf("reconnected Repository snapshot: %v", err)
 	}
 	piSupervisor := piruntime.NewSupervisor(ctx, piruntime.NewExecStarter(piruntime.NewLocator()), nil)
-	agent := NewAgentService(piruntime.NewLocator(), nil, lifecycle, filepath.Join(t.TempDir(), "anchors"))
+	agent := NewAgentService(piruntime.NewLocator(), nil, lifecycle, filepath.Join(t.TempDir(), "anchors"), nil)
 	agent.runtime = piSupervisor
 	live, err := agent.StartSession(domain.StartSessionRequest{
 		ThreadID: "thread-live-agent", WorkspaceID: workspaceRecord.ID, Trust: "approve",

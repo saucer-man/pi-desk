@@ -17,6 +17,7 @@ import ScheduledTasksPage from "./components/ScheduledTasksPage.vue";
 import PaneResizer from "./components/PaneResizer.vue";
 import WindowControls from "./components/WindowControls.vue";
 import { tr } from "./i18n";
+import { onBrowserEvent } from "./services/browser";
 import {
   MAX_INSPECTOR_WIDTH,
   MAX_SIDEBAR_WIDTH,
@@ -28,6 +29,17 @@ import {
 const appStore = useAppStore();
 const SettingsDialog = defineAsyncComponent(() => import("./components/SettingsDialog.vue"));
 const isWindows = ref(System.IsWindows());
+const systemDark = ref(window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
+let colorSchemeQuery: MediaQueryList | undefined;
+let disposeBrowserEvents: (() => void) | undefined;
+function syncSystemColorScheme(event: MediaQueryListEvent) {
+  systemDark.value = event.matches;
+}
+const codeTheme = computed(() => (
+  appStore.appearance === "dark" || (appStore.appearance === "system" && systemDark.value)
+    ? appStore.darkCodeTheme
+    : appStore.lightCodeTheme
+));
 const windowTitle = computed(() => appStore.activePage === "scheduledTasks"
   ? tr("scheduledTasks.title")
   : appStore.activeExtensionTitle || appStore.activeThread?.title || "Pi Desk");
@@ -65,13 +77,18 @@ async function initializeDesktop() {
 }
 
 onMounted(() => {
+  disposeBrowserEvents = onBrowserEvent(event => appStore.handleBrowserEvent(event));
   window.addEventListener("beforeunload", persistDesktopState);
+  colorSchemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+  colorSchemeQuery?.addEventListener("change", syncSystemColorScheme);
   void detectWindows();
   void initializeDesktop();
 });
 
 onBeforeUnmount(() => {
+  disposeBrowserEvents?.();
   window.removeEventListener("beforeunload", persistDesktopState);
+  colorSchemeQuery?.removeEventListener("change", syncSystemColorScheme);
   appStore.stopScheduledTaskScheduler();
   persistDesktopState();
 });
@@ -90,9 +107,13 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
     v-if="!appStore.desktopStateReady"
     class="app-shell startup-shell relative grid h-full w-full grid-cols-1 grid-rows-1 place-items-center overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased"
     :data-theme="appStore.appearance"
+    :data-code-theme="codeTheme"
+    :data-code-line-numbers="appStore.showCodeLineNumbers ? 'show' : 'hide'"
+    :data-code-wrap="appStore.wrapCodeLines ? 'wrap' : 'scroll'"
     :style="{
       '--sidebar-width': `${appStore.sidebarWidth}px`,
       '--inspector-width': `${appStore.inspectorWidth}px`,
+      '--code-font-size': `${appStore.codeFontSize}px`,
     }"
     role="status"
     aria-label="Pi Desk"
@@ -103,14 +124,19 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
     v-else
     class="app-shell relative grid h-full w-full grid-rows-[var(--topbar-height)_minmax(0,1fr)] overflow-hidden bg-[var(--bg-app)] font-body text-[var(--text)] antialiased max-[760px]:[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]"
     :data-theme="appStore.appearance"
+    :data-code-theme="codeTheme"
+    :data-code-line-numbers="appStore.showCodeLineNumbers ? 'show' : 'hide'"
+    :data-code-wrap="appStore.wrapCodeLines ? 'wrap' : 'scroll'"
     :style="{
       '--sidebar-width': `${appStore.sidebarWidth}px`,
       '--inspector-width': `${appStore.inspectorWidth}px`,
+      '--code-font-size': `${appStore.codeFontSize}px`,
     }"
     :class="{
       'is-windows': isWindows,
       'is-sidebar-collapsed': appStore.sidebarCollapsed,
       'is-inspector-closed': !appStore.inspectorOpen || appStore.activePage === 'scheduledTasks',
+      'is-inspector-expanded': appStore.inspectorOpen && appStore.activePanel?.expanded && appStore.activePage === 'task',
       'is-inspector-open': appStore.inspectorOpen && appStore.activePage === 'task',
       '[grid-template-columns:var(--sidebar-collapsed-width)_minmax(0,1fr)]': appStore.sidebarCollapsed,
       '[grid-template-columns:var(--sidebar-width)_minmax(0,1fr)]': !appStore.sidebarCollapsed,
@@ -132,9 +158,9 @@ watch(() => appStore.interfaceFontSize, syncDocumentFontSize, { immediate: true 
       <ScheduledTasksPage v-if="appStore.activePage === 'scheduledTasks'" />
       <ConversationPane v-else />
     </main>
-    <InspectorPanel v-if="appStore.inspectorOpen && appStore.activePage === 'task'" v-show="!appStore.settingsOpen" />
+    <InspectorPanel v-if="appStore.inspectorOpen && appStore.activePage === 'task'" :key="appStore.activeThreadId" v-show="!appStore.settingsOpen" />
     <PaneResizer
-      v-if="!appStore.settingsOpen && appStore.inspectorOpen && appStore.activePage === 'task'"
+      v-if="!appStore.settingsOpen && appStore.inspectorOpen && !appStore.activePanel?.expanded && appStore.activePage === 'task'"
       side="right"
       :value="appStore.inspectorWidth"
       :min="MIN_INSPECTOR_WIDTH"

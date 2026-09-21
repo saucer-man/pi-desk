@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"pi-desk/internal/browser"
 	"pi-desk/internal/pirpc"
 )
 
@@ -190,6 +191,9 @@ func processEnvironment(config StartConfig) ([]string, error) {
 	environment := make([]string, 0, len(os.Environ())+9)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(strings.ToUpper(key), "PI_DESK_BROWSER_") {
+			continue
+		}
 		if !strings.EqualFold(key, "PI_DESK_REMOTE_SOCKET") && !strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") && !strings.EqualFold(key, "PI_DESK_REMOTE_ROOT") {
 			environment = append(environment, entry)
 		}
@@ -209,6 +213,8 @@ func processEnvironment(config StartConfig) ([]string, error) {
 			"PI_DESK_REMOTE_TOKEN="+config.RemoteToken,
 			"PI_DESK_REMOTE_ROOT="+config.RemoteRoot,
 		)
+	} else {
+		environment = append(environment, browser.AgentEnvironment(config.ThreadID)...)
 	}
 	return environment, nil
 }

@@ -96,6 +96,11 @@ type PreferencesRecord struct {
 	Language             string `json:"language"`
 	FontFamily           string `json:"fontFamily"`
 	FontSize             int    `json:"fontSize"`
+	LightCodeTheme       string `json:"lightCodeTheme,omitempty"`
+	DarkCodeTheme        string `json:"darkCodeTheme,omitempty"`
+	ShowCodeLineNumbers  bool   `json:"showCodeLineNumbers,omitempty"`
+	WrapCodeLines        bool   `json:"wrapCodeLines,omitempty"`
+	CodeFontSize         int    `json:"codeFontSize,omitempty"`
 	OfflineMode          bool   `json:"offlineMode"`
 	ProxyEnabled         bool   `json:"proxyEnabled"`
 	ProxyURL             string `json:"proxyUrl,omitempty"`
@@ -105,6 +110,7 @@ type PreferencesRecord struct {
 	InspectorOpen        bool   `json:"inspectorOpen"`
 	InspectorWidth       int    `json:"inspectorWidth,omitempty"`
 	InspectorTab         string `json:"inspectorTab"`
+	PanelState           string `json:"panelState,omitempty"`
 	NotificationsEnabled bool   `json:"notificationsEnabled"`
 	UpdateChecksEnabled  bool   `json:"updateChecksEnabled"`
 	CloseToTray          bool   `json:"closeToTray"`
@@ -734,6 +740,20 @@ func validateDesktop(desktop DesktopRecord) error {
 		if preferences.FontSize < 12 || preferences.FontSize > 18 {
 			return errors.New("invalid font size preference")
 		}
+		validCodeTheme := func(value string) bool {
+			switch value {
+			case "", "github-light", "github-dark", "vitesse-light", "vitesse-dark", "minimal-light", "minimal-dark", "github-hc-light", "github-hc-dark", "catppuccin-latte", "catppuccin-mocha":
+				return true
+			default:
+				return false
+			}
+		}
+		if !validCodeTheme(preferences.LightCodeTheme) || !validCodeTheme(preferences.DarkCodeTheme) {
+			return errors.New("invalid code theme preference")
+		}
+		if preferences.CodeFontSize != 0 && (preferences.CodeFontSize < 10 || preferences.CodeFontSize > 18) {
+			return errors.New("invalid code font size preference")
+		}
 		switch preferences.StreamingBehavior {
 		case "steer", "followUp":
 		default:
@@ -744,10 +764,10 @@ func validateDesktop(desktop DesktopRecord) error {
 		default:
 			return errors.New("invalid inspector tab preference")
 		}
-		if preferences.SidebarWidth != 0 && (preferences.SidebarWidth < 220 || preferences.SidebarWidth > 480) {
+		if preferences.SidebarWidth != 0 && (preferences.SidebarWidth < 180 || preferences.SidebarWidth > 560) {
 			return errors.New("invalid sidebar width preference")
 		}
-		if preferences.InspectorWidth != 0 && (preferences.InspectorWidth < 280 || preferences.InspectorWidth > 720) {
+		if preferences.InspectorWidth != 0 && (preferences.InspectorWidth < 240 || preferences.InspectorWidth > 840) {
 			return errors.New("invalid inspector width preference")
 		}
 		workspaceApplication := strings.TrimSpace(preferences.WorkspaceApplication)

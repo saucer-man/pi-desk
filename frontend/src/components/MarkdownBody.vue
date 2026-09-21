@@ -3,7 +3,6 @@ import { ui } from "../ui/classes";
 import MarkdownIt from "markdown-it";
 import { computed, ref } from "vue";
 import { useAppStore } from "../stores/app";
-import { browserService } from "../services/browser";
 import { resolveWorkspaceFileLink, type WorkspaceFileLink } from "../utils/fileLinks";
 import { normalizeMarkdownBreakTags } from "../utils/markdown";
 import FileLinkContextMenu from "./FileLinkContextMenu.vue";
@@ -121,10 +120,7 @@ function openPreview(event: MouseEvent) {
   const href = target?.getAttribute("href");
   if (!target || !href) return;
   event.preventDefault();
-  browserService
-    .openUrl(href)
-    .then(() => appStore.activateBrowserPane())
-    .catch(() => window.open(href, "_blank", "noopener,noreferrer"));
+  appStore.openBrowserTab(href);
 }
 
 function openContextMenu(event: MouseEvent) {

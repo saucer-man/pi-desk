@@ -211,7 +211,7 @@ function syncExecutionOpen(event: Event) {
 }
 
 function openChangedFile(file: ChangedFileSummary) {
-  void appStore.openRepositoryDiff(file.relativePath, file.diff);
+  void appStore.openRepositoryDiff(file.relativePath, file.diff, props.message.id);
 }
 
 async function copyMessage() {
@@ -350,7 +350,7 @@ function stepThinking(step: ExecutionStep): string {
       </div>
       <p v-else-if="message.text && message.role === 'system'" :class="{ 'error-text': message.error }">{{ message.text }}</p>
       <MarkdownBody v-else-if="visibleMessageText" :text="visibleMessageText" :streaming="message.streaming" :search-query="searchQuery" :search-active="searchActive" />
-      <section v-if="changedFiles.length" class="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)]" :aria-label="tr('conversation.filesChanged')">
+      <section v-if="changedFiles.length" class="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]" :aria-label="tr('conversation.filesChanged')">
         <header class="flex min-h-14 items-center gap-3 border-b border-[var(--border)] px-3 py-2">
           <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--bg-app)] text-[var(--text-secondary)]" aria-hidden="true">
             <FileDiff :size="17" />
@@ -370,13 +370,13 @@ function stepThinking(step: ExecutionStep): string {
               type="button"
               :title="file.relativePath"
               :aria-label="tr('conversation.openChangedFile', { path: file.relativePath })"
-              :aria-current="appStore.activeRepositoryDiffPath === file.relativePath ? 'true' : undefined"
-              :aria-busy="appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading"
+              :aria-current="appStore.activePanelTab?.source === message.id && appStore.activeRepositoryDiffPath === file.relativePath ? 'true' : undefined"
+              :aria-busy="appStore.activePanelTab?.source === message.id && appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading"
               :disabled="appStore.activeThread?.trust !== 'approve'"
               @click="openChangedFile(file)"
             >
               <span class="min-w-0 flex-1 truncate"><span class="text-[var(--text-activity)]">{{ file.relativePath.slice(0, -file.name.length) }}</span>{{ file.name }}</span>
-              <LoaderCircle v-if="appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading" class="is-spinning shrink-0" :size="13" aria-hidden="true" />
+              <LoaderCircle v-if="appStore.activePanelTab?.source === message.id && appStore.activeRepositoryDiffPath === file.relativePath && appStore.activeRepositoryDiffLoading" class="is-spinning shrink-0" :size="13" aria-hidden="true" />
               <span v-else class="flex shrink-0 items-center gap-1 font-mono text-xs" :aria-label="tr('conversation.changeTotals', { additions: file.additions, deletions: file.deletions })">
                 <span class="text-[var(--diff-add-text)]">+{{ file.additions }}</span>
                 <span class="text-[var(--diff-delete-text)]">-{{ file.deletions }}</span>

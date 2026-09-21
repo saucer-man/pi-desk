@@ -1,8 +1,5 @@
-// Package browser talks to the managed Chromium that the pi-desk-browser
-// extension launches with --remote-debugging-port=0 and a dedicated user
-// data directory. Pi Desk only attaches here for the inspector panel's
-// screencast and input injection; the browser process itself is owned by
-// the extension so agent flows work without the panel ever opening.
+// Package browser hosts embedded WebView2 pages and their scoped CDP tools.
+// The WebSocket client is also shared with the legacy Chromium helpers.
 package browser
 
 import (
@@ -134,6 +131,34 @@ type cdpTargetInfo struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
+// NewPage creates an independent CDP page without replacing the agent's page.
+func NewPage(profileDir string) (Target, error) {
+	target, err := DiscoverPage(profileDir)
+	if errors.Is(err, ErrBrowserNotRunning) {
+		target, err = Launch(profileDir)
+	}
+	if err != nil {
+		return Target{}, err
+	}
+	request, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://127.0.0.1:%d/json/new?about:blank", target.Port), nil)
+	if err != nil {
+		return Target{}, err
+	}
+	response, err := (&http.Client{Timeout: discoverTimeout}).Do(request)
+	if err != nil {
+		return Target{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return Target{}, fmt.Errorf("create browser page: HTTP %d", response.StatusCode)
+	}
+	var page cdpTargetInfo
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		return Target{}, err
+	}
+	return Target{Port: target.Port, PageWS: page.WebSocketDebuggerURL, URL: page.URL, Title: page.Title}, nil
+}
+
 // DiscoverPage finds the first inspectable page target of the managed browser.
 func DiscoverPage(profileDir string) (Target, error) {
 	port, _, err := ReadPortFile(profileDir)
@@ -175,8 +200,16 @@ type cdpMessage struct {
 // Client is a minimal CDP WebSocket client. Screencast frames are acked
 // directly in the reader goroutine so a slow consumer never stalls the
 // frame stream; events are delivered through OnEvent afterwards.
+type cdpConnection interface {
+	ReadMessage() (int, []byte, error)
+	WriteMessage(int, []byte) error
+	SetReadLimit(int64)
+	SetWriteDeadline(time.Time) error
+	Close() error
+}
+
 type Client struct {
-	conn    *websocket.Conn
+	conn    cdpConnection
 	writeMu sync.Mutex // guards nextID and pending
 	connMu  sync.Mutex // gorilla/websocket allows one concurrent writer only
 	nextID  int64
@@ -186,11 +219,16 @@ type Client struct {
 }
 
 func Dial(ctx context.Context, wsURL string) (*Client, error) {
+	return dialEvents(ctx, wsURL, nil)
+}
+
+func dialEvents(ctx context.Context, wsURL string, event func(string, json.RawMessage)) (*Client, error) {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect to managed browser: %w", err)
 	}
-	client := &Client{conn: conn, pending: make(map[int64]chan cdpMessage), done: make(chan struct{})}
+	client := &Client{conn: conn, pending: make(map[int64]chan cdpMessage), done: make(chan struct{}), OnEvent: event}
+	conn.SetReadLimit(32 << 20)
 	go client.read()
 	return client, nil
 }
@@ -236,7 +274,11 @@ func (client *Client) read() {
 // goroutine uses it for screencast acks — waiting there would deadlock the
 // read loop against its own response.
 func (client *Client) notify(method string, params any) {
-	payload, err := json.Marshal(cdpMessage{Method: method, Params: mustJSON(params)})
+	client.writeMu.Lock()
+	client.nextID++
+	id := client.nextID
+	client.writeMu.Unlock()
+	payload, err := json.Marshal(cdpMessage{ID: id, Method: method, Params: mustJSON(params)})
 	if err != nil {
 		return
 	}
@@ -277,6 +319,15 @@ func (client *Client) failPending(reason error) {
 
 // Call sends one CDP command and waits for its reply. A nil result discards it.
 func (client *Client) Call(method string, params any, result any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	return client.call(ctx, method, params, result, nil)
+}
+
+func (client *Client) call(ctx context.Context, method string, params any, result any, dispatch func(func() error) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	client.writeMu.Lock()
 	client.nextID++
 	id := client.nextID
@@ -290,9 +341,18 @@ func (client *Client) Call(method string, params any, result any) error {
 	}
 	client.writeMu.Unlock()
 
-	client.connMu.Lock()
-	writeErr := client.conn.WriteMessage(websocket.TextMessage, payload)
-	client.connMu.Unlock()
+	send := func() error {
+		client.connMu.Lock()
+		defer client.connMu.Unlock()
+		_ = client.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		return client.conn.WriteMessage(websocket.TextMessage, payload)
+	}
+	var writeErr error
+	if dispatch != nil {
+		writeErr = dispatch(send)
+	} else {
+		writeErr = send()
+	}
 	if writeErr != nil {
 		client.takePending(id)
 		return fmt.Errorf("send %s: %w", method, writeErr)
@@ -308,9 +368,9 @@ func (client *Client) Call(method string, params any, result any) error {
 			}
 		}
 		return nil
-	case <-time.After(callTimeout):
+	case <-ctx.Done():
 		client.takePending(id)
-		return fmt.Errorf("%s timed out", method)
+		return fmt.Errorf("%s: %w", method, ctx.Err())
 	case <-client.done:
 		return fmt.Errorf("%s failed: browser connection closed", method)
 	}

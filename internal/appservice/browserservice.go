@@ -5,307 +5,396 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	"pi-desk/internal/browser"
-	"pi-desk/internal/domain"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"pi-desk/internal/browser"
+	"pi-desk/internal/domain"
 )
 
 const browserEventName = "browser:event"
 
-// BrowserService streams the managed browser into the inspector panel and
-// injects panel input back over CDP. The browser process is launched by the
-// pi-desk-browser extension; attaching is best-effort and read-only until
-// the panel is open.
+type browserTab struct {
+	status    domain.BrowserStatus
+	page      *browser.NativePage
+	ready     chan struct{}
+	err       error
+	closed    bool
+	epoch     atomic.Uint64
+	inspectMu sync.Mutex
+	inspector atomic.Pointer[browser.Inspector]
+}
+
+// The host owns page identity. Unmounting a BrowserPane only hides its viewport.
 type BrowserService struct {
 	mu         sync.Mutex
+	host       *browser.NativeHost
+	tabs       map[string]*browserTab
+	selected   map[string]string
 	emit       func(domain.BrowserEvent)
-	profileDir string
-	client     *browser.Client
-	url        string
-	title      string
-	sequence   atomic.Uint64
+	stopBroker func() error
 }
 
 func NewBrowserService() *BrowserService {
-	return &BrowserService{}
+	return &BrowserService{tabs: map[string]*browserTab{}, selected: map[string]string{}}
 }
-
-func (service *BrowserService) ServiceStartup(context.Context, application.ServiceOptions) error {
-	profileDir, err := browser.ProfileDir()
+func (s *BrowserService) ServiceStartup(context.Context, application.ServiceOptions) error {
+	profile, err := browser.ProfileDir()
 	if err != nil {
 		return err
 	}
+	profile = filepath.Join(filepath.Dir(profile), "browser-webview2")
 	app := application.Get()
-	service.profileDir = profileDir
-	service.emit = func(event domain.BrowserEvent) {
-		event.Sequence = service.sequence.Add(1)
-		app.Event.Emit(browserEventName, event)
-	}
-	return nil
+	s.host = browser.NewNativeHost(func() uintptr {
+		window, ok := app.Window.GetByName("main")
+		if !ok {
+			return 0
+		}
+		native, ok := window.(*application.WebviewWindow)
+		if !ok {
+			return 0
+		}
+		return uintptr(native.NativeWindow())
+	}, profile)
+	s.emit = func(event domain.BrowserEvent) { app.Event.Emit(browserEventName, event) }
+	s.stopBroker, err = browser.ServeAgent(s.agentCommand)
+	return err
 }
-
-func (service *BrowserService) ServiceShutdown() error {
-	service.mu.Lock()
-	client := service.client
-	service.client = nil
-	service.mu.Unlock()
-	if client != nil {
-		client.Close()
+func (s *BrowserService) publish(tab *browserTab, kind string) {
+	s.mu.Lock()
+	status := tab.status
+	closed := tab.closed
+	s.mu.Unlock()
+	if s.emit != nil && (!closed || kind == "closed") {
+		s.emit(domain.BrowserEvent{Type: kind, TabID: status.TabID, ThreadID: status.ThreadID, Status: &status})
 	}
-	return nil
 }
-
-// Start attaches to the managed browser and begins the screencast.
-func (service *BrowserService) Start() (domain.BrowserStatus, error) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.emit == nil {
-		return domain.BrowserStatus{}, errors.New("browser service is not ready")
-	}
-	if service.client != nil {
-		return domain.BrowserStatus{Attached: true, URL: service.url, Title: service.title, ProfileDir: service.profileDir}, nil
-	}
-	_, status, err := service.attachLocked()
-	return status, err
-}
-
-// attachLocked dials the managed browser and starts the screencast, launching
-// the browser when it is not running. The caller must hold service.mu.
-func (service *BrowserService) attachLocked() (*browser.Client, domain.BrowserStatus, error) {
-	target, err := browser.DiscoverPage(service.profileDir)
-	if errors.Is(err, browser.ErrBrowserNotRunning) {
-		target, err = browser.Launch(service.profileDir)
-	}
+func (s *BrowserService) StartTab(request domain.BrowserStartRequest) (domain.BrowserStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	tab, err := s.start(ctx, request, false)
 	if err != nil {
-		return nil, domain.BrowserStatus{}, err
+		return domain.BrowserStatus{}, err
 	}
-	client, err := browser.Dial(context.Background(), target.PageWS)
-	if err != nil {
-		return nil, domain.BrowserStatus{}, err
-	}
-	// Capture emit at attach time: the callback runs on the client's reader
-	// goroutine and must never take service.mu, which the caller holds across
-	// blocking CDP calls — locking here would stall the read loop until its
-	// own responses time out.
-	emit := service.emit
-	client.OnEvent = func(method string, params json.RawMessage) { service.onCDPEvent(emit, method, params) }
-	if err := client.Call("Page.enable", nil, nil); err != nil {
-		client.Close()
-		return nil, domain.BrowserStatus{}, err
-	}
-	if err := client.Call("Page.startScreencast", map[string]any{"format": "jpeg", "quality": 60, "maxWidth": 1600, "maxHeight": 1600}, nil); err != nil {
-		client.Close()
-		return nil, domain.BrowserStatus{}, err
-	}
-	service.client = client
-	service.url, service.title = target.URL, target.Title
-	go service.watchClosed(client)
-	service.emit(domain.BrowserEvent{Type: "attached", URL: target.URL, Title: target.Title})
-	return client, domain.BrowserStatus{Attached: true, URL: target.URL, Title: target.Title, ProfileDir: service.profileDir}, nil
+	s.mu.Lock()
+	s.selected[request.ThreadID] = request.TabID
+	status := tab.status
+	s.mu.Unlock()
+	return status, nil
 }
-
-// OpenURL navigates the managed browser to a URL the user clicked in the
-// conversation. Unlike agent navigation this is user-initiated, so no domain
-// gate applies. The panel is expected to auto-activate on the frontend.
-func (service *BrowserService) OpenURL(request domain.BrowserOpenURLRequest) (domain.BrowserStatus, error) {
-	raw := strings.TrimSpace(request.URL)
-	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return domain.BrowserStatus{}, errors.New("only http and https URLs can be opened in the managed browser")
+func (s *BrowserService) start(ctx context.Context, request domain.BrowserStartRequest, temporary bool) (*browserTab, error) {
+	if strings.TrimSpace(request.TabID) == "" || strings.TrimSpace(request.ThreadID) == "" || len(request.TabID) > 256 || len(request.ThreadID) > 256 {
+		return nil, errors.New("invalid browser identity")
 	}
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.emit == nil {
-		return domain.BrowserStatus{}, errors.New("browser service is not ready")
+	if request.URL == "" {
+		request.URL = "about:blank"
 	}
-	client := service.client
-	if client == nil {
-		if _, _, attachErr := service.attachLocked(); attachErr != nil {
-			return domain.BrowserStatus{}, attachErr
+	if !browser.ValidPageURL(request.URL) {
+		return nil, errors.New("invalid browser URL")
+	}
+	s.mu.Lock()
+	tab := s.tabs[request.TabID]
+	if tab != nil {
+		if tab.status.ThreadID != request.ThreadID {
+			s.mu.Unlock()
+			return nil, errors.New("browser tab belongs to another conversation")
 		}
-		client = service.client
-	}
-	navigate := func(target *browser.Client) error {
-		return target.Call("Page.navigate", map[string]string{"url": raw}, nil)
-	}
-	if err := navigate(client); err != nil {
-		// The browser may have died since attach; relaunch once before failing.
-		client.Close()
-		if service.client == client {
-			service.client = nil
-		}
-		if _, _, attachErr := service.attachLocked(); attachErr != nil {
-			return domain.BrowserStatus{}, err
-		}
-		if err := navigate(service.client); err != nil {
-			return domain.BrowserStatus{}, err
+		s.mu.Unlock()
+		select {
+		case <-tab.ready:
+			return tab, tab.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
-	service.url, service.title = raw, ""
-	service.emit(domain.BrowserEvent{Type: "navigated", URL: raw})
-	return domain.BrowserStatus{Attached: true, URL: raw, ProfileDir: service.profileDir}, nil
+	if s.host == nil {
+		s.mu.Unlock()
+		return nil, errors.New("browser host is not ready")
+	}
+	count := 0
+	for _, existing := range s.tabs {
+		if existing.status.ThreadID == request.ThreadID {
+			count++
+		}
+	}
+	if count >= 16 || len(s.tabs) >= 64 {
+		s.mu.Unlock()
+		return nil, errors.New("too many open browser pages; close unused tabs first")
+	}
+	tab = &browserTab{status: domain.BrowserStatus{TabID: request.TabID, ThreadID: request.ThreadID, URL: request.URL, Temporary: temporary}, ready: make(chan struct{})}
+	s.tabs[request.TabID] = tab
+	s.mu.Unlock()
+	page, err := s.host.NewPage(ctx, func(state browser.NativeState) {
+		s.mu.Lock()
+		tab.status.URL = state.URL
+		tab.status.Title = state.Title
+		tab.status.Loading = state.Loading
+		tab.status.CanGoBack = state.CanGoBack
+		tab.status.CanGoForward = state.CanGoForward
+		tab.status.Error = state.Error
+		s.mu.Unlock()
+		s.publish(tab, "state")
+	})
+	if err == nil {
+		err = page.Navigate(ctx, request.URL)
+	}
+	s.mu.Lock()
+	tab.page = page
+	tab.err = err
+	tab.status.Attached = err == nil
+	closed := tab.closed
+	close(tab.ready)
+	if err != nil && s.tabs[request.TabID] == tab {
+		delete(s.tabs, request.TabID)
+	}
+	s.mu.Unlock()
+	if closed || err != nil {
+		if page != nil {
+			page.Close()
+		}
+		if err == nil {
+			err = errors.New("browser tab was closed")
+		}
+	} else {
+		s.publish(tab, "opened")
+	}
+	return tab, err
 }
 
-// Stop detaches from the managed browser. The browser itself keeps running.
-func (service *BrowserService) Stop() error {
-	service.mu.Lock()
-	client := service.client
-	service.client = nil
-	service.mu.Unlock()
-	if client != nil {
-		client.Close()
-	}
-	return nil
-}
-
-func (service *BrowserService) watchClosed(client *browser.Client) {
-	<-client.Done()
-	service.mu.Lock()
-	if service.client == client {
-		service.client = nil
-	}
-	emit := service.emit
-	service.mu.Unlock()
-	if emit != nil {
-		emit(domain.BrowserEvent{Type: "detached"})
-	}
-}
-
-func (service *BrowserService) onCDPEvent(emit func(domain.BrowserEvent), method string, params json.RawMessage) {
-	if emit == nil {
+// Also called by the host when Pi exits without delivering agent_end.
+// An empty thread ID is used only by host-wide maintenance/shutdown.
+func (s *BrowserService) finishThread(threadID string) {
+	if s == nil {
 		return
 	}
-	switch method {
-	case "Page.screencastFrame":
-		var frame struct {
-			Data     string `json:"data"`
-			Metadata struct {
-				DeviceWidth  int `json:"deviceWidth"`
-				DeviceHeight int `json:"deviceHeight"`
-			} `json:"metadata"`
-		}
-		if json.Unmarshal(params, &frame) == nil && frame.Data != "" {
-			emit(domain.BrowserEvent{
-				Type: "frame", DataB64: frame.Data,
-				CssWidth: frame.Metadata.DeviceWidth, CssHeight: frame.Metadata.DeviceHeight,
-			})
-		}
-	case "Page.frameNavigated":
-		var navigation struct {
-			Frame struct {
-				URL      string `json:"url"`
-				ParentID string `json:"parentId"`
-			} `json:"frame"`
-		}
-		if json.Unmarshal(params, &navigation) == nil && navigation.Frame.ParentID == "" && strings.HasPrefix(navigation.Frame.URL, "http") {
-			emit(domain.BrowserEvent{Type: "navigated", URL: navigation.Frame.URL})
+	s.mu.Lock()
+	ids := []string{}
+	for id, tab := range s.tabs {
+		if threadID == "" || tab.status.ThreadID == threadID {
+			tab.epoch.Add(1)
+			tab.inspector.Load().Close()
+			if tab.status.Temporary {
+				ids = append(ids, id)
+			}
 		}
 	}
-}
-
-func (service *BrowserService) clientForInput() (*browser.Client, error) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.client == nil {
-		return nil, errors.New("browser panel is not connected")
+	s.mu.Unlock()
+	for _, id := range ids {
+		_ = s.CloseTab(id)
 	}
-	return service.client, nil
 }
-
-// Click injects a mouse press/release at CSS-pixel page coordinates.
-func (service *BrowserService) Click(request domain.BrowserClickRequest) error {
-	client, err := service.clientForInput()
+func (s *BrowserService) tab(id string) (*browserTab, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tab := s.tabs[id]
+	if tab == nil || tab.closed || tab.page == nil {
+		return nil, errors.New("browser tab is not ready")
+	}
+	return tab, nil
+}
+func (s *BrowserService) CloseTab(id string) error {
+	s.mu.Lock()
+	tab := s.tabs[id]
+	if tab != nil {
+		tab.closed = true
+		tab.epoch.Add(1)
+		tab.inspector.Load().Close()
+		delete(s.tabs, id)
+		if s.selected[tab.status.ThreadID] == id {
+			delete(s.selected, tab.status.ThreadID)
+		}
+	}
+	page := (*browser.NativePage)(nil)
+	if tab != nil {
+		page = tab.page
+	}
+	s.mu.Unlock()
+	if tab != nil {
+		if page != nil {
+			page.Close()
+		}
+		s.publish(tab, "closed")
+	}
+	return nil
+}
+func (s *BrowserService) SetBounds(request domain.BrowserBoundsRequest) error {
+	tab, err := s.tab(request.TabID)
 	if err != nil {
 		return err
 	}
-	button := request.Button
-	if button == "" {
-		button = "left"
+	if request.Width < 0 || request.Height < 0 || request.Width > 32768 || request.Height > 32768 || request.X < 0 || request.Y < 0 {
+		return errors.New("invalid browser bounds")
 	}
-	switch button {
-	case "left", "right", "middle":
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return tab.page.Bounds(ctx, request.X, request.Y, request.Width, request.Height, request.Visible)
+}
+func (s *BrowserService) OpenURL(request domain.BrowserOpenURLRequest) (domain.BrowserStatus, error) {
+	tab, err := s.tab(request.TabID)
+	if err != nil {
+		return domain.BrowserStatus{}, err
+	}
+	if !browser.ValidPageURL(request.URL) {
+		return domain.BrowserStatus{}, errors.New("only http, https and about:blank URLs are supported")
+	}
+	_ = s.KeepTab(request.TabID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = tab.page.Navigate(ctx, request.URL); err != nil {
+		return domain.BrowserStatus{}, err
+	}
+	s.mu.Lock()
+	status := tab.status
+	s.mu.Unlock()
+	return status, nil
+}
+func (s *BrowserService) Command(id, command string) error {
+	tab, err := s.tab(id)
+	if err != nil {
+		return err
+	}
+	_ = s.KeepTab(id)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return tab.page.Command(ctx, command)
+}
+func (s *BrowserService) KeepTab(id string) error {
+	tab, err := s.tab(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	tab.status.Temporary = false
+	s.mu.Unlock()
+	s.publish(tab, "state")
+	return nil
+}
+func (s *BrowserService) agentCommand(ctx context.Context, command browser.AgentCommand) (any, error) {
+	if command.Action == "list" {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		states := []domain.BrowserStatus{}
+		for _, tab := range s.tabs {
+			if tab.status.ThreadID == command.ThreadID {
+				states = append(states, tab.status)
+			}
+		}
+		return states, nil
+	}
+	if command.Action == "finish" {
+		if command.ThreadID == "" {
+			return nil, errors.New("threadId is required")
+		}
+		s.finishThread(command.ThreadID)
+		return true, nil
+	}
+	if command.Action == "create" {
+		var params struct {
+			URL string `json:"url"`
+		}
+		if len(command.Params) != 0 && json.Unmarshal(command.Params, &params) != nil {
+			return nil, errors.New("invalid browser parameters")
+		}
+		command.TabID = fmt.Sprintf("%s:agent:%d", command.ThreadID, time.Now().UnixNano())
+		tab, err := s.start(ctx, domain.BrowserStartRequest{ThreadID: command.ThreadID, TabID: command.TabID, URL: params.URL}, true)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		s.selected[command.ThreadID] = command.TabID
+		status := tab.status
+		s.mu.Unlock()
+		return status, nil
+	}
+	if strings.TrimSpace(command.TabID) == "" {
+		return nil, errors.New("tabId is required; use browser_tabs to list or create a tab")
+	}
+	tab, err := s.tab(command.TabID)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	status := tab.status
+	s.mu.Unlock()
+	if status.ThreadID != command.ThreadID {
+		return nil, errors.New("browser tab belongs to another conversation")
+	}
+	switch command.Action {
+	case "inspect":
+		tab.inspectMu.Lock()
+		inspector := tab.inspector.Load()
+		if command.Method == "stop" {
+			inspector.Close()
+			tab.inspectMu.Unlock()
+			return true, nil
+		}
+		if inspector == nil || !inspector.Active() {
+			inspector.Close()
+			epoch := tab.epoch.Load()
+			inspector, err = browser.NewInspector(ctx, tab.page, func() bool { return tab.epoch.Load() == epoch })
+			if err == nil {
+				tab.inspector.Store(inspector)
+				if !inspector.Active() {
+					inspector.Close()
+				}
+			}
+		}
+		tab.inspectMu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return inspector.Request(ctx, command.Method, command.Params)
+	case "cdp", "connect":
+		epoch := tab.epoch.Load()
+		if command.Action == "cdp" {
+			return map[string]string{"endpoint": browser.AgentCDPURL(command.ThreadID, command.TabID, epoch)}, nil
+		}
+		var params struct {
+			Epoch uint64 `json:"epoch"`
+		}
+		if json.Unmarshal(command.Params, &params) != nil || params.Epoch != epoch {
+			return nil, errors.New("stale browser connection; request a new connection")
+		}
+		return &browser.CDPAccess{Page: tab.page, Allowed: func() bool { return tab.epoch.Load() == epoch }}, nil
+	case "ensure", "select":
+		s.mu.Lock()
+		s.selected[command.ThreadID] = command.TabID
+		s.mu.Unlock()
+		return status, nil
+	case "keep":
+		_ = s.KeepTab(command.TabID)
+		return true, nil
+	case "close":
+		if !status.Temporary {
+			return nil, errors.New("only temporary Agent tabs may be closed by the Agent")
+		}
+		return true, s.CloseTab(command.TabID)
+	case "call":
+		if err = browser.ValidateAgentCommand(command); err != nil {
+			return nil, err
+		}
+		epoch := tab.epoch.Load()
+		return tab.page.Call(ctx, command.Method, command.Params, func() bool { return tab.epoch.Load() == epoch })
 	default:
-		return fmt.Errorf("unsupported mouse button %q", button)
+		return nil, errors.New("unknown browser action")
 	}
-	clickCount := request.ClickCount
-	if clickCount <= 0 {
-		clickCount = 1
-	}
-	if clickCount > 3 {
-		return errors.New("click count is outside the supported range")
-	}
-	base := map[string]any{"x": request.X, "y": request.Y, "button": button, "clickCount": clickCount}
-	pressed := cloneParams(base)
-	pressed["type"] = "mousePressed"
-	released := cloneParams(base)
-	released["type"] = "mouseReleased"
-	if err := client.Call("Input.dispatchMouseEvent", pressed, nil); err != nil {
-		return err
-	}
-	return client.Call("Input.dispatchMouseEvent", released, nil)
 }
-
-// Scroll injects a mouse wheel event at CSS-pixel page coordinates.
-func (service *BrowserService) Scroll(request domain.BrowserWheelRequest) error {
-	client, err := service.clientForInput()
-	if err != nil {
-		return err
+func (s *BrowserService) ServiceShutdown() error {
+	if s.stopBroker != nil {
+		_ = s.stopBroker()
 	}
-	return client.Call("Input.dispatchMouseEvent", map[string]any{
-		"type": "mouseWheel", "x": request.X, "y": request.Y,
-		"deltaX": request.DeltaX, "deltaY": request.DeltaY,
-	}, nil)
-}
-
-// Key injects a named key press, e.g. "Enter", "ctrl+shift+T".
-func (service *BrowserService) Key(request domain.BrowserKeyRequest) error {
-	client, err := service.clientForInput()
-	if err != nil {
-		return err
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.tabs))
+	for id := range s.tabs {
+		ids = append(ids, id)
 	}
-	spec, err := browser.ParseKeySpec(request.Key)
-	if err != nil {
-		return err
+	s.mu.Unlock()
+	for _, id := range ids {
+		_ = s.CloseTab(id)
 	}
-	down := map[string]any{"key": spec.Key, "code": spec.Code, "windowsVirtualKeyCode": spec.VirtualKey, "modifiers": request.Modifiers}
-	if spec.Text != "" {
-		down["type"] = "keyDown"
-		down["text"] = spec.Text
-	} else {
-		down["type"] = "rawKeyDown"
-	}
-	if err := client.Call("Input.dispatchKeyEvent", down, nil); err != nil {
-		return err
-	}
-	up := map[string]any{"type": "keyUp", "key": spec.Key, "code": spec.Code, "windowsVirtualKeyCode": spec.VirtualKey, "modifiers": request.Modifiers}
-	return client.Call("Input.dispatchKeyEvent", up, nil)
-}
-
-// Type inserts text into the focused element via Input.insertText.
-func (service *BrowserService) Type(request domain.BrowserTextInputRequest) error {
-	client, err := service.clientForInput()
-	if err != nil {
-		return err
-	}
-	if request.Text == "" {
-		return errors.New("browser text input is empty")
-	}
-	if len(request.Text) > maxTerminalInput {
-		return errors.New("browser text input exceeds the 64 KiB limit")
-	}
-	return client.Call("Input.insertText", map[string]any{"text": request.Text}, nil)
-}
-
-func cloneParams(source map[string]any) map[string]any {
-	clone := make(map[string]any, len(source)+1)
-	for key, value := range source {
-		clone[key] = value
-	}
-	return clone
+	return nil
 }

@@ -26,6 +26,9 @@ describe("teleported dialog theme inheritance", () => {
     expect(tokens).toContain(":root[data-theme=\"light\"],\n.app-shell[data-theme=\"light\"]");
     expect(tokens).toContain(":root[data-theme=\"system\"],\n  .app-shell[data-theme=\"system\"]");
     expect(tokens).toContain("--bg-settings: #f8f8f8");
+    expect(tokens).toContain("--bg-conversation: #f8f8f8");
+    expect(tokens).toContain("--bg-card: #ffffff");
+    expect(tokens).toContain("--bg-composer: var(--bg-card)");
   });
 
   it("publishes global font-family and root-size preference tokens", async () => {
@@ -44,13 +47,23 @@ describe("teleported dialog theme inheritance", () => {
     expect(tokens).toContain("--font-size-body: calc(14px + var(--font-size-delta))");
   });
 
-  it("publishes the Codex-style code preview palette", async () => {
+  it("publishes the selectable code preview palettes and sampled ZCode surfaces", async () => {
     const tokens = await tokensText();
-    expect(tokens).toContain("--preview-keyword: #d53538");
-    expect(tokens).toContain("--preview-declaration: #751ed9");
-    expect(tokens).toContain("--preview-symbol: #bd5800");
-    expect(tokens).toContain("--preview-string: #008809");
-    expect(tokens).toContain("--preview-operator: #0071ea");
+    for (const theme of ["github-light", "github-dark", "vitesse-light", "vitesse-dark", "minimal-light", "minimal-dark", "github-hc-light", "github-hc-dark", "catppuccin-latte", "catppuccin-mocha"]) {
+      expect(tokens).toContain(`data-code-theme="${theme}"`);
+    }
+    expect(tokens).toContain("--preview-toolbar-bg: #f6f6f6");
+    expect(tokens).toContain("--preview-bg: #ffffff");
+    expect(tokens).toContain("--panel-surface: #ffffff");
+    expect(tokens).toContain("--panel-selected: #f3f3f3");
+    expect(tokens).toContain("--preview-border: #e0e0e0");
+    expect(tokens).toContain("--diff-add-bg: #e3f2e3");
+    expect(tokens).toContain("--diff-delete-bg: #ffe4e0");
+    expect(tokens).toContain("--sheet-bg: #f8f8f8");
+    expect(tokens).toContain("--sheet-header-bg: #f6f6f6");
+    expect(tokens).toContain("--sheet-cell-bg: #ffffff");
+    expect(tokens).toContain("--sheet-border: #e0e0e0");
+    expect(tokens).toContain("--sheet-text: #242424");
   });
 
   it("scales Tailwind text utilities with the selected interface size", async () => {

@@ -74,6 +74,7 @@ type AgentService struct {
 	index           *sessionindex.Index
 	remoteLifecycle *RemoteWorkspaceLifecycle
 	anchorRoot      string
+	browser         *BrowserService
 
 	mu sync.RWMutex
 	// ponytail: one non-blocking history gate; use per-thread gates if cross-task contention matters.
@@ -85,9 +86,10 @@ type AgentService struct {
 	remoteThreads     map[string]string
 }
 
-func NewAgentService(locator *piruntime.Locator, index *sessionindex.Index, remoteLifecycle *RemoteWorkspaceLifecycle, anchorRoot string) *AgentService {
+func NewAgentService(locator *piruntime.Locator, index *sessionindex.Index, remoteLifecycle *RemoteWorkspaceLifecycle, anchorRoot string, browser *BrowserService) *AgentService {
 	return &AgentService{
 		locator: locator, index: index, remoteLifecycle: remoteLifecycle, anchorRoot: anchorRoot,
+		browser:        browser,
 		remoteSessions: make(map[string]remoteAgentSession), remoteThreads: make(map[string]string),
 	}
 }
@@ -99,15 +101,20 @@ func newAgentService(runtime agentRuntime) *AgentService {
 func (service *AgentService) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	app := application.Get()
 	runtime := piruntime.NewSupervisor(ctx, piruntime.NewExecStarter(service.locator), func(event piruntime.SessionEvent) {
+		service.handleRuntimeExit(event)
 		app.Event.Emit(piEventName, event)
-		if event.Event.Type == "runtime_exit" {
-			service.closeRemoteSession(event.ThreadID, event.Event.Generation)
-		}
 	})
 	service.mu.Lock()
 	service.runtime = runtime
 	service.mu.Unlock()
 	return nil
+}
+
+func (service *AgentService) handleRuntimeExit(event piruntime.SessionEvent) {
+	if event.Event.Type == "runtime_exit" && event.ThreadID != "" {
+		service.browser.finishThread(event.ThreadID)
+		service.closeRemoteSession(event.ThreadID, event.Event.Generation)
+	}
 }
 
 func (service *AgentService) ServiceShutdown() error {
@@ -118,6 +125,7 @@ func (service *AgentService) ServiceShutdown() error {
 	service.runtime = nil
 	service.mu.Unlock()
 	service.closeAllRemoteSessions()
+	service.browser.finishThread("")
 	if runtime != nil {
 		runtime.Shutdown()
 	}
@@ -227,6 +235,7 @@ func (service *AgentService) StartSession(request domain.StartSessionRequest) (d
 		handshakeCancel()
 		if handshakeErr != nil {
 			service.closeRemoteSession(threadID, 0)
+			service.browser.finishThread(threadID)
 			_ = runtime.Stop(threadID)
 			return domain.LiveSession{}, fmt.Errorf("%w: remote adapter coverage handshake", handshakeErr)
 		}
@@ -239,6 +248,7 @@ func (service *AgentService) StartSession(request domain.StartSessionRequest) (d
 		service.mu.Unlock()
 		if !exists {
 			service.closeRemoteSession(threadID, 0)
+			service.browser.finishThread(threadID)
 			_ = runtime.Stop(threadID)
 			return domain.LiveSession{}, errors.New("remote Pi task exited during startup")
 		}
@@ -263,6 +273,7 @@ func (service *AgentService) preparePiMaintenance() (func(), error) {
 		release()
 		return nil, err
 	}
+	service.browser.finishThread("")
 	return release, nil
 }
 
@@ -271,17 +282,21 @@ func (service *AgentService) StopSession(request domain.ThreadRequest) error {
 }
 
 func (service *AgentService) stopThreadIfRunning(threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return errors.New("thread id is required")
+	}
 	runtime, err := service.getRuntime()
 	if err != nil {
 		return err
 	}
-	threadID = strings.TrimSpace(threadID)
 	service.mu.RLock()
 	remoteOwned := service.remoteThreads[threadID] != ""
 	service.mu.RUnlock()
 	if remoteOwned {
 		service.closeRemoteSession(threadID, 0)
 	}
+	service.browser.finishThread(threadID)
 	err = runtime.Stop(threadID)
 	if errors.Is(err, piruntime.ErrThreadNotRunning) {
 		return nil

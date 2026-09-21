@@ -243,6 +243,7 @@ describe("ConversationMessage", () => {
     await wrapper.setProps({ message: { ...message, streaming: false } });
 
     const summary = wrapper.get('[aria-label="Files changed"]');
+    expect(summary.classes()).toContain("bg-[var(--bg-card)]");
     expect(summary.text()).toContain("Edited 7 files");
     expect(summary.text()).toContain("+8");
     expect(summary.text()).toContain("-1");
@@ -259,7 +260,7 @@ describe("ConversationMessage", () => {
     expect(files).toHaveLength(7);
     expect(summary.text()).toContain("Show fewer files");
     await files[0].trigger("click");
-    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/App.vue", "+ changed\n- old\n+ changed");
+    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/App.vue", "+ changed\n- old\n+ changed", "assistant-files");
   });
 
   it("normalizes remote absolute paths before opening a changed file", async () => {
@@ -286,7 +287,7 @@ describe("ConversationMessage", () => {
     const file = wrapper.get('[aria-label="View diff for src/main.go"]');
     expect(file.attributes("title")).toBe("src/main.go");
     await file.trigger("click");
-    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/main.go", "+ changed");
+    expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/main.go", "+ changed", "assistant-remote-file");
   });
 
   it("expands only the active reasoning step and collapses it when reasoning finishes", async () => {

@@ -184,6 +184,7 @@ func TestCatalogPersistsValidatedDesktopPreferences(t *testing.T) {
 	catalog := NewCatalog(filepath.Join(root, "state.json"))
 	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
 		Appearance: "light", Language: "en", FontFamily: "serif", FontSize: 16,
+		LightCodeTheme: "vitesse-light", DarkCodeTheme: "catppuccin-mocha", ShowCodeLineNumbers: true, CodeFontSize: 13,
 		OfflineMode: true, ProxyEnabled: true, ProxyURL: "socks5://127.0.0.1:10800",
 		StreamingBehavior: "followUp", SidebarCollapsed: true, SidebarWidth: 344,
 		InspectorOpen: true, InspectorWidth: 468, InspectorTab: "context",
@@ -195,7 +196,7 @@ func TestCatalogPersistsValidatedDesktopPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if desktop.Preferences == nil || desktop.Preferences.Appearance != "light" || desktop.Preferences.Language != "en" || desktop.Preferences.FontFamily != "serif" || desktop.Preferences.FontSize != 16 || !desktop.Preferences.ProxyEnabled || desktop.Preferences.StreamingBehavior != "followUp" || desktop.Preferences.SidebarWidth != 344 || desktop.Preferences.InspectorWidth != 468 || desktop.Preferences.InspectorTab != "context" {
+	if desktop.Preferences == nil || desktop.Preferences.Appearance != "light" || desktop.Preferences.Language != "en" || desktop.Preferences.FontFamily != "serif" || desktop.Preferences.FontSize != 16 || desktop.Preferences.LightCodeTheme != "vitesse-light" || desktop.Preferences.DarkCodeTheme != "catppuccin-mocha" || !desktop.Preferences.ShowCodeLineNumbers || desktop.Preferences.CodeFontSize != 13 || !desktop.Preferences.ProxyEnabled || desktop.Preferences.StreamingBehavior != "followUp" || desktop.Preferences.SidebarWidth != 344 || desktop.Preferences.InspectorWidth != 468 || desktop.Preferences.InspectorTab != "context" {
 		t.Fatalf("unexpected preferences: %#v", desktop.Preferences)
 	}
 	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
@@ -204,9 +205,28 @@ func TestCatalogPersistsValidatedDesktopPreferences(t *testing.T) {
 		t.Fatal("expected invalid typography preferences to be rejected")
 	}
 	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
+		Appearance: "light", Language: "en", FontFamily: "default", FontSize: 14, LightCodeTheme: "unknown", StreamingBehavior: "steer", InspectorTab: "changes",
+	}}); err == nil {
+		t.Fatal("expected invalid code theme preference to be rejected")
+	}
+	if err := catalog.SaveDesktop(DesktopRecord{Preferences: &PreferencesRecord{
 		ProxyEnabled: true, ProxyURL: "http://user:secret@example.com", StreamingBehavior: "steer", InspectorTab: "changes",
 	}}); err == nil {
 		t.Fatal("expected persisted proxy credentials to be rejected")
+	}
+}
+
+func TestCatalogPersistsPanelStateAtFrontendResizeLimits(t *testing.T) {
+	catalog := NewCatalog(filepath.Join(t.TempDir(), "state.json"))
+	for _, sizes := range [][2]int{{180, 240}, {560, 840}} {
+		preferences := &PreferencesRecord{StreamingBehavior: "steer", InspectorTab: "changes", SidebarWidth: sizes[0], InspectorWidth: sizes[1], PanelState: `{"thread":{"tabs":[]}}`}
+		if err := catalog.SaveDesktop(DesktopRecord{Preferences: preferences}); err != nil {
+			t.Fatal(err)
+		}
+		state, err := catalog.Desktop()
+		if err != nil || state.Preferences.PanelState != preferences.PanelState {
+			t.Fatalf("panel state was not preserved: %v", err)
+		}
 	}
 }
 

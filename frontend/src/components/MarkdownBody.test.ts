@@ -14,7 +14,7 @@ vi.mock("../services/repository", () => ({
   },
 }));
 
-import { browserService } from "../services/browser";
+
 
 function mountMarkdown(text: string) {
   const pinia = createPinia();
@@ -77,7 +77,7 @@ describe("MarkdownBody", () => {
   it("turns workspace file links into previews and routes web links to the managed browser", async () => {
     const { store, wrapper } = mountMarkdown("[result](reports/tg_groups.csv) and [web](https://example.com/docs)");
     store.openRepositoryFilePreview = vi.fn().mockResolvedValue(undefined);
-    store.activateBrowserPane = vi.fn();
+    store.openBrowserTab = vi.fn();
     const links = wrapper.findAll("a");
 
     expect(links[0].classes()).toContain("markdown-file-link");
@@ -90,8 +90,7 @@ describe("MarkdownBody", () => {
     expect(store.openRepositoryFilePreview).toHaveBeenCalledWith("reports/tg_groups.csv", undefined);
 
     await links[1].trigger("click");
-    expect(browserService.openUrl).toHaveBeenCalledWith("https://example.com/docs");
-    expect(store.activateBrowserPane).toHaveBeenCalledOnce();
+    expect(store.openBrowserTab).toHaveBeenCalledWith("https://example.com/docs");
 
     await links[0].trigger("contextmenu", { clientX: 80, clientY: 90 });
     await flushPromises();

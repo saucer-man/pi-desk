@@ -75,12 +75,24 @@ func TestLiveManagedBrowserEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	frames := make(chan struct{}, 64)
-	client.OnEvent = func(method string, _ json.RawMessage) {
+	client.OnEvent = func(method string, params json.RawMessage) {
 		if method == "Page.screencastFrame" {
+			var frame struct {
+				Metadata struct {
+					DeviceWidth  float64 `json:"deviceWidth"`
+					DeviceHeight float64 `json:"deviceHeight"`
+				} `json:"metadata"`
+			}
+			if err := json.Unmarshal(params, &frame); err != nil {
+				t.Error(err)
+			}
 			frames <- struct{}{}
 		}
 	}
 	if err := client.Call("Page.enable", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call("Emulation.setFocusEmulationEnabled", map[string]bool{"enabled": true}, nil); err != nil {
 		t.Fatal(err)
 	}
 

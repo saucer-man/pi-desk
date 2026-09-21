@@ -1,14 +1,18 @@
 package repository
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -27,6 +31,10 @@ const (
 	maxDiffBytes  = 1 << 20
 	maxFileBytes  = 1 << 20
 	maxMediaBytes = 10 << 20
+	maxSheetRows  = 200
+	maxSheetCols  = 50
+	maxSheetTabs  = 8
+	maxSheetXML   = 8 << 20
 )
 
 var ErrOutputTooLarge = gitexec.ErrOutputTooLarge
@@ -477,6 +485,48 @@ type FilePreview struct {
 	Truncated bool
 }
 
+const spreadsheetMediaType = "application/x-pi-desk-spreadsheet"
+
+type spreadsheetPreview struct {
+	Sheets []spreadsheetSheet `json:"sheets"`
+}
+
+type spreadsheetSheet struct {
+	Name    string     `json:"name"`
+	Columns int        `json:"columns"`
+	Rows    [][]string `json:"rows"`
+}
+
+type xlsxText struct {
+	Text string `xml:"t"`
+	Runs []struct {
+		Text string `xml:"t"`
+	} `xml:"r"`
+}
+
+func (value xlsxText) String() string {
+	if len(value.Runs) == 0 {
+		return value.Text
+	}
+	var text strings.Builder
+	for _, run := range value.Runs {
+		text.WriteString(run.Text)
+	}
+	return text.String()
+}
+
+type xlsxCell struct {
+	Reference string   `xml:"r,attr"`
+	Type      string   `xml:"t,attr"`
+	Value     string   `xml:"v"`
+	Inline    xlsxText `xml:"is"`
+}
+
+type xlsxRow struct {
+	Number int        `xml:"r,attr"`
+	Cells  []xlsxCell `xml:"c"`
+}
+
 func PreviewFile(root, path string) (FilePreview, error) {
 	resolved, err := ResolveFile(root, path)
 	if err != nil {
@@ -490,6 +540,9 @@ func PreviewFile(root, path string) (FilePreview, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return FilePreview{}, fmt.Errorf("inspect workspace file: %w", err)
+	}
+	if isSpreadsheetPath(resolved) {
+		return previewSpreadsheet(resolved, info.Size())
 	}
 	limit := int64(maxFileBytes)
 	if mediaTypeForExtension(resolved) != "" {
@@ -516,6 +569,197 @@ func PreviewFile(root, path string) (FilePreview, error) {
 		}
 	}
 	return preview, nil
+}
+
+func isSpreadsheetPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".xlsx", ".xlsm":
+		return true
+	default:
+		return false
+	}
+}
+
+func previewSpreadsheet(filename string, size int64) (FilePreview, error) {
+	archive, err := zip.OpenReader(filename)
+	if err != nil {
+		return FilePreview{}, fmt.Errorf("open spreadsheet: %w", err)
+	}
+	defer archive.Close()
+	files := make(map[string]*zip.File, len(archive.File))
+	for _, file := range archive.File {
+		files[pathpkg.Clean(strings.ReplaceAll(file.Name, "\\", "/"))] = file
+	}
+
+	var shared struct {
+		Items []xlsxText `xml:"si"`
+	}
+	if file := files["xl/sharedStrings.xml"]; file != nil {
+		if err := decodeSpreadsheetXML(file, &shared); err != nil {
+			return FilePreview{}, err
+		}
+	}
+	var workbook struct {
+		Sheets []struct {
+			Name string `xml:"name,attr"`
+			ID   string `xml:"id,attr"`
+		} `xml:"sheets>sheet"`
+	}
+	if err := decodeSpreadsheetXML(files["xl/workbook.xml"], &workbook); err != nil {
+		return FilePreview{}, err
+	}
+	var relationships struct {
+		Items []struct {
+			ID     string `xml:"Id,attr"`
+			Target string `xml:"Target,attr"`
+		} `xml:"Relationship"`
+	}
+	if err := decodeSpreadsheetXML(files["xl/_rels/workbook.xml.rels"], &relationships); err != nil {
+		return FilePreview{}, err
+	}
+	targets := make(map[string]string, len(relationships.Items))
+	for _, relationship := range relationships.Items {
+		target := pathpkg.Clean(strings.TrimPrefix(strings.ReplaceAll(relationship.Target, "\\", "/"), "/"))
+		if !strings.HasPrefix(target, "xl/") {
+			target = pathpkg.Join("xl", target)
+		}
+		if strings.HasPrefix(target, "xl/") {
+			targets[relationship.ID] = target
+		}
+	}
+
+	document := spreadsheetPreview{Sheets: make([]spreadsheetSheet, 0, min(len(workbook.Sheets), maxSheetTabs))}
+	truncated := len(workbook.Sheets) > maxSheetTabs
+	for index, item := range workbook.Sheets {
+		if index >= maxSheetTabs {
+			break
+		}
+		sheet, limited, err := decodeSpreadsheetSheet(files[targets[item.ID]], shared.Items)
+		if err != nil {
+			return FilePreview{}, err
+		}
+		sheet.Name = item.Name
+		document.Sheets = append(document.Sheets, sheet)
+		truncated = truncated || limited
+	}
+	content, err := json.Marshal(document)
+	if err != nil {
+		return FilePreview{}, fmt.Errorf("encode spreadsheet preview: %w", err)
+	}
+	return FilePreview{Path: filename, Content: string(content), MediaType: spreadsheetMediaType, Size: size, Binary: true, Truncated: truncated}, nil
+}
+
+func decodeSpreadsheetXML(file *zip.File, target any) error {
+	if file == nil {
+		return errors.New("spreadsheet is missing a required workbook part")
+	}
+	if file.UncompressedSize64 > maxSheetXML {
+		return errors.New("spreadsheet preview data is too large")
+	}
+	reader, err := file.Open()
+	if err != nil {
+		return fmt.Errorf("open spreadsheet data: %w", err)
+	}
+	defer reader.Close()
+	if err := xml.NewDecoder(io.LimitReader(reader, maxSheetXML+1)).Decode(target); err != nil {
+		return fmt.Errorf("decode spreadsheet data: %w", err)
+	}
+	return nil
+}
+
+func decodeSpreadsheetSheet(file *zip.File, shared []xlsxText) (spreadsheetSheet, bool, error) {
+	if file == nil {
+		return spreadsheetSheet{}, false, errors.New("spreadsheet is missing a worksheet")
+	}
+	if file.UncompressedSize64 > maxSheetXML {
+		return spreadsheetSheet{}, false, errors.New("spreadsheet worksheet is too large")
+	}
+	reader, err := file.Open()
+	if err != nil {
+		return spreadsheetSheet{}, false, fmt.Errorf("open spreadsheet worksheet: %w", err)
+	}
+	defer reader.Close()
+	decoder := xml.NewDecoder(io.LimitReader(reader, maxSheetXML+1))
+	result := spreadsheetSheet{Rows: make([][]string, 0)}
+	truncated := false
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return spreadsheetSheet{}, false, fmt.Errorf("decode spreadsheet worksheet: %w", err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "row" {
+			continue
+		}
+		var row xlsxRow
+		if err := decoder.DecodeElement(&row, &start); err != nil {
+			return spreadsheetSheet{}, false, fmt.Errorf("decode spreadsheet row: %w", err)
+		}
+		rowIndex := row.Number - 1
+		if rowIndex < 0 {
+			rowIndex = len(result.Rows)
+		}
+		if rowIndex >= maxSheetRows {
+			truncated = true
+			continue
+		}
+		for len(result.Rows) <= rowIndex {
+			result.Rows = append(result.Rows, nil)
+		}
+		for fallback, cell := range row.Cells {
+			column := xlsxColumnIndex(cell.Reference)
+			if column < 0 {
+				column = fallback
+			}
+			if column >= maxSheetCols {
+				truncated = true
+				continue
+			}
+			for len(result.Rows[rowIndex]) <= column {
+				result.Rows[rowIndex] = append(result.Rows[rowIndex], "")
+			}
+			result.Rows[rowIndex][column] = xlsxCellValue(cell, shared)
+			result.Columns = max(result.Columns, column+1)
+		}
+	}
+	return result, truncated, nil
+}
+
+func xlsxColumnIndex(reference string) int {
+	column := 0
+	found := false
+	for _, char := range reference {
+		if char < 'A' || char > 'Z' {
+			break
+		}
+		column = column*26 + int(char-'A'+1)
+		found = true
+	}
+	if !found {
+		return -1
+	}
+	return column - 1
+}
+
+func xlsxCellValue(cell xlsxCell, shared []xlsxText) string {
+	switch cell.Type {
+	case "inlineStr":
+		return cell.Inline.String()
+	case "s":
+		index, err := strconv.Atoi(strings.TrimSpace(cell.Value))
+		if err == nil && index >= 0 && index < len(shared) {
+			return shared[index].String()
+		}
+	case "b":
+		if cell.Value == "1" {
+			return "TRUE"
+		}
+		return "FALSE"
+	}
+	return cell.Value
 }
 
 func isMarkdownPath(path string) bool {

@@ -6,12 +6,73 @@
 :root {
   --sidebar-width: 264px;
   --sidebar-collapsed-width: 48px;
-  --inspector-width: 360px;
+  --inspector-width: 600px;
   --conversation-content-width: 880px;
   --composer-overlay-reserve: 0px;
   --topbar-height: 44px;
   --app-menu-height: 0px;
   --window-controls-width: 138px;
+}
+/* Panel workbench: sampled Codex reference surfaces; existing code themes remain selectable. */
+.inspector.panel-workbench {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel-surface);
+  color: var(--text);
+}
+ .panel-tabbar { display: flex; align-items: center; gap: 6px; height: 46px; min-height: 46px; padding: 6px 8px; }
+.panel-tabs { display: flex; min-width: 0; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.panel-tab { display: flex; flex: 0 0 auto; align-items: center; max-width: 220px; min-width: 96px; border-radius: 12px; color: var(--panel-muted); }
+.panel-tab.is-active, .panel-icon-button.is-active { background: var(--panel-selected); color: var(--text); }
+.panel-tab > button { display: flex; align-items: center; gap: 8px; min-width: 0; height: 32px; padding: 0 10px; border: 0; background: transparent; color: inherit; font-size: 13px; cursor: pointer; }
+.panel-tab > button[role="tab"] { flex: 1; touch-action: none; user-select: none; }
+.panel-tab > button > svg { flex: 0 0 auto; }
+.panel-tab > button > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-tab.is-preview > button[role="tab"] > span:first-of-type { font-style: italic; }
+.panel-tab .panel-tab-close { width: 26px; flex: 0 0 26px; padding: 0 6px; color: var(--panel-muted); }
+.panel-tab-kind { font-size: 11px; white-space: nowrap; opacity: .8; }
+.panel-icon-button { display: inline-grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border: 0; border-radius: 10px; background: transparent; color: var(--panel-muted); cursor: pointer; }
+.panel-expand { margin-left: auto; }
+.panel-workbench button:hover, .panel-menu button:hover { background: var(--panel-selected, var(--bg-hover)); }
+.panel-workbench button:active { background: var(--bg-active); }
+.panel-workbench button:focus-visible, .panel-menu button:focus-visible, .thread-context-button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+#panel-add-button { anchor-name: --panel-add; }
+#panel-open-button { anchor-name: --panel-open; }
+.panel-menu { position: fixed; inset: auto; position-anchor: --panel-add; top: anchor(bottom); right: anchor(right); position-try-fallbacks: flip-inline, flip-block; margin: 4px 0 0; padding: 6px; min-width: 250px; border: 1px solid var(--panel-rule, var(--border)); border-radius: 16px; background: var(--panel-surface, var(--bg-menu)); color: var(--text); box-shadow: 0 6px 24px rgb(0 0 0 / 10%); }
+#panel-open-menu { position-anchor: --panel-open; }
+.panel-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; font-size: 14px; cursor: pointer; }
+.panel-menu kbd { margin-left: auto; color: var(--text-muted); font: inherit; font-size: 12px; }
+.panel-pathbar { display: flex; align-items: center; min-width: 0; height: 44px; min-height: 44px; gap: 8px; padding-right: 8px; border-bottom: 1px solid var(--panel-rule); }
+.panel-pathbar .code-breadcrumb { flex: 1; padding: 0 16px; gap: 8px; color: var(--panel-muted); font-size: 12px; }
+.panel-pathbar .code-breadcrumb .is-current { color: var(--text); font-weight: 600; flex-shrink: 0; }
+.panel-open-split { display: flex; flex: 0 0 auto; height: 32px; border: 1px solid var(--panel-rule); border-radius: 10px; overflow: hidden; }
+.panel-open-split button { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+.panel-open-split img { width: 20px; height: 20px; object-fit: contain; }
+.panel-body { display: grid; flex: 1; min-height: 0; min-width: 0; overflow: hidden; grid-template-columns: minmax(0, 1fr); }
+.panel-body.has-tree { grid-template-columns: minmax(0, 1fr) minmax(160px, 32%); }
+.panel-body > .inspector-content { min-width: 0; min-height: 0; }
+.panel-directory { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--panel-surface); color: var(--text); }
+.has-tree > .panel-directory { border-left: 1px solid var(--panel-rule); }
+.panel-file-filter { display: flex; align-items: center; flex: 0 0 32px; gap: 6px; margin: 8px; padding: 0 10px; border: 1px solid var(--panel-rule); border-radius: 11px; color: var(--panel-muted); }
+.panel-file-filter input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text); font-size: 13px; outline-offset: 3px; }
+.panel-file-tree { min-height: 0; flex: 1; padding: 0 8px 8px; overflow: auto; }
+.panel-file-tree .file-tree-row { min-height: 30px; border-radius: 7px; padding-left: calc(var(--tree-depth) * 18px + 4px); gap: 6px; }
+.panel-file-tree .file-tree-row.is-selected { background: var(--panel-selected); }
+.panel-file-tree .file-tree-name { font-size: 13px; line-height: 24px; }
+.panel-file-tree .file-tree-children { position: relative; }
+.panel-tree-empty { padding: 16px 8px; font-size: 12px; color: var(--panel-muted); }
+.thread-context-button { anchor-name: --thread-context; display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-workspace); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.thread-context-popover { position: fixed; inset: auto; position-anchor: --thread-context; top: anchor(bottom); left: anchor(left); position-try-fallbacks: flip-inline, flip-block; width: min(420px, calc(100vw - 24px)); max-height: calc(100vh - 72px); overflow: auto; margin: 8px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-surface, var(--bg-menu)); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); }
+.thread-context-popover dl { margin: 0; }
+.thread-context-popover dd { overflow-wrap: anywhere; white-space: normal; }
+.app-shell.is-inspector-expanded .panel-workbench { position: absolute; inset: var(--topbar-height) 0 0 var(--sidebar-width); width: auto; z-index: 30; }
+.app-shell.is-sidebar-collapsed.is-inspector-expanded .panel-workbench { left: var(--sidebar-collapsed-width); }
+@media (max-width: 760px) {
+  .panel-body.has-tree { grid-template-columns: minmax(0, 1fr) 160px; }
+  .app-shell.is-inspector-expanded .panel-workbench { left: var(--sidebar-collapsed-width); }
 }
 
 .app-shell {
@@ -49,7 +110,7 @@
   height: var(--topbar-height);
   padding: 0;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-workspace);
+  background: var(--bg-conversation);
   --wails-draggable: drag;
 }
 
@@ -538,7 +599,7 @@
 }
 
 .conversation-pane {
-  --bg-workspace: var(--bg-settings);
+  --bg-workspace: var(--bg-conversation);
   min-width: 0;
   min-height: 0;
 }
@@ -649,7 +710,8 @@
   min-height: 40px;
   align-items: center;
   padding: 6px 12px;
-  background: var(--bg-workspace);
+  border-bottom: 1px solid var(--preview-border);
+  background: var(--bg-conversation);
 }
 
 .markdown-preview-toggle button {
@@ -692,7 +754,7 @@
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  background: var(--bg-workspace);
+  background: var(--bg-conversation);
   color: var(--text);
   font-size: calc(15px + var(--font-size-delta));
   line-height: 1.7;
@@ -1019,7 +1081,7 @@
   min-height: 0;
   margin: 0 auto;
   padding: 0 0 calc(var(--space-xl) * 2) !important;
-  background: transparent !important;
+  background: var(--bg-settings) !important;
   color: var(--text);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
@@ -1035,35 +1097,54 @@
 .settings-main .settings-sections {
   align-content: start;
   grid-auto-rows: max-content;
-  gap: var(--space-lg);
+  gap: var(--space-xl);
 }
 
 .settings-main .settings-sections > section {
+  display: grid;
   min-width: 0;
   padding: 0;
+  gap: var(--space-md);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.settings-main .settings-card {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--bg-raised);
+  background: var(--bg-card);
   overflow: hidden;
 }
 
-.settings-main .settings-sections h3 {
-  display: flex;
-  min-height: 64px;
-  align-items: center;
+.settings-main .settings-section-title {
   margin: 0;
-  padding: 0 var(--space-lg);
-  border-bottom: 1px solid var(--border);
+  padding: 0;
+  border: 0;
   font-size: var(--font-size-title);
   font-weight: 650;
   letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.settings-main .settings-section-help {
+  margin: calc(var(--space-sm) * -1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.settings-main .settings-card > .setting-row:last-child {
+  border-bottom: 0;
 }
 
 .settings-main .setting-row {
   min-height: 72px;
   gap: var(--space-xl);
   padding: var(--space-md) var(--space-lg);
-  background: var(--bg-raised);
+  background: transparent;
 }
 
 .settings-main .setting-row > span {
@@ -1149,7 +1230,8 @@
   font-size: var(--font-size-control);
 }
 
-.settings-main .runtime-settings > .settings-actions {
+.settings-main .runtime-settings > .settings-card > .settings-actions {
+  flex-wrap: wrap;
   margin: 0;
   padding: var(--space-lg);
 }
@@ -1179,13 +1261,13 @@
   min-height: 0 !important;
   grid-template-columns: 248px minmax(0, 1fr) !important;
   border-radius: var(--radius-lg) !important;
-  background: var(--bg-raised);
+  background: var(--bg-settings);
 }
 
 .settings-dialog .model-config-list,
 .settings-dialog .prompt-config-list {
   padding: var(--space-sm) !important;
-  background: var(--bg-workspace) !important;
+  background: var(--bg-settings) !important;
 }
 
 .settings-dialog .model-config-list > button,
@@ -1221,7 +1303,7 @@
 .settings-dialog .model-editor,
 .settings-dialog .prompt-editor {
   padding: var(--space-lg) var(--space-xl) 0 !important;
-  background: var(--bg-raised) !important;
+  background: var(--bg-settings) !important;
 }
 
 .settings-dialog .model-editor-title {

@@ -10,6 +10,7 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/natefinch/atomic v1.0.1
 	github.com/pkg/sftp v1.13.11
+	github.com/wailsapp/go-webview2 v1.0.19
 	github.com/wailsapp/wails/v3 v3.0.0-beta.16
 	golang.org/x/image v0.41.0
 	golang.org/x/mod v0.37.0

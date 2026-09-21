@@ -208,7 +208,7 @@ func main() {
 			log.Printf("close remote workspace lifecycle: %v", shutdownErr)
 		}
 	}()
-	agentService := appservice.NewAgentService(locator, sessionIndex, remoteLifecycle, anchorRoot)
+	agentService := appservice.NewAgentService(locator, sessionIndex, remoteLifecycle, anchorRoot, browserService)
 	defer func() {
 		if shutdownErr := agentService.ServiceShutdown(); shutdownErr != nil {
 			log.Printf("shutdown agent service: %v", shutdownErr)

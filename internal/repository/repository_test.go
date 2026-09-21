@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"archive/zip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -136,6 +138,59 @@ func TestPreviewFileReturnsMarkdownAndSafeMediaData(t *testing.T) {
 	image, err := PreviewFile(root, "image.png")
 	if err != nil || image.MediaType != "image/png" || !strings.HasPrefix(image.DataURL, "data:image/png;base64,") || !image.Binary {
 		t.Fatalf("unexpected image preview %#v, %v", image, err)
+	}
+}
+
+func TestPreviewFileReturnsSpreadsheetSheets(t *testing.T) {
+	root := t.TempDir()
+	filename := filepath.Join(root, "report.xlsx")
+	file, err := os.Create(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	parts := map[string]string{
+		"xl/workbook.xml":            `<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Details" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>`,
+		"xl/sharedStrings.xml":       `<sst><si><t>Name</t></si><si><t>Total</t></si><si><r><t>North</t></r><r><t> region</t></r></si></sst>`,
+		"xl/worksheets/sheet1.xml":   `<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>42</v></c></row></sheetData></worksheet>`,
+		"xl/worksheets/sheet2.xml":   `<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Ready</t></is></c><c r="B1" t="b"><v>1</v></c></row></sheetData></worksheet>`,
+	}
+	for name, content := range parts {
+		entry, createErr := archive.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write([]byte(content)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := PreviewFile(root, "report.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.MediaType != spreadsheetMediaType || !preview.Binary || preview.Truncated {
+		t.Fatalf("unexpected spreadsheet preview: %#v", preview)
+	}
+	var document spreadsheetPreview
+	if err := json.Unmarshal([]byte(preview.Content), &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Sheets) != 2 || document.Sheets[0].Name != "Summary" || document.Sheets[0].Columns != 2 {
+		t.Fatalf("unexpected spreadsheet sheets: %#v", document.Sheets)
+	}
+	if document.Sheets[0].Rows[1][0] != "North region" || document.Sheets[0].Rows[1][1] != "42" {
+		t.Fatalf("unexpected spreadsheet values: %#v", document.Sheets[0].Rows)
+	}
+	if document.Sheets[1].Rows[0][0] != "Ready" || document.Sheets[1].Rows[0][1] != "TRUE" {
+		t.Fatalf("unexpected second sheet: %#v", document.Sheets[1].Rows)
 	}
 }
 

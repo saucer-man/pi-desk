@@ -56,6 +56,9 @@ describe("SettingsDialog", () => {
       "[&_textarea]:!text-sm",
     ]));
     expect(wrapper.get(".settings-sections").classes()).not.toContain("[&>section]:px-1");
+    expect(wrapper.findAll(".settings-section-title")).toHaveLength(4);
+    expect(wrapper.findAll(".settings-card")).toHaveLength(4);
+    expect(wrapper.find(".settings-card .settings-section-title").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Open a task to start Pi and change runtime behavior.");
     const updateRow = wrapper.get('[data-testid="update-check-row"]');
     expect(updateRow.find('input[type="checkbox"]').exists()).toBe(false);
@@ -72,21 +75,32 @@ describe("SettingsDialog", () => {
 
     await wrapper.findAll(".settings-nav button").find((button) => button.text() === "Appearance")!.trigger("click");
     expect(wrapper.get("h1").text()).toBe("Appearance");
-    expect(wrapper.findAll(".appearance-select")).toHaveLength(4);
-    for (const select of wrapper.findAll(".appearance-select")) {
-      expect(select.classes()).toEqual(expect.arrayContaining(["!w-32", "!basis-32"]));
-      expect(select.classes()).not.toEqual(expect.arrayContaining(["!h-5", "!text-[9px]"]));
-    }
+    expect(wrapper.get(".settings-section-title").text()).toBe("Appearance");
+    expect(wrapper.find(".settings-card .settings-section-title").exists()).toBe(false);
+    expect(wrapper.findAll(".appearance-settings .settings-card .setting-row")).toHaveLength(9);
+    expect(wrapper.findAll(".appearance-select")).toHaveLength(7);
+    expect(wrapper.findAll('select[aria-label="Light code theme"] option')).toHaveLength(10);
     await wrapper.get('select[aria-label="Theme"]').setValue("light");
     await wrapper.get('select[aria-label="Font"]').setValue("mono");
     await wrapper.get('select[aria-label="Font size"]').setValue("16");
+    await wrapper.get('select[aria-label="Light code theme"]').setValue("catppuccin-latte");
+    await wrapper.get('select[aria-label="Dark code theme"]').setValue("catppuccin-mocha");
+    await wrapper.get('select[aria-label="Code font size"]').setValue("14");
+    const codeRows = wrapper.findAll(".appearance-settings .setting-row");
+    await codeRows.find((row) => row.text().includes("Show line numbers"))!.get('input[type="checkbox"]').setValue(false);
+    await codeRows.find((row) => row.text().includes("Wrap long lines"))!.get('input[type="checkbox"]').setValue(true);
 
     expect(store.offlineMode).toBe(false);
     expect(store.proxyEnabled).toBe(true);
     expect(store.appearance).toBe("light");
     expect(store.interfaceFont).toBe("mono");
     expect(store.interfaceFontSize).toBe(16);
-    expect(store.preferencesChanged).toHaveBeenCalledTimes(4);
+    expect(store.lightCodeTheme).toBe("catppuccin-latte");
+    expect(store.darkCodeTheme).toBe("catppuccin-mocha");
+    expect(store.codeFontSize).toBe(14);
+    expect(store.showCodeLineNumbers).toBe(false);
+    expect(store.wrapCodeLines).toBe(true);
+    expect(store.preferencesChanged).toHaveBeenCalledTimes(9);
     expect(store.appearanceChanged).toHaveBeenCalledOnce();
     await wrapper.get('[data-testid="settings-back"]').trigger("click");
     expect(store.closeSettings).toHaveBeenCalledOnce();

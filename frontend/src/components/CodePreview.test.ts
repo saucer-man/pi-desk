@@ -9,7 +9,8 @@ describe("CodePreview", () => {
     });
 
     await vi.waitFor(() => expect(wrapper.find(".tok-keyword").exists()).toBe(true));
-    expect(wrapper.get("pre").classes()).toContain("p-0!");
+    expect(wrapper.get("pre").classes()).not.toContain("p-0!");
+    expect(wrapper.get("pre").classes()).not.toContain("text-xs");
     expect(wrapper.text()).toContain("package main");
     expect(wrapper.findAll(".file-preview-line-number").map((line) => line.text())).toEqual(["1", "2", "3"]);
 

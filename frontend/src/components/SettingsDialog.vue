@@ -4,7 +4,7 @@ import { ArrowLeft, BarChart3, BookOpen, Boxes, Copy, Database, Download, Extern
 import { computed, ref } from "vue";
 import { PiMaintenanceAction, type PiMaintenanceResult } from "../../bindings/pi-desk/internal/domain";
 import { maintainPi } from "../services/desktop";
-import { useAppStore, type QueueMode, type SettingsSection, type SlashCommand } from "../stores/app";
+import { CODE_THEME_OPTIONS, useAppStore, type QueueMode, type SettingsSection, type SlashCommand } from "../stores/app";
 import { tr } from "../i18n";
 import ModelManager from "./ModelManager.vue";
 import ExtensionManager from "./ExtensionManager.vue";
@@ -183,135 +183,177 @@ function sourceIcon(source: SlashCommand["source"]) {
         <header v-if="section !== 'mcpManagement'" class="settings-view-header"><h1 id="settings-title">{{ sectionTitle }}</h1></header>
         <div v-if="section === 'appearance'" class="settings-content settings-sections appearance-settings" :class="ui.settingsSections">
           <section>
-            <h3>{{ tr("settings.appearance") }}</h3>
-            <label class="setting-row setting-row-select" :class="ui.row">
-              <span><strong>{{ tr("settings.theme") }}</strong><small>{{ tr("settings.themeHelp") }}</small></span>
-              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.appearance" :aria-label="tr('settings.theme')" @change="appStore.appearanceChanged()">
-                <option value="dark">{{ tr("settings.dark") }}</option>
-                <option value="light">{{ tr("settings.light") }}</option>
-                <option value="system">{{ tr("settings.system") }}</option>
-              </select>
-            </label>
-            <label class="setting-row setting-row-select" :class="ui.row">
-              <span><strong>{{ tr("settings.language") }}</strong><small>{{ tr("settings.languageHelp") }}</small></span>
-              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.language" :aria-label="tr('settings.language')" @change="appStore.languageChanged()">
-                <option value="zh-CN">{{ tr("settings.chinese") }}</option>
-                <option value="en">{{ tr("settings.english") }}</option>
-              </select>
-            </label>
-            <label class="setting-row setting-row-select" :class="ui.row">
-              <span><strong>{{ tr("settings.font") }}</strong><small>{{ tr("settings.fontHelp") }}</small></span>
-              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.interfaceFont" :aria-label="tr('settings.font')" @change="appStore.preferencesChanged()">
-                <option value="default">{{ tr("settings.fontDefault") }}</option>
-                <option value="system">{{ tr("settings.fontSystem") }}</option>
-                <option value="serif">{{ tr("settings.fontSerif") }}</option>
-                <option value="mono">{{ tr("settings.fontMono") }}</option>
-              </select>
-            </label>
-            <label class="setting-row setting-row-select" :class="ui.row">
-              <span><strong>{{ tr("settings.fontSize") }}</strong><small>{{ tr("settings.fontSizeHelp") }}</small></span>
-              <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model.number="appStore.interfaceFontSize" :aria-label="tr('settings.fontSize')" @change="appStore.preferencesChanged()">
-                <option v-for="size in [12, 13, 14, 15, 16, 17, 18]" :key="size" :value="size">{{ size }} px</option>
-              </select>
-            </label>
+            <h2 class="settings-section-title">{{ tr("settings.appearance") }}</h2>
+            <div class="settings-card">
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.theme") }}</strong><small>{{ tr("settings.themeHelp") }}</small></span>
+                <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.appearance" :aria-label="tr('settings.theme')" @change="appStore.appearanceChanged()">
+                  <option value="dark">{{ tr("settings.dark") }}</option>
+                  <option value="light">{{ tr("settings.light") }}</option>
+                  <option value="system">{{ tr("settings.system") }}</option>
+                </select>
+              </label>
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.language") }}</strong><small>{{ tr("settings.languageHelp") }}</small></span>
+                <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.language" :aria-label="tr('settings.language')" @change="appStore.languageChanged()">
+                  <option value="zh-CN">{{ tr("settings.chinese") }}</option>
+                  <option value="en">{{ tr("settings.english") }}</option>
+                </select>
+              </label>
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.font") }}</strong><small>{{ tr("settings.fontHelp") }}</small></span>
+                <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model="appStore.interfaceFont" :aria-label="tr('settings.font')" @change="appStore.preferencesChanged()">
+                  <option value="default">{{ tr("settings.fontDefault") }}</option>
+                  <option value="system">{{ tr("settings.fontSystem") }}</option>
+                  <option value="serif">{{ tr("settings.fontSerif") }}</option>
+                  <option value="mono">{{ tr("settings.fontMono") }}</option>
+                </select>
+              </label>
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.fontSize") }}</strong><small>{{ tr("settings.fontSizeHelp") }}</small></span>
+                <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model.number="appStore.interfaceFontSize" :aria-label="tr('settings.fontSize')" @change="appStore.preferencesChanged()">
+                  <option v-for="size in [12, 13, 14, 15, 16, 17, 18]" :key="size" :value="size">{{ size }} px</option>
+                </select>
+              </label>
+            </div>
+          </section>
+          <section>
+            <h2 class="settings-section-title">{{ tr("settings.codeSettings") }}</h2>
+            <p class="settings-section-help">{{ tr("settings.codeSettingsHelp") }}</p>
+            <div class="settings-card">
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.lightCodeTheme") }}</strong><small>{{ tr("settings.lightCodeThemeHelp") }}</small></span>
+                <select class="appearance-select !w-44 !basis-44" :class="ui.select" v-model="appStore.lightCodeTheme" :aria-label="tr('settings.lightCodeTheme')" @change="appStore.preferencesChanged()">
+                  <option v-for="[value, label] in CODE_THEME_OPTIONS" :key="value" :value="value">{{ label }}</option>
+                </select>
+              </label>
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.darkCodeTheme") }}</strong><small>{{ tr("settings.darkCodeThemeHelp") }}</small></span>
+                <select class="appearance-select !w-44 !basis-44" :class="ui.select" v-model="appStore.darkCodeTheme" :aria-label="tr('settings.darkCodeTheme')" @change="appStore.preferencesChanged()">
+                  <option v-for="[value, label] in CODE_THEME_OPTIONS" :key="value" :value="value">{{ label }}</option>
+                </select>
+              </label>
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.showCodeLineNumbers") }}</strong><small>{{ tr("settings.showCodeLineNumbersHelp") }}</small></span>
+                <input v-model="appStore.showCodeLineNumbers" type="checkbox" @change="appStore.preferencesChanged()" />
+              </label>
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.wrapCodeLines") }}</strong><small>{{ tr("settings.wrapCodeLinesHelp") }}</small></span>
+                <input v-model="appStore.wrapCodeLines" type="checkbox" @change="appStore.preferencesChanged()" />
+              </label>
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.codeFontSize") }}</strong><small>{{ tr("settings.codeFontSizeHelp") }}</small></span>
+                <select class="appearance-select !w-32 !basis-32" :class="ui.select" v-model.number="appStore.codeFontSize" :aria-label="tr('settings.codeFontSize')" @change="appStore.preferencesChanged()">
+                  <option v-for="size in [10, 11, 12, 13, 14, 15, 16, 17, 18]" :key="size" :value="size">{{ size }} px</option>
+                </select>
+              </label>
+            </div>
           </section>
         </div>
 
         <div v-else-if="section === 'general'" class="settings-content settings-sections" :class="ui.settingsSections">
           <section class="runtime-settings">
-            <h3>{{ tr("settings.runtime") }}</h3>
-            <dl>
-              <div><dt>Pi</dt><dd>{{ appStore.bootstrap?.runtime.version || tr("common.unavailable") }}</dd></div>
-              <div><dt>Wails</dt><dd>{{ appStore.bootstrap?.wailsVersion || "-" }}</dd></div>
-              <div><dt>Pi Desk</dt><dd>{{ appStore.bootstrap?.appVersion || "-" }}</dd></div>
-              <div class="runtime-path"><dt>{{ tr("settings.command") }}</dt><dd :title="appStore.bootstrap?.runtime.command">{{ appStore.bootstrap?.runtime.command || tr("common.notFound") }}</dd></div>
-            </dl>
-            <div class="settings-actions">
-              <button class="text-button" :class="ui.button" type="button" :disabled="!appStore.bootstrap?.runtime.command" @click="copyRuntimePath"><Copy :size="14" />{{ copied ? tr("settings.copied") : tr("settings.copyPath") }}</button>
-              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.runtimeCheckLoading" @click="appStore.checkRuntime"><RotateCw :size="14" :class="{ 'is-spinning': appStore.runtimeCheckLoading }" />{{ tr("settings.recheck") }}</button>
-              <button v-if="runtimeReady" data-testid="update-pi" class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiUpdateSelf)"><RefreshCw :size="14" />{{ tr("settings.updatePi") }}</button>
-              <button v-else-if="runtimeMissing" data-testid="install-pi" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiInstall)"><Download :size="14" />{{ tr("settings.installPi") }}</button>
-            </div>
-            <div v-if="maintenanceAction" class="maintenance-confirm" role="alert">
-              <p><strong>{{ tr("settings.maintenanceConfirmTitle", { action: maintenanceActionLabel(maintenanceAction) }) }}</strong><span>{{ tr("settings.maintenanceConfirmHelp") }}</span></p>
+            <h2 class="settings-section-title">{{ tr("settings.runtime") }}</h2>
+            <div class="settings-card">
+              <dl>
+                <div><dt>Pi</dt><dd>{{ appStore.bootstrap?.runtime.version || tr("common.unavailable") }}</dd></div>
+                <div><dt>Wails</dt><dd>{{ appStore.bootstrap?.wailsVersion || "-" }}</dd></div>
+                <div><dt>Pi Desk</dt><dd>{{ appStore.bootstrap?.appVersion || "-" }}</dd></div>
+                <div class="runtime-path"><dt>{{ tr("settings.command") }}</dt><dd :title="appStore.bootstrap?.runtime.command">{{ appStore.bootstrap?.runtime.command || tr("common.notFound") }}</dd></div>
+              </dl>
               <div class="settings-actions">
-                <button class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="maintenanceAction = null">{{ tr("common.cancel") }}</button>
-                <button data-testid="confirm-pi-maintenance" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="void confirmPiMaintenance()"><RefreshCw v-if="maintenanceLoading" :size="14" class="is-spinning" />{{ maintenanceLoading ? tr("settings.maintainingPi") : tr("common.confirm") }}</button>
+                <button class="text-button" :class="ui.button" type="button" :disabled="!appStore.bootstrap?.runtime.command" @click="copyRuntimePath"><Copy :size="14" />{{ copied ? tr("settings.copied") : tr("settings.copyPath") }}</button>
+                <button class="text-button" :class="ui.button" type="button" :disabled="appStore.runtimeCheckLoading" @click="appStore.checkRuntime"><RotateCw :size="14" :class="{ 'is-spinning': appStore.runtimeCheckLoading }" />{{ tr("settings.recheck") }}</button>
+                <button v-if="runtimeReady" data-testid="update-pi" class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiUpdateSelf)"><RefreshCw :size="14" />{{ tr("settings.updatePi") }}</button>
+                <button v-else-if="runtimeMissing" data-testid="install-pi" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="requestPiMaintenance(PiMaintenanceAction.PiInstall)"><Download :size="14" />{{ tr("settings.installPi") }}</button>
+              </div>
+              <div v-if="maintenanceAction" class="maintenance-confirm" role="alert">
+                <p><strong>{{ tr("settings.maintenanceConfirmTitle", { action: maintenanceActionLabel(maintenanceAction) }) }}</strong><span>{{ tr("settings.maintenanceConfirmHelp") }}</span></p>
+                <div class="settings-actions">
+                  <button class="text-button" :class="ui.button" type="button" :disabled="maintenanceLoading" @click="maintenanceAction = null">{{ tr("common.cancel") }}</button>
+                  <button data-testid="confirm-pi-maintenance" class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="maintenanceLoading" @click="void confirmPiMaintenance()"><RefreshCw v-if="maintenanceLoading" :size="14" class="is-spinning" />{{ maintenanceLoading ? tr("settings.maintainingPi") : tr("common.confirm") }}</button>
+                </div>
+              </div>
+              <p v-if="maintenanceError" class="form-error">{{ maintenanceError }}</p>
+              <div v-if="maintenanceResult" class="maintenance-result">
+                <strong>{{ tr("settings.maintenanceComplete", { action: maintenanceActionLabel(maintenanceResult.action) }) }}</strong>
+                <code v-if="maintenanceResult.command">{{ maintenanceResult.command }}</code>
+                <pre v-if="maintenanceResult.output">{{ maintenanceResult.output }}</pre>
               </div>
             </div>
-            <p v-if="maintenanceError" class="form-error">{{ maintenanceError }}</p>
-            <div v-if="maintenanceResult" class="maintenance-result">
-              <strong>{{ tr("settings.maintenanceComplete", { action: maintenanceActionLabel(maintenanceResult.action) }) }}</strong>
-              <code v-if="maintenanceResult.command">{{ maintenanceResult.command }}</code>
-              <pre v-if="maintenanceResult.output">{{ maintenanceResult.output }}</pre>
+          </section>
+          <section>
+            <h2 class="settings-section-title">{{ tr("settings.network") }}</h2>
+            <div class="settings-card">
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.offline") }}</strong><small>{{ tr("settings.offlineHelp") }}</small></span>
+                <input v-model="appStore.offlineMode" type="checkbox" @change="appStore.preferencesChanged()" />
+              </label>
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.proxy") }}</strong><small>{{ tr("settings.proxyHelp") }}</small></span>
+                <input v-model="appStore.proxyEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
+              </label>
+              <label v-if="appStore.proxyEnabled" for="proxy-url">{{ tr("settings.proxyUrl") }}</label>
+              <input :class="ui.input" v-if="appStore.proxyEnabled" id="proxy-url" v-model="appStore.proxyURL" class="settings-input" spellcheck="false" @change="appStore.preferencesChanged()" />
             </div>
           </section>
           <section>
-            <h3>{{ tr("settings.network") }}</h3>
-            <label class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.offline") }}</strong><small>{{ tr("settings.offlineHelp") }}</small></span>
-              <input v-model="appStore.offlineMode" type="checkbox" @change="appStore.preferencesChanged()" />
-            </label>
-            <label class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.proxy") }}</strong><small>{{ tr("settings.proxyHelp") }}</small></span>
-              <input v-model="appStore.proxyEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
-            </label>
-            <label v-if="appStore.proxyEnabled" for="proxy-url">{{ tr("settings.proxyUrl") }}</label>
-            <input :class="ui.input" v-if="appStore.proxyEnabled" id="proxy-url" v-model="appStore.proxyURL" class="settings-input" spellcheck="false" @change="appStore.preferencesChanged()" />
-          </section>
-          <section>
-            <h3>{{ tr("settings.tasks") }}</h3>
-            <label class="setting-row setting-row-select" :class="ui.row">
-              <span><strong>{{ tr("settings.steeringQueue") }}</strong><small>{{ tr("settings.steeringQueueHelp") }}</small></span>
-              <select :class="ui.select"
-                aria-label="Steering queue processing"
-                :value="appStore.activeSessionState?.steeringMode || 'one-at-a-time'"
-                :disabled="!appStore.activeThread?.started || runtimeLoading"
-                @change="void updateRuntimeBehavior(() => appStore.setSteeringMode(queueMode($event)))"
-              >
-                <option value="one-at-a-time">{{ tr("settings.onePerTurn") }}</option>
-                <option value="all">{{ tr("settings.allQueued") }}</option>
-              </select>
-            </label>
-            <label class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.autoCompaction") }}</strong><small>{{ tr("settings.autoCompactionHelp") }}</small></span>
-              <input
-                type="checkbox"
-                :checked="appStore.activeSessionState?.autoCompactionEnabled ?? true"
-                :disabled="!appStore.activeThread?.started || runtimeLoading"
-                @change="void updateRuntimeBehavior(() => appStore.setAutoCompaction(($event.target as HTMLInputElement).checked))"
-              />
-            </label>
-            <label class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.autoRetry") }}</strong><small>{{ tr("settings.autoRetryHelp") }}</small></span>
-              <input
-                type="checkbox"
-                :checked="appStore.activeAutoRetryEnabled"
-                :disabled="!appStore.activeThread?.started || runtimeLoading"
-                @change="void updateRuntimeBehavior(() => appStore.setAutoRetry(($event.target as HTMLInputElement).checked))"
-              />
-            </label>
-          </section>
-          <section>
-            <h3>{{ tr("settings.desktop") }}</h3>
-            <label class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.notifications") }}</strong><small>{{ tr("settings.notificationsHelp") }}</small></span>
-              <input v-model="appStore.notificationsEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
-            </label>
-            <div data-testid="sync-local-sessions-row" class="setting-row" :class="ui.row">
-              <span>
-                <strong>{{ tr("sidebar.syncSessions") }}</strong>
-                <small>{{ tr("settings.syncSessionsHelp") }}</small>
-                <small v-if="appStore.sessionSyncError" class="text-[var(--red)]" role="alert">{{ appStore.sessionSyncError }}</small>
-              </span>
-              <button class="text-button" :class="ui.button" type="button" :disabled="appStore.sessionSyncLoading" :aria-busy="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.sessionSyncLoading }" />{{ appStore.sessionSyncLoading ? tr("settings.syncingSessions") : tr("sidebar.syncSessions") }}</button>
+            <h2 class="settings-section-title">{{ tr("settings.tasks") }}</h2>
+            <div class="settings-card">
+              <label class="setting-row setting-row-select" :class="ui.row">
+                <span><strong>{{ tr("settings.steeringQueue") }}</strong><small>{{ tr("settings.steeringQueueHelp") }}</small></span>
+                <select :class="ui.select"
+                  aria-label="Steering queue processing"
+                  :value="appStore.activeSessionState?.steeringMode || 'one-at-a-time'"
+                  :disabled="!appStore.activeThread?.started || runtimeLoading"
+                  @change="void updateRuntimeBehavior(() => appStore.setSteeringMode(queueMode($event)))"
+                >
+                  <option value="one-at-a-time">{{ tr("settings.onePerTurn") }}</option>
+                  <option value="all">{{ tr("settings.allQueued") }}</option>
+                </select>
+              </label>
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.autoCompaction") }}</strong><small>{{ tr("settings.autoCompactionHelp") }}</small></span>
+                <input
+                  type="checkbox"
+                  :checked="appStore.activeSessionState?.autoCompactionEnabled ?? true"
+                  :disabled="!appStore.activeThread?.started || runtimeLoading"
+                  @change="void updateRuntimeBehavior(() => appStore.setAutoCompaction(($event.target as HTMLInputElement).checked))"
+                />
+              </label>
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.autoRetry") }}</strong><small>{{ tr("settings.autoRetryHelp") }}</small></span>
+                <input
+                  type="checkbox"
+                  :checked="appStore.activeAutoRetryEnabled"
+                  :disabled="!appStore.activeThread?.started || runtimeLoading"
+                  @change="void updateRuntimeBehavior(() => appStore.setAutoRetry(($event.target as HTMLInputElement).checked))"
+                />
+              </label>
             </div>
-            <div data-testid="update-check-row" class="setting-row" :class="ui.row">
-              <span><strong>{{ tr("settings.updates") }}</strong><small>{{ tr("settings.updatesHelp") }}</small></span>
-              <div class="flex shrink-0 items-center gap-2">
-                <button data-testid="check-updates-now" class="text-button" :class="ui.button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
-                <small class="whitespace-nowrap" :class="{ 'text-[var(--amber)]': appStore.updateCheckResult?.status === 'available', 'text-[var(--red)]': appStore.updateCheckResult?.status === 'error' }">{{ updateMessage() }}</small>
-                <a v-if="appStore.updateCheckResult?.url" class="text-button" :class="ui.button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
+          </section>
+          <section>
+            <h2 class="settings-section-title">{{ tr("settings.desktop") }}</h2>
+            <div class="settings-card">
+              <label class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.notifications") }}</strong><small>{{ tr("settings.notificationsHelp") }}</small></span>
+                <input v-model="appStore.notificationsEnabled" type="checkbox" @change="appStore.preferencesChanged()" />
+              </label>
+              <div data-testid="sync-local-sessions-row" class="setting-row" :class="ui.row">
+                <span>
+                  <strong>{{ tr("sidebar.syncSessions") }}</strong>
+                  <small>{{ tr("settings.syncSessionsHelp") }}</small>
+                  <small v-if="appStore.sessionSyncError" class="text-[var(--red)]" role="alert">{{ appStore.sessionSyncError }}</small>
+                </span>
+                <button class="text-button" :class="ui.button" type="button" :disabled="appStore.sessionSyncLoading" :aria-busy="appStore.sessionSyncLoading" @click="void appStore.syncAndRestoreSessions()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.sessionSyncLoading }" />{{ appStore.sessionSyncLoading ? tr("settings.syncingSessions") : tr("sidebar.syncSessions") }}</button>
+              </div>
+              <div data-testid="update-check-row" class="setting-row" :class="ui.row">
+                <span><strong>{{ tr("settings.updates") }}</strong><small>{{ tr("settings.updatesHelp") }}</small></span>
+                <div class="flex shrink-0 items-center gap-2">
+                  <button data-testid="check-updates-now" class="text-button" :class="ui.button" type="button" :disabled="appStore.updateCheckLoading" @click="void checkForUpdates()"><RefreshCw :size="14" :class="{ 'is-spinning': appStore.updateCheckLoading }" />{{ tr("settings.checkNow") }}</button>
+                  <small class="whitespace-nowrap" :class="{ 'text-[var(--amber)]': appStore.updateCheckResult?.status === 'available', 'text-[var(--red)]': appStore.updateCheckResult?.status === 'error' }">{{ updateMessage() }}</small>
+                  <a v-if="appStore.updateCheckResult?.url" class="text-button" :class="ui.button" :href="appStore.updateCheckResult.url" target="_blank" rel="noreferrer"><ExternalLink :size="14" />{{ tr("settings.release") }}</a>
+                </div>
               </div>
             </div>
           </section>

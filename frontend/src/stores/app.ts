@@ -5,7 +5,8 @@ import { catalogService } from "../services/catalog";
 import { checkForUpdates, checkRuntime as checkRuntimeStatus, getBootstrapState, notifyDesktop } from "../services/desktop";
 import { repositoryService, type RepositoryFileDiff, type RepositoryFilePreview, type RepositorySnapshot, type RepositoryWorkspaceReference, type SessionFileChange } from "../services/repository";
 import { remoteWorkspaceService } from "../services/remoteWorkspaces";
-import { onTerminalEvent, type TerminalEvent } from "../services/terminal";
+import { onTerminalEvent, terminalService, type TerminalEvent } from "../services/terminal";
+import { browserService, type BrowserEvent } from "../services/browser";
 import { modelConfigService } from "../services/modelconfig";
 import { BATCH_ASK_PLACEHOLDER, parseBatchAskEnvelope, type BatchAskQuestion } from "../utils/batchAsk";
 import { formatFileMention } from "../utils/fileMentions";
@@ -24,12 +25,52 @@ import {
 } from "../utils/scheduledTasks";
 
 export type ThreadStatus = "idle" | "starting" | "running" | "attention";
+export interface PanelTab {
+  id: string;
+  kind: "files" | "file" | "diff" | "browser" | "terminal";
+  title: string;
+  path?: string;
+  source?: string;
+  sessionDiff?: string;
+  url?: string;
+  agent?: boolean;
+  browserTemporary?: boolean;
+  pinned?: boolean;
+  treeOpen?: boolean;
+  expanded?: Record<string, boolean>;
+  filter?: string;
+  markdownRendered?: boolean;
+  sheet?: number;
+  scroll?: Record<string, [number, number]>;
+  line?: number;
+  preview?: RepositoryFilePreview;
+  diff?: RepositoryDiffView;
+  loading?: boolean;
+  closing?: boolean;
+  error?: string;
+  generation?: number;
+}
+export interface ThreadPanel {
+  tabs: PanelTab[];
+  activeId: string;
+  open: boolean;
+  width: number;
+  expanded: boolean;
+}
 export type InspectorTab = "changes" | "context" | "terminal" | "browser";
 export type StreamingBehavior = "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
 export type Appearance = "dark" | "light" | "system";
 export type Language = "zh-CN" | "en";
 export type InterfaceFont = "default" | "system" | "serif" | "mono";
+export const CODE_THEME_OPTIONS = [
+  ["github-light", "GitHub Light"], ["github-dark", "GitHub Dark"],
+  ["vitesse-light", "Vitesse Light"], ["vitesse-dark", "Vitesse Dark"],
+  ["minimal-light", "Minimal Light"], ["minimal-dark", "Minimal Dark"],
+  ["github-hc-light", "GitHub HC Light"], ["github-hc-dark", "GitHub HC Dark"],
+  ["catppuccin-latte", "Catppuccin Latte"], ["catppuccin-mocha", "Catppuccin Mocha"],
+] as const;
+export type CodeTheme = typeof CODE_THEME_OPTIONS[number][0];
 export type AppPage = "task" | "scheduledTasks";
 type RemoteReconnectIntent = "start" | "prompt" | "bash" | "terminal";
 export type RemoteReconnectProgressStatus = "pending" | "active" | "complete" | "error";
@@ -49,7 +90,7 @@ export const MAX_PI_PROCESSES = 10;
 export const DEFAULT_SIDEBAR_WIDTH = 264;
 export const MIN_SIDEBAR_WIDTH = 180;
 export const MAX_SIDEBAR_WIDTH = 560;
-export const DEFAULT_INSPECTOR_WIDTH = 360;
+export const DEFAULT_INSPECTOR_WIDTH = 600;
 export const MIN_INSPECTOR_WIDTH = 240;
 export const MAX_INSPECTOR_WIDTH = 840;
 const TODO_WIDGET_KEYS = ["pi-deck-todo", "pi-desk-todo"] as const;
@@ -753,6 +794,8 @@ export const useAppStore = defineStore("app", {
     inspectorOpen: true,
     inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
     inspectorTab: "changes" as InspectorTab,
+    inspectorByThread: {} as Record<string, ThreadPanel>,
+    contextOpen: false,
     searchOpen: false,
     searchQuery: "",
     newTaskOpen: false,
@@ -834,18 +877,6 @@ export const useAppStore = defineStore("app", {
     repositoryErrorByWorkspace: {} as Record<string, string>,
     repositoryStaleByWorkspace: {} as Record<string, boolean>,
     repositoryRefreshGenerationByWorkspace: {} as Record<string, number>,
-    repositoryDiffByWorkspace: {} as Record<string, RepositoryDiffView | undefined>,
-    repositoryDiffPathByWorkspace: {} as Record<string, string>,
-    repositoryDiffLoadingByWorkspace: {} as Record<string, boolean>,
-    repositoryDiffGenerationByWorkspace: {} as Record<string, number>,
-    repositoryDiffErrorByWorkspace: {} as Record<string, string>,
-    repositoryFilePreviewByThread: {} as Record<string, RepositoryFilePreview | undefined>,
-    repositoryFileTabsByThread: {} as Record<string, string[]>,
-    repositoryFilePreviewPathByThread: {} as Record<string, string>,
-    repositoryFilePreviewLineByThread: {} as Record<string, number | undefined>,
-    repositoryFilePreviewLoadingByThread: {} as Record<string, boolean>,
-    repositoryFilePreviewGenerationByThread: {} as Record<string, number>,
-    repositoryFilePreviewErrorByThread: {} as Record<string, string>,
     sessionChangesByThread: {} as Record<string, SessionFileChange[] | undefined>,
     sessionChangesErrorByThread: {} as Record<string, string>,
     workspaceTrustUpdatingPath: "",
@@ -855,6 +886,11 @@ export const useAppStore = defineStore("app", {
     language: "zh-CN" as Language,
     interfaceFont: "default" as InterfaceFont,
     interfaceFontSize: 14,
+    lightCodeTheme: "github-light" as CodeTheme,
+    darkCodeTheme: "github-dark" as CodeTheme,
+    showCodeLineNumbers: true,
+    wrapCodeLines: false,
+    codeFontSize: 12,
     piProcessOrder: [] as string[],
     extensionRequestByThread: {} as Record<string, ExtensionUIRequest | undefined>,
     extensionStatusesByThread: {} as Record<string, Record<string, string>>,
@@ -972,40 +1008,30 @@ export const useAppStore = defineStore("app", {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
       return thread ? Boolean(state.repositoryStaleByWorkspace[repositoryKey(thread)]) : false;
     },
-    activeRepositoryDiff(state): RepositoryDiffView | undefined {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffByWorkspace[repositoryKey(thread)] : undefined;
+    activePanel(state): ThreadPanel | undefined {
+      return state.inspectorByThread[state.activeThreadId];
     },
-    activeRepositoryDiffPath(state): string {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffPathByWorkspace[repositoryKey(thread)] ?? "" : "";
+    activePanelTab(): PanelTab | undefined {
+      return this.activePanel?.tabs.find((tab) => tab.id === this.activePanel?.activeId);
     },
-    activeRepositoryDiffLoading(state): boolean {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? Boolean(state.repositoryDiffLoadingByWorkspace[repositoryKey(thread)]) : false;
+    activeRepositoryDiff(): RepositoryDiffView | undefined {
+      return this.activePanelTab?.kind === "diff" ? this.activePanelTab.diff : undefined;
     },
-    activeRepositoryDiffError(state): string {
-      const thread = state.threads.find((item) => item.id === state.activeThreadId);
-      return thread ? state.repositoryDiffErrorByWorkspace[repositoryKey(thread)] ?? "" : "";
+    activeRepositoryDiffPath(): string {
+      return this.activePanelTab?.kind === "diff" ? this.activePanelTab.path ?? "" : "";
     },
-    activeRepositoryFilePreview(state): RepositoryFilePreview | undefined {
-      return state.repositoryFilePreviewByThread[state.activeThreadId];
+    activeRepositoryDiffLoading(): boolean { return this.activePanelTab?.kind === "diff" && !!this.activePanelTab.loading; },
+    activeRepositoryDiffError(): string { return this.activePanelTab?.kind === "diff" ? this.activePanelTab.error ?? "" : ""; },
+    activeRepositoryFilePreview(): RepositoryFilePreview | undefined {
+      return this.activePanelTab?.kind === "file" ? this.activePanelTab.preview : undefined;
     },
-    activeRepositoryFileTabs(state): string[] {
-      return state.repositoryFileTabsByThread[state.activeThreadId] ?? [];
+    activeRepositoryFileTabs(): string[] { return this.activePanel?.tabs.filter((tab) => tab.kind === "file").map((tab) => tab.path!) ?? []; },
+    activeRepositoryFilePreviewPath(): string {
+      return this.activePanelTab?.kind === "file" ? this.activePanelTab.path ?? "" : "";
     },
-    activeRepositoryFilePreviewPath(state): string {
-      return state.repositoryFilePreviewPathByThread[state.activeThreadId] ?? "";
-    },
-    activeRepositoryFilePreviewLine(state): number | undefined {
-      return state.repositoryFilePreviewLineByThread[state.activeThreadId];
-    },
-    activeRepositoryFilePreviewLoading(state): boolean {
-      return Boolean(state.repositoryFilePreviewLoadingByThread[state.activeThreadId]);
-    },
-    activeRepositoryFilePreviewError(state): string {
-      return state.repositoryFilePreviewErrorByThread[state.activeThreadId] ?? "";
-    },
+    activeRepositoryFilePreviewLine(): number | undefined { return this.activePanelTab?.line; },
+    activeRepositoryFilePreviewLoading(): boolean { return this.activePanelTab?.kind === "file" && !!this.activePanelTab.loading; },
+    activeRepositoryFilePreviewError(): string { return this.activePanelTab?.kind === "file" ? this.activePanelTab.error ?? "" : ""; },
     activeSessionChanges(state): SessionFileChange[] {
       return state.sessionChangesByThread[state.activeThreadId] ?? [];
     },
@@ -1122,31 +1148,133 @@ export const useAppStore = defineStore("app", {
       setAppLanguage(this.language);
       this.scheduleDesktopStateSave();
     },
-    toggleInspector(tab?: InspectorTab) {
-      if (tab) {
-        this.inspectorTab = tab;
+    ensurePanel(threadId?: string): ThreadPanel {
+      threadId ??= this.activeThreadId;
+      return this.inspectorByThread[threadId] ?? (this.inspectorByThread[threadId] = {
+        tabs: [], activeId: "", open: false, width: DEFAULT_INSPECTOR_WIDTH, expanded: false,
+      });
+    },
+    openPanelTab(input: PanelTab, threadId?: string): PanelTab {
+      threadId ??= this.activeThreadId;
+      const panel = this.ensurePanel(threadId);
+      let tab = panel.tabs.find((item) => item.id === input.id);
+      if (!tab) {
+        tab = input;
+        if (tab.kind === "file" && !tab.pinned) {
+          const previewIndex = panel.tabs.findIndex((item) => item.kind === "file" && !item.pinned);
+          if (previewIndex >= 0) panel.tabs.splice(previewIndex, 1, tab);
+          else panel.tabs.push(tab);
+        } else panel.tabs.push(tab);
+      }
+      panel.activeId = tab.id;
+      panel.open = true;
+      if (threadId === this.activeThreadId) {
         this.inspectorOpen = true;
-        this.scheduleDesktopStateSave();
-        return;
+        this.inspectorTab = tab.kind === "browser" || tab.kind === "terminal" ? tab.kind : "changes";
       }
+      this.scheduleDesktopStateSave();
+      return panel.tabs.find((item) => item.id === tab!.id)!;
+    },
+    selectPanelTab(id: string) {
+      const tab = this.activePanel?.tabs.find((item) => item.id === id);
+      if (!tab) return;
+      this.openPanelTab(tab);
+      if ((tab.kind === "file" && !tab.preview) || (tab.kind === "diff" && !tab.diff)) void this.loadPanelFile(this.activeThreadId, id);
+    },
+    pinPanelTab(id: string) {
+      const tab = this.activePanel?.tabs.find((item) => item.id === id);
+      if (tab) tab.pinned = true;
+      this.scheduleDesktopStateSave();
+    },
+    reorderPanelTab(id: string, target: string) {
+      const tabs = this.activePanel?.tabs;
+      if (!tabs || id === target) return;
+      const from = tabs.findIndex((tab) => tab.id === id), to = tabs.findIndex((tab) => tab.id === target);
+      if (from < 0 || to < 0) return;
+      tabs.splice(to, 0, tabs.splice(from, 1)[0]);
+      this.scheduleDesktopStateSave();
+    },
+    async closePanelTab(id: string) {
+      const threadId = this.activeThreadId;
+      const panel = this.inspectorByThread[threadId];
+      const tab = panel?.tabs.find((item) => item.id === id);
+      if (!tab || tab.closing) return;
+      tab.closing = true;
+      try {
+        if (tab.kind === "terminal") {
+          const thread = this.threads.find((item) => item.id === threadId);
+          const snapshot = await terminalService.snapshot(threadId, thread && this.remoteWorkspaceForThread(thread)?.id);
+          if (snapshot.running && !window.confirm("终端仍在运行。关闭标签会结束终端及其中的进程，是否继续？")) { tab.closing = false; return; }
+          if (snapshot.running) await terminalService.stop(threadId);
+        }
+        if (tab.kind === "browser") await browserService.closeTab(tab.id);
+      } catch (error) { tab.closing = false; tab.error = errorMessage(error); return; }
+      const index = panel.tabs.findIndex((item) => item.id === id);
+      if (index < 0) return;
+      panel.tabs.splice(index, 1);
+      if (panel.activeId === id) {
+        panel.activeId = panel.tabs[Math.min(index, panel.tabs.length - 1)]?.id ?? "";
+        if (threadId === this.activeThreadId && panel.activeId) this.selectPanelTab(panel.activeId);
+      }
+      if (!panel.tabs.length) {
+        panel.open = false;
+        if (threadId === this.activeThreadId) this.inspectorOpen = false;
+      }
+      this.scheduleDesktopStateSave();
+    },
+    toggleInspector(tab?: InspectorTab) {
+      if (tab) { this.setInspectorTab(tab); return; }
+      if (!this.inspectorOpen && !this.activePanel?.tabs.length) { this.setInspectorTab("changes"); return; }
       this.inspectorOpen = !this.inspectorOpen;
-      if (this.inspectorOpen && (this.inspectorTab === "changes" || this.inspectorTab === "context")) {
-        void this.refreshActiveRepository();
-      }
+      this.ensurePanel().open = this.inspectorOpen;
       this.scheduleDesktopStateSave();
     },
     setInspectorWidth(width: number, persist = false) {
       this.inspectorWidth = Math.min(MAX_INSPECTOR_WIDTH, Math.max(MIN_INSPECTOR_WIDTH, Math.round(width)));
+      if (this.activeThreadId) this.ensurePanel().width = this.inspectorWidth;
       if (persist) this.scheduleDesktopStateSave();
     },
     setInspectorTab(tab: InspectorTab) {
-      this.inspectorTab = tab;
-      if (tab === "changes" || tab === "context") void this.refreshActiveRepository();
-      this.scheduleDesktopStateSave();
+      if (!this.activeThread) return;
+      if (tab === "context") { this.contextOpen = !this.contextOpen; return; }
+      if (tab === "browser") { this.openBrowserTab(); return; }
+      this.openPanelTab({ id: `${this.activeThreadId}:${tab}`, kind: tab === "terminal" ? "terminal" : "files", title: tr(tab === "terminal" ? "inspector.terminal" : "inspector.files") });
+      if (tab === "changes") void this.refreshActiveRepository();
     },
-    activateBrowserPane() {
-      this.inspectorOpen = true;
-      this.inspectorTab = "browser";
+    openBrowserTab(url = "", agent = false, threadId?: string) {
+      threadId ??= this.activeThreadId;
+      return this.openPanelTab({
+        id: agent ? `${threadId}:agent-browser` : crypto.randomUUID(),
+        kind: "browser", title: tr("inspector.browser"), url, agent,
+      }, threadId);
+    },
+    activateBrowserPane(threadId?: string) {
+      this.openBrowserTab("", true, threadId);
+    },
+    handleBrowserEvent(event: BrowserEvent) {
+      if (!event.threadId || !event.tabId || !this.threads.some(thread => thread.id === event.threadId)) return;
+      const panel = this.ensurePanel(event.threadId);
+      let tab = panel.tabs.find(item => item.id === event.tabId);
+      if (event.type === "closed") {
+        panel.tabs = panel.tabs.filter(item => item.id !== event.tabId);
+        if (panel.activeId === event.tabId) panel.activeId = panel.tabs.at(-1)?.id || "";
+        if (!panel.tabs.length) { panel.open = false; if (event.threadId === this.activeThreadId) this.inspectorOpen = false; }
+      } else if (event.status) {
+        if (!tab) {
+          tab = { id: event.tabId, kind: "browser", title: "浏览器", agent: event.status.temporary };
+          panel.tabs.push(tab);
+          // Background Agent activity does not replace an active file or diff.
+          if (!panel.activeId) {
+            panel.activeId = tab.id; panel.open = true;
+            if (event.threadId === this.activeThreadId) this.inspectorOpen = true;
+          }
+        }
+        tab.url = event.status.url;
+        tab.title = event.status.title || (event.status.url && event.status.url !== "about:blank" ? event.status.url : "浏览器");
+        tab.browserTemporary = event.status.temporary;
+        tab.loading = event.status.loading;
+        tab.error = event.status.error;
+      }
       this.scheduleDesktopStateSave();
     },
     toggleSearch() {
@@ -1174,11 +1302,27 @@ export const useAppStore = defineStore("app", {
         this.searchBodyLoading = false;
       }
     },
+    activateThread(threadId: string) {
+      if (this.activeThreadId === threadId) return;
+      if (this.activeThreadId && this.threads.some((thread) => thread.id === this.activeThreadId)) {
+        const previous = this.ensurePanel();
+        previous.open = this.inspectorOpen;
+        previous.width = this.inspectorWidth;
+      }
+      this.activeThreadId = threadId;
+      const panel = this.inspectorByThread[threadId];
+      this.inspectorOpen = panel?.open ?? false;
+      this.contextOpen = false;
+      this.inspectorWidth = panel?.width ?? DEFAULT_INSPECTOR_WIDTH;
+      const tab = panel?.tabs.find((item) => item.id === panel.activeId);
+      this.inspectorTab = tab?.kind === "browser" || tab?.kind === "terminal" ? tab.kind : "changes";
+      if (tab && this.inspectorOpen) this.selectPanelTab(tab.id);
+    },
     selectThread(threadId: string) {
       if (this.threads.some((thread) => thread.id === threadId)) {
         this.activePage = "task";
         this.branchPanelOpen = false;
-        this.activeThreadId = threadId;
+        this.activateThread(threadId);
         if (this.activeThread) this.activeThread.unread = false;
         if (this.activeThread?.sessionFile) void this.loadThreadTranscript(threadId);
         if (this.catalogReady && this.activeThread) void this.startThreadInBackground(threadId);
@@ -1380,7 +1524,7 @@ export const useAppStore = defineStore("app", {
       this.threads.unshift(thread);
       this.messagesByThread[thread.id] = [];
       this.draftsByThread[thread.id] = "";
-      this.activeThreadId = thread.id;
+      this.activateThread(thread.id);
       this.newTaskOpen = false;
       this.scheduleDesktopStateSave();
     },
@@ -1433,7 +1577,7 @@ export const useAppStore = defineStore("app", {
       this.threads.unshift(thread);
       this.messagesByThread[thread.id] = [];
       this.draftsByThread[thread.id] = "";
-      this.activeThreadId = thread.id;
+      this.activateThread(thread.id);
       this.newTaskOpen = false;
       this.scheduleDesktopStateSave();
     },
@@ -1554,118 +1698,67 @@ export const useAppStore = defineStore("app", {
       this.sessionChangesErrorByThread[thread.id] = "";
       await this.refreshActiveRepository();
     },
-    async openRepositoryDiff(path: string, sessionDiff?: string) {
+    async openRepositoryDiff(path: string, sessionDiff?: string, source?: string) {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
-      const workingPath = repositoryReference(thread);
-      const key = repositoryKey(thread);
-      this.inspectorOpen = true;
-      this.inspectorTab = "changes";
-      this.repositoryFilePreviewGenerationByThread[thread.id] = (this.repositoryFilePreviewGenerationByThread[thread.id] ?? 0) + 1;
-      this.repositoryFilePreviewPathByThread[thread.id] = "";
-      this.repositoryFilePreviewLineByThread[thread.id] = undefined;
-      this.repositoryFilePreviewByThread[thread.id] = undefined;
-      this.repositoryFilePreviewLoadingByThread[thread.id] = false;
-      this.repositoryFilePreviewErrorByThread[thread.id] = "";
-      this.scheduleDesktopStateSave();
-      const generation = (this.repositoryDiffGenerationByWorkspace[key] ?? 0) + 1;
-      this.repositoryDiffGenerationByWorkspace[key] = generation;
-      this.repositoryDiffPathByWorkspace[key] = path;
-      this.repositoryDiffByWorkspace[key] = sessionDiff === undefined ? undefined : { path, working: sessionDiff, session: true };
-      this.repositoryDiffLoadingByWorkspace[key] = sessionDiff === undefined;
-      this.repositoryDiffErrorByWorkspace[key] = "";
-      if (sessionDiff !== undefined) return;
-      try {
-        const diff = await repositoryService.diff(workingPath, path);
-        if (this.repositoryDiffGenerationByWorkspace[key] === generation) this.repositoryDiffByWorkspace[key] = diff;
-      } catch (error) {
-        if (this.repositoryDiffGenerationByWorkspace[key] === generation) {
-          this.repositoryDiffErrorByWorkspace[key] = this.remoteFailureMessage(thread.id, error);
-        }
-      } finally {
-        if (this.repositoryDiffGenerationByWorkspace[key] === generation) this.repositoryDiffLoadingByWorkspace[key] = false;
-      }
+      const existing = this.activePanel?.tabs.find((tab) => tab.kind === "diff" && tab.path === path && tab.source === source && tab.sessionDiff === sessionDiff);
+      const tab = this.openPanelTab({
+        id: existing?.id ?? `${thread.id}:diff:${source ?? (sessionDiff === undefined ? "git" : crypto.randomUUID())}:${path}`,
+        kind: "diff", title: path.split(/[\\/]/).pop() || path, path, source, sessionDiff, pinned: true,
+      });
+      await this.loadPanelFile(thread.id, tab.id);
     },
-    async openRepositoryFilePreview(path: string, line?: number) {
+    async openRepositoryFilePreview(path: string, line?: number, pinned = true) {
       const thread = this.activeThread;
       if (!thread || thread.trust !== "approve") return;
-      const threadId = thread.id;
-      const workingPath = repositoryReference(thread);
-      const generation = (this.repositoryFilePreviewGenerationByThread[threadId] ?? 0) + 1;
-      this.repositoryFilePreviewGenerationByThread[threadId] = generation;
-      this.inspectorOpen = true;
-      this.scheduleDesktopStateSave();
-      this.repositoryFilePreviewPathByThread[threadId] = path;
-      const tabs = this.repositoryFileTabsByThread[threadId] ?? (this.repositoryFileTabsByThread[threadId] = []);
-      if (!tabs.includes(path)) {
-        tabs.push(path);
-        if (tabs.length > 20) tabs.shift();
-      }
-      this.repositoryFilePreviewLineByThread[threadId] = line;
-      this.repositoryFilePreviewByThread[threadId] = undefined;
-      this.repositoryFilePreviewLoadingByThread[threadId] = true;
-      this.repositoryFilePreviewErrorByThread[threadId] = "";
+      const tab = this.openPanelTab({
+        id: `${thread.id}:file:${path.replaceAll("\\", "/")}`,
+        kind: "file", title: path.split(/[\\/]/).pop() || path, path, line, pinned,
+        treeOpen: this.activePanelTab?.kind === "files" || this.activePanelTab?.treeOpen,
+        expanded: { ...this.activePanelTab?.expanded },
+        filter: this.activePanelTab?.filter,
+      });
+      if (pinned) tab.pinned = true;
+      if (line !== undefined) tab.line = line;
+      await this.loadPanelFile(thread.id, tab.id);
+    },
+    async loadPanelFile(threadId: string, id: string) {
+      const thread = this.threads.find((item) => item.id === threadId);
+      const tab = this.inspectorByThread[threadId]?.tabs.find((item) => item.id === id);
+      if (!thread || thread.trust !== "approve" || !tab?.path || tab.loading) return;
+      const generation = (tab.generation ?? 0) + 1;
+      tab.generation = generation;
+      tab.loading = true;
+      tab.error = "";
       try {
-        const preview = await repositoryService.previewFile(workingPath, path);
-        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) this.repositoryFilePreviewByThread[threadId] = preview;
+        const result = tab.kind === "file"
+          ? await repositoryService.previewFile(repositoryReference(thread), tab.path)
+          : tab.sessionDiff !== undefined ? { path: tab.path, working: tab.sessionDiff, session: true }
+          : await repositoryService.diff(repositoryReference(thread), tab.path);
+        if (tab.generation !== generation || thread.trust !== "approve") return;
+        if (tab.kind === "file") tab.preview = result as RepositoryFilePreview;
+        else tab.diff = result as RepositoryDiffView;
       } catch (error) {
-        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) {
-          this.repositoryFilePreviewErrorByThread[threadId] = this.remoteFailureMessage(thread.id, error);
-        }
+        if (tab.generation === generation) tab.error = this.remoteFailureMessage(threadId, error);
       } finally {
-        if (this.repositoryFilePreviewGenerationByThread[threadId] === generation) this.repositoryFilePreviewLoadingByThread[threadId] = false;
+        if (tab.generation === generation) tab.loading = false;
       }
     },
     closeRepositoryFilePreview(path?: string) {
-      const threadId = this.activeThreadId;
-      if (!threadId) return;
-      const activePath = this.repositoryFilePreviewPathByThread[threadId] ?? "";
-      const closingPath = path ?? activePath;
-      const tabs = this.repositoryFileTabsByThread[threadId] ?? [];
-      const index = tabs.indexOf(closingPath);
-      if (index >= 0) tabs.splice(index, 1);
-      if (closingPath !== activePath) return;
-      this.repositoryFilePreviewGenerationByThread[threadId] = (this.repositoryFilePreviewGenerationByThread[threadId] ?? 0) + 1;
-      this.repositoryFilePreviewPathByThread[threadId] = "";
-      this.repositoryFilePreviewLineByThread[threadId] = undefined;
-      this.repositoryFilePreviewByThread[threadId] = undefined;
-      this.repositoryFilePreviewLoadingByThread[threadId] = false;
-      this.repositoryFilePreviewErrorByThread[threadId] = "";
-      const next = tabs[Math.min(index, tabs.length - 1)];
-      if (next) void this.openRepositoryFilePreview(next);
-    },
-    async openPreviewedRepositoryFile(reveal = false) {
-      const thread = this.activeThread;
-      const path = this.activeRepositoryFilePreviewPath;
-      if (!thread || !path || thread.trust !== "approve" || this.remoteWorkspaceForThread(thread)) return;
-      try {
-        if (reveal) await repositoryService.revealFile(thread.workspacePath, path);
-        else await repositoryService.openFile(thread.workspacePath, path);
-      } catch (error) {
-        this.repositoryFilePreviewErrorByThread[thread.id] = errorMessage(error);
-      }
+      const tab = this.activePanel?.tabs.find((item) => item.kind === "file" && item.path === (path ?? this.activeRepositoryFilePreviewPath));
+      if (tab) void this.closePanelTab(tab.id);
     },
     closeRepositoryDiff() {
-      const thread = this.activeThread;
-      if (!thread) return;
-      const key = repositoryKey(thread);
-      this.repositoryDiffGenerationByWorkspace[key] = (this.repositoryDiffGenerationByWorkspace[key] ?? 0) + 1;
-      this.repositoryDiffPathByWorkspace[key] = "";
-      this.repositoryDiffByWorkspace[key] = undefined;
-      this.repositoryDiffLoadingByWorkspace[key] = false;
-      this.repositoryDiffErrorByWorkspace[key] = "";
+      if (this.activePanelTab?.kind === "diff") void this.closePanelTab(this.activePanelTab.id);
     },
+    async openPreviewedRepositoryFile(reveal = false) { await this.openActiveRepositoryFile(reveal); },
     async openActiveRepositoryFile(reveal = false) {
-      const thread = this.activeThread;
-      const path = this.activeRepositoryDiffPath;
-      if (!thread || !path || thread.trust !== "approve" || this.remoteWorkspaceForThread(thread)) return;
-      const workingPath = thread.workspacePath;
+      const thread = this.activeThread, tab = this.activePanelTab;
+      if (!thread || !tab?.path || thread.trust !== "approve" || this.remoteWorkspaceForThread(thread)) return;
       try {
-        if (reveal) await repositoryService.revealFile(workingPath, path);
-        else await repositoryService.openFile(workingPath, path);
-      } catch (error) {
-        this.repositoryDiffErrorByWorkspace[repositoryKey(thread)] = errorMessage(error);
-      }
+        if (reveal) await repositoryService.revealFile(thread.workspacePath, tab.path);
+        else await repositoryService.openFile(thread.workspacePath, tab.path);
+      } catch (error) { tab.error = errorMessage(error); }
     },
     async readComposerClipboard(threadId: string): Promise<{ references: string[]; images: File[] }> {
       const thread = this.threads.find((item) => item.id === threadId);
@@ -1835,7 +1928,7 @@ export const useAppStore = defineStore("app", {
         this.remoteReadyByWorkspace[workspace.id] = true;
         this.remoteReconnectOpen = false;
         this.remoteReconnectThreadId = "";
-        this.activeThreadId = thread.id;
+        this.activateThread(thread.id);
       } catch (error) {
         this.remoteReconnectError = errorMessage(error);
         const activeStep = this.remoteReconnectProgress.find((step) => step.status === "active");
@@ -2194,6 +2287,9 @@ export const useAppStore = defineStore("app", {
       }
     },
     removeThreadState(threadId: string) {
+      for (const tab of this.inspectorByThread[threadId]?.tabs ?? []) {
+        if (tab.kind === "browser") { tab.closing = true; void browserService.closeTab(tab.id).catch(() => undefined); }
+      }
       const index = this.threads.findIndex((candidate) => candidate.id === threadId);
       if (index >= 0) this.threads.splice(index, 1);
       for (const collection of [
@@ -2209,13 +2305,12 @@ export const useAppStore = defineStore("app", {
         this.sessionBranchesByThread, this.sessionBranchesErrorByThread, this.sessionOperationByThread, this.pendingModelByThread,
         this.modelSelectionGenerationByThread,
         this.sessionStateRefreshGenerationByThread,
-        this.repositoryFilePreviewByThread, this.repositoryFilePreviewPathByThread, this.repositoryFilePreviewLineByThread,
-        this.repositoryFilePreviewLoadingByThread, this.repositoryFilePreviewGenerationByThread, this.repositoryFilePreviewErrorByThread,
+        this.inspectorByThread,
         this.terminalGenerationByThread,
       ]) delete collection[threadId];
       piExitedGenerationByThread.delete(threadId);
       if (this.activeThreadId === threadId) {
-        this.activeThreadId = this.threads[0]?.id ?? "";
+        this.activateThread(this.threads[0]?.id ?? "");
       }
       this.piProcessOrder = this.piProcessOrder.filter((id) => id !== threadId);
     },
@@ -2828,6 +2923,10 @@ export const useAppStore = defineStore("app", {
     },
     async startSessionNow(thread: ThreadSummary) {
       if (thread.started) return;
+      // A fresh session has no JSONL yet; restarting Pi must not replace the
+      // model already selected in this task with Pi's default model.
+      const selectedModel = this.sessionStateByThread[thread.id]?.model;
+      if (!thread.sessionFile && selectedModel) this.pendingModelByThread[thread.id] ??= selectedModel;
       const queuedRemoteWorkspace = this.remoteWorkspaceForThread(thread);
       if (queuedRemoteWorkspace && !this.remoteReadyByWorkspace[queuedRemoteWorkspace.id]) {
         throw new Error("SSH workspace must be reconnected before starting Pi");
@@ -3050,13 +3149,13 @@ export const useAppStore = defineStore("app", {
     markRemoteWorkspaceStale(workspaceID: string) {
       this.repositoryRefreshGenerationByWorkspace[workspaceID] = (this.repositoryRefreshGenerationByWorkspace[workspaceID] ?? 0) + 1;
       this.repositoryLoadingByWorkspace[workspaceID] = false;
-      this.repositoryDiffGenerationByWorkspace[workspaceID] = (this.repositoryDiffGenerationByWorkspace[workspaceID] ?? 0) + 1;
-      this.repositoryDiffLoadingByWorkspace[workspaceID] = false;
       this.repositoryStaleByWorkspace[workspaceID] = true;
       for (const thread of this.threads) {
         if (thread.workspaceId !== workspaceID) continue;
-        this.repositoryFilePreviewGenerationByThread[thread.id] = (this.repositoryFilePreviewGenerationByThread[thread.id] ?? 0) + 1;
-        this.repositoryFilePreviewLoadingByThread[thread.id] = false;
+        for (const tab of this.inspectorByThread[thread.id]?.tabs ?? []) {
+          tab.generation = (tab.generation ?? 0) + 1;
+          tab.loading = false;
+        }
       }
     },
     markRemoteTargetStale(targetID?: string) {
@@ -3253,7 +3352,6 @@ export const useAppStore = defineStore("app", {
             diff: buildToolDiff(String(payload.toolName ?? "tool"), payload.args),
           });
           assistant.activeExecution = "tool";
-          if (String(payload.toolName ?? "").startsWith("browser_")) this.activateBrowserPane();
           if (REMOTE_MUTATING_TOOLS.has(String(payload.toolName ?? ""))) this.markRemoteRepositoryStale(thread.id);
           break;
         }
@@ -3492,6 +3590,22 @@ export const useAppStore = defineStore("app", {
       this.interfaceFontSize = Number.isInteger(desktop.preferences.fontSize) && desktop.preferences.fontSize >= 12 && desktop.preferences.fontSize <= 18
         ? desktop.preferences.fontSize
         : 14;
+      const themes = CODE_THEME_OPTIONS.map(([value]) => value);
+      const hasCodePreferences = themes.includes(desktop.preferences.lightCodeTheme as CodeTheme)
+        || themes.includes(desktop.preferences.darkCodeTheme as CodeTheme)
+        || Boolean(desktop.preferences.codeFontSize);
+      this.lightCodeTheme = themes.includes(desktop.preferences.lightCodeTheme as CodeTheme)
+        ? desktop.preferences.lightCodeTheme as CodeTheme
+        : "github-light";
+      this.darkCodeTheme = themes.includes(desktop.preferences.darkCodeTheme as CodeTheme)
+        ? desktop.preferences.darkCodeTheme as CodeTheme
+        : "github-dark";
+      this.showCodeLineNumbers = hasCodePreferences ? desktop.preferences.showCodeLineNumbers !== false : true;
+      this.wrapCodeLines = desktop.preferences.wrapCodeLines === true;
+      const codeFontSize = desktop.preferences.codeFontSize ?? 0;
+      this.codeFontSize = Number.isInteger(codeFontSize) && codeFontSize >= 10 && codeFontSize <= 18
+        ? codeFontSize
+        : 12;
       setAppLanguage(this.language);
       this.offlineMode = desktop.preferences.offlineMode;
       this.proxyEnabled = desktop.preferences.proxyEnabled;
@@ -3502,6 +3616,18 @@ export const useAppStore = defineStore("app", {
       this.inspectorOpen = desktop.preferences.inspectorOpen;
       this.setInspectorWidth(desktop.preferences.inspectorWidth || DEFAULT_INSPECTOR_WIDTH);
       this.inspectorTab = desktop.preferences.inspectorTab as InspectorTab;
+      try {
+        const panels = JSON.parse(desktop.preferences.panelState || "{}");
+        if (panels && typeof panels === "object" && !Array.isArray(panels)) {
+          for (const [id, panel] of Object.entries(panels) as [string, ThreadPanel][]) {
+            if (!panel || !Array.isArray(panel.tabs)) continue;
+            panel.tabs = panel.tabs.filter((tab) => tab && typeof tab.id === "string" && typeof tab.title === "string" && ["files", "file", "diff", "browser", "terminal"].includes(tab.kind));
+            panel.width = Math.min(MAX_INSPECTOR_WIDTH, Math.max(MIN_INSPECTOR_WIDTH, Number(panel.width) || DEFAULT_INSPECTOR_WIDTH));
+            if (!panel.tabs.some((tab) => tab.id === panel.activeId)) panel.activeId = panel.tabs[0]?.id ?? "";
+            this.inspectorByThread[id] = panel;
+          }
+        }
+      } catch { /* Older or invalid panel state starts empty. */ }
       this.notificationsEnabled = desktop.preferences.notificationsEnabled ?? true;
       this.updateChecksEnabled = desktop.preferences.updateChecksEnabled ?? true;
       this.closeToTray = true;
@@ -3602,7 +3728,7 @@ export const useAppStore = defineStore("app", {
             existing.trust = (workspace?.trust ?? saved.trust) as "approve" | "deny";
             if (workspace) {
               existing.workspace = workspace.name;
-              existing.workspaceId = workspace.id;
+              existing.workspaceId = workspace.discovered ? undefined : workspace.id;
               existing.workspacePath = workspace.path;
             }
             existing.unread = saved.unread;
@@ -3647,9 +3773,9 @@ export const useAppStore = defineStore("app", {
           this.draftsByThread[thread.id] = drafts.get(thread.id) ?? "";
           this.transcriptStateByThread[thread.id] ??= "idle";
         }
-        this.activeThreadId = this.threads.some((thread) => thread.id === desktop.activeThreadId)
+        this.activateThread(this.threads.some((thread) => thread.id === desktop.activeThreadId)
           ? desktop.activeThreadId ?? ""
-          : this.threads[0]?.id ?? "";
+          : this.threads[0]?.id ?? "");
         this.catalogReady = true;
       } catch (error) {
         this.catalogError = errorMessage(error);
@@ -3761,6 +3887,11 @@ export const useAppStore = defineStore("app", {
           language: this.language,
           fontFamily: this.interfaceFont,
           fontSize: this.interfaceFontSize,
+          lightCodeTheme: this.lightCodeTheme,
+          darkCodeTheme: this.darkCodeTheme,
+          showCodeLineNumbers: this.showCodeLineNumbers,
+          wrapCodeLines: this.wrapCodeLines,
+          codeFontSize: this.codeFontSize,
           offlineMode: this.offlineMode,
           proxyEnabled: this.proxyEnabled,
           proxyUrl: this.proxyURL.trim(),
@@ -3770,6 +3901,9 @@ export const useAppStore = defineStore("app", {
           inspectorOpen: this.inspectorOpen,
           inspectorWidth: this.inspectorWidth,
           inspectorTab: this.inspectorTab,
+          panelState: JSON.stringify(Object.fromEntries(Object.entries(this.inspectorByThread).map(([id, panel]) => [
+            id, { ...panel, tabs: panel.tabs.filter(tab => !tab.browserTemporary).map(({ preview, diff, loading, closing, error, generation, ...tab }) => tab) },
+          ]))),
           notificationsEnabled: this.notificationsEnabled,
           updateChecksEnabled: this.updateChecksEnabled,
           closeToTray: true,

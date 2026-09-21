@@ -83,19 +83,22 @@ describe("ExtensionManager", () => {
     expect(wrapper.find(".settings-fill-body").exists()).toBe(true);
     expect(wrapper.text()).toContain("Pi Desk Todo");
     expect(wrapper.text()).toContain("Legacy PiDeck Todo");
-    expect(wrapper.text()).toContain("local");
-    expect(wrapper.text()).toContain("context-mode");
-    expect(wrapper.text()).toContain("Global file");
-    expect(wrapper.text()).toContain("Configured extensions and packages");
-    expect(wrapper.findAll(".installed-extensions")).toHaveLength(1);
-    expect(wrapper.get(".installed-extensions > header span").text()).toBe("2");
+    expect(wrapper.findAll(".extension-recommended")).toHaveLength(1);
+    expect(wrapper.findAll(".extension-feature-row")).toHaveLength(6);
+    expect(wrapper.find(".installed-extensions").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Configured extensions and packages");
+    expect(wrapper.get('[data-testid="install-todo-extension"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.get('[data-testid="remove-todo-extension"]').attributes("disabled")).toBeDefined();
 
     await wrapper.get('[data-testid="install-todo-extension"]').trigger("click");
     await flushPromises();
 
     expect(extensionMocks.installTodo).toHaveBeenCalledOnce();
     expect(wrapper.text()).toContain("legacy PiDeck Todo extension was disabled");
+    expect(wrapper.get('[data-testid="install-todo-extension"]').text()).toContain("Installed");
+    expect(wrapper.get('[data-testid="install-todo-extension"]').attributes("disabled")).toBeDefined();
     expect(wrapper.get('[data-testid="remove-todo-extension"]').text()).toContain("Remove");
+    expect(wrapper.get('[data-testid="remove-todo-extension"]').attributes("disabled")).toBeUndefined();
   });
 
   it("requires confirmation before removing Pi Desk Todo", async () => {
@@ -195,32 +198,6 @@ describe("ExtensionManager", () => {
     expect(wrapper.get('[data-testid="remove-computer-use-extension"]').text()).toContain("Remove");
   });
 
-  it("installs, toggles, updates, and removes Pi packages", async () => {
-    extensionMocks.list.mockResolvedValue(baseSnapshot);
-    extensionMocks.listPackages.mockResolvedValue(packageSnapshot);
-    extensionMocks.installPackage.mockResolvedValue({ output: "installed" });
-    extensionMocks.setPackageEnabled.mockResolvedValue(undefined);
-    extensionMocks.updatePackage.mockResolvedValue({ output: "updated" });
-    extensionMocks.removePackage.mockResolvedValue({ output: "removed" });
-    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
-    const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
-    await flushPromises();
-
-    await wrapper.get('input[placeholder="npm:package, git URL, or local path"]').setValue("npm:new-package");
-    await wrapper.get(".extension-package-install button").trigger("click");
-    await flushPromises();
-    expect(extensionMocks.installPackage).toHaveBeenCalledWith(expect.objectContaining({ source: "npm:new-package", scope: PiPackageScope.PiPackageScopeGlobal }));
-
-    await wrapper.findAll(".package-row button")[0].trigger("click");
-    await flushPromises();
-    expect(extensionMocks.setPackageEnabled).toHaveBeenCalledWith(expect.objectContaining({ source: "npm:context-mode", enabled: false }));
-    await wrapper.findAll(".package-row button")[1].trigger("click");
-    await flushPromises();
-    expect(extensionMocks.updatePackage).toHaveBeenCalled();
-    await wrapper.findAll(".package-row button")[2].trigger("click");
-    await flushPromises();
-    expect(extensionMocks.removePackage).toHaveBeenCalled();
-  });
   it("offers to install the pi-mcp-adapter engine from the plugin list", async () => {
     extensionMocks.list.mockResolvedValue(baseSnapshot);
     extensionMocks.installPackage.mockResolvedValue({ output: "installed" });
@@ -228,8 +205,9 @@ describe("ExtensionManager", () => {
     await flushPromises();
 
     const row = wrapper.get('[data-testid="mcp-adapter-extension-row"]');
-    expect(row.text()).toContain("Not installed");
-    await wrapper.get('[data-testid="install-mcp-adapter"]').trigger("click");
+    expect(row.get('[data-testid="install-mcp-adapter-extension"]').text()).toContain("Install");
+    expect(row.get('[data-testid="remove-mcp-adapter-extension"]').attributes("disabled")).toBeDefined();
+    await row.get('[data-testid="install-mcp-adapter-extension"]').trigger("click");
     await flushPromises();
     expect(extensionMocks.installPackage).toHaveBeenCalledWith({ source: "npm:pi-mcp-adapter", scope: PiPackageScope.PiPackageScopeGlobal, workspacePath: "" });
   });
@@ -243,7 +221,10 @@ describe("ExtensionManager", () => {
     const wrapper = mount(ExtensionManager, { global: { plugins: [createPinia()] } });
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="mcp-adapter-extension-row"]').text()).toContain("Installed");
-    expect(wrapper.get('[data-testid="remove-mcp-adapter"]').text()).toContain("Remove");
+    const row = wrapper.get('[data-testid="mcp-adapter-extension-row"]');
+    expect(row.get('[data-testid="install-mcp-adapter-extension"]').text()).toContain("Installed");
+    expect(row.get('[data-testid="install-mcp-adapter-extension"]').attributes("disabled")).toBeDefined();
+    expect(row.get('[data-testid="remove-mcp-adapter-extension"]').text()).toContain("Remove");
+    expect(row.get('[data-testid="remove-mcp-adapter-extension"]').attributes("disabled")).toBeUndefined();
   });
 });

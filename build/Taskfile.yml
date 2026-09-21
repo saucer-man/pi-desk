@@ -104,6 +104,7 @@ tasks:
     sources:
       - "**/*"
       - exclude: node_modules/**/*
+      - exclude: dist/**/*
     generates:
       - dist/**/*
     deps:
@@ -205,6 +206,8 @@ tasks:
       - exclude: frontend/**/*
       - frontend/bindings/**/*  # Rerun when switching between dev/production mode causes changes in output
       - "**/*.go"
+      - exclude: .cache/**/*
+      - exclude: temp/**/*
       - go.mod
       - go.sum
     generates:
