@@ -13,6 +13,9 @@ const props = defineProps<{
   searchQuery?: string;
   searchActive?: boolean;
 }>();
+// 本组件是多根（内容节点 + 右键菜单），Vue 不会自动透传 class/style，
+// 必须自己绑到内容根节点上，否则调用方的布局类（如 .file-markdown-preview 的 overflow）会静默丢失。
+defineOptions({ inheritAttrs: false });
 const appStore = useAppStore();
 const MAX_MARKDOWN_CHARS = 100_000;
 const workspacePath = computed(() => appStore.activeThread?.workspacePath || "");
@@ -123,13 +126,14 @@ function openContextMenu(event: MouseEvent) {
 <template>
   <div
     v-if="renderMarkdown"
+    v-bind="$attrs"
     class="markdown-body"
     :class="[ui.root, { streaming }]"
     v-html="rendered"
     @click="openPreview"
     @contextmenu="openContextMenu"
   />
-  <pre v-else class="oversized-message" :class="ui.code">{{ text }}</pre>
+  <pre v-else v-bind="$attrs" class="oversized-message" :class="ui.code">{{ text }}</pre>
   <FileLinkContextMenu
     v-if="contextMenu && workspacePath"
     :file="contextMenu.file"
