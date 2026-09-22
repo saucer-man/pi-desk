@@ -4,8 +4,7 @@
   "size": 12442,
   "sha256": "7e001a61ab9e96477ebcb5921f2009e552139daed71f4daf8b4da7d137018920",
   "piCompatibility": {
-    "minInclusive": "0.84.2",
-    "maxExclusive": "0.86.0"
+    "minInclusive": "0.84.2"
   },
   "coverage": [
     "bash",

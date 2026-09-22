@@ -29,7 +29,6 @@ type remoteAdapterManifest struct {
 	SHA256          string `json:"sha256"`
 	PiCompatibility struct {
 		MinInclusive string `json:"minInclusive"`
-		MaxExclusive string `json:"maxExclusive"`
 	} `json:"piCompatibility"`
 	Coverage []string `json:"coverage"`
 }
@@ -57,8 +56,7 @@ func verifyRemoteAdapterBundle(piVersion string) (remoteAdapterManifest, error) 
 	}
 	version := "v" + strings.TrimPrefix(strings.TrimSpace(piVersion), "v")
 	minimum := "v" + strings.TrimPrefix(strings.TrimSpace(manifest.PiCompatibility.MinInclusive), "v")
-	maximum := "v" + strings.TrimPrefix(strings.TrimSpace(manifest.PiCompatibility.MaxExclusive), "v")
-	if !semver.IsValid(version) || !semver.IsValid(minimum) || !semver.IsValid(maximum) || semver.Compare(minimum, maximum) >= 0 || semver.Compare(version, minimum) < 0 || semver.Compare(version, maximum) >= 0 {
+	if !semver.IsValid(version) || !semver.IsValid(minimum) || semver.Compare(version, minimum) < 0 {
 		return remoteAdapterManifest{}, errors.New("installed Pi version is incompatible with the remote adapter")
 	}
 	return manifest, nil

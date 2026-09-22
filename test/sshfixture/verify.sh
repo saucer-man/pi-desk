@@ -138,8 +138,7 @@ cd "$root"
 go run ./cmd/pi-desk-remote-artifacts \
     -output build/remote-helper/artifacts \
     -build-identity "$build_identity" \
-    -pi-min 0.84.2 \
-    -pi-max 0.85.0
+    -pi-min 0.84.2
 
 export HOME="$temporary/home"
 export GOCACHE="$original_gocache"

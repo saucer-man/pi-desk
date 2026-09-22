@@ -33,7 +33,7 @@ func TestLiveRemoteRepositoryAndTerminalBackends(t *testing.T) {
 	artifact := remotessh.HelperArtifact{
 		ProtocolVersion: remoteprotocol.Version, OS: artifactOS, Architecture: artifactArch,
 		Size: int64(len(content)), SHA256: hex.EncodeToString(digest[:]), BuildIdentity: buildIdentity,
-		PiVersionMin: "0.84.2", PiVersionMax: "0.85.0",
+		PiVersionMin: "0.84.2",
 	}
 	if err := artifact.Validate(); err != nil {
 		t.Fatal(err)

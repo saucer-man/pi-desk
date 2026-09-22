@@ -20,7 +20,6 @@ func helperArtifactForTest(goos, architecture string, content []byte) HelperArti
 		SHA256:          hex.EncodeToString(digest[:]),
 		BuildIdentity:   "test-build-20260819",
 		PiVersionMin:    "0.84.2",
-		PiVersionMax:    "0.86.0",
 	}
 }
 
@@ -89,11 +88,9 @@ func TestHelperManifestRejectsInvalidMetadata(t *testing.T) {
 			want:   ErrHelperManifestInvalid,
 		},
 		{
-			name: "invalid compatibility range",
-			mutate: func(manifest *HelperManifest) {
-				manifest.Artifacts[0].PiVersionMax = manifest.Artifacts[0].PiVersionMin
-			},
-			want: ErrHelperManifestInvalid,
+			name:   "invalid minimum version",
+			mutate: func(manifest *HelperManifest) { manifest.Artifacts[0].PiVersionMin = "invalid" },
+			want:   ErrHelperManifestInvalid,
 		},
 		{
 			name:   "oversized artifact",
@@ -134,8 +131,11 @@ func TestHelperArtifactSelectionAndIntegrityFailClosed(t *testing.T) {
 	if _, err := manifest.SelectHelperArtifact("windows", "amd64", "0.84.2"); !errors.Is(err, ErrHelperArtifactUnsupported) {
 		t.Fatalf("unsupported target error = %v", err)
 	}
-	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "0.86.0"); !errors.Is(err, ErrHelperPiIncompatible) {
-		t.Fatalf("incompatible Pi error = %v", err)
+	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "0.84.1"); !errors.Is(err, ErrHelperPiIncompatible) {
+		t.Fatalf("older Pi error = %v", err)
+	}
+	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "999.0.0"); err != nil {
+		t.Fatalf("newer Pi error = %v", err)
 	}
 	if _, err := manifest.SelectHelperArtifact("linux", "amd64", "not-a-version"); !errors.Is(err, ErrHelperPiIncompatible) {
 		t.Fatalf("malformed Pi version error = %v", err)

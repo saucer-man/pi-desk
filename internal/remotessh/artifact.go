@@ -42,7 +42,6 @@ type HelperArtifact struct {
 	SHA256          string `json:"sha256"`
 	BuildIdentity   string `json:"buildIdentity"`
 	PiVersionMin    string `json:"piVersionMin"`
-	PiVersionMax    string `json:"piVersionMax"`
 }
 
 // HelperManifest is the immutable release description bundled alongside the
@@ -129,15 +128,8 @@ func (artifact HelperArtifact) Validate() error {
 	if err := validateBuildIdentity(artifact.BuildIdentity); err != nil {
 		return err
 	}
-	minVersion, err := normalizePiVersion(artifact.PiVersionMin)
-	if err != nil {
-		return err
-	}
-	maxVersion, err := normalizePiVersion(artifact.PiVersionMax)
-	if err != nil || semver.Compare(minVersion, maxVersion) >= 0 {
-		return ErrHelperManifestInvalid
-	}
-	return nil
+	_, err := normalizePiVersion(artifact.PiVersionMin)
+	return err
 }
 
 // SelectHelperArtifact chooses an exact POSIX helper for a remote platform and
@@ -155,8 +147,7 @@ func (manifest HelperManifest) SelectHelperArtifact(goos, architecture, piVersio
 			continue
 		}
 		minVersion, _ := normalizePiVersion(artifact.PiVersionMin)
-		maxVersion, _ := normalizePiVersion(artifact.PiVersionMax)
-		if semver.Compare(version, minVersion) < 0 || semver.Compare(version, maxVersion) >= 0 {
+		if semver.Compare(version, minVersion) < 0 {
 			return HelperArtifact{}, ErrHelperPiIncompatible
 		}
 		return artifact, nil
