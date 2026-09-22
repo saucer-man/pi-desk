@@ -524,10 +524,6 @@
   font-size: calc(14px + var(--font-size-delta));
 }
 
-.thread-title.is-started {
-  font-weight: 400;
-}
-
 .thread-time {
   flex: 0 0 auto;
   color: var(--text-muted);

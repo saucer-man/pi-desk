@@ -313,6 +313,8 @@ watch(searchMatches, (matches) => {
 onMounted(async () => {
   document.addEventListener("keydown", onDocumentKeydown, true);
   await nextTick();
+  virtualizer.value.measure();
+  scrollToBottom();
   updateActiveNavigation();
 });
 onBeforeUnmount(() => {

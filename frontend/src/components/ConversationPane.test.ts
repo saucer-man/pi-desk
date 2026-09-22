@@ -62,6 +62,17 @@ describe("ConversationPane", () => {
     expect(wrapper.find("composer-bar-stub").exists()).toBe(true);
   });
 
+  it("opens an already selected conversation at its latest message", async () => {
+    const wrapper = mountTranscript(4);
+    const timeline = wrapper.get(".timeline").element as HTMLElement;
+    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 1200 });
+    timeline.scrollTop = 300;
+
+    await flushPromises();
+
+    expect(timeline.scrollTop).toBe(1200);
+  });
+
   it("measures the composer stack and follows its growth only while pinned to the bottom", async () => {
     const observers: Array<{ callback: () => void; target?: Element; disconnect: () => void }> = [];
     const frames: FrameRequestCallback[] = [];
