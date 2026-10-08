@@ -50,6 +50,8 @@ func TestGetConfiguredModelsReturnsNoCredentials(t *testing.T) {
 func TestUpsertModelCreatesOfficialPiShape(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent", "models.json")
 	service := newModelConfigService(path, nil)
+	reserveTokens, keepRecentTokens := 24000, 32000
+	imageMaxWidth, imageMaxHeight, imageMaxBytes, imageJPEGQuality := 1568, 1568, 524288, 75
 
 	snapshot, err := service.UpsertModel(domain.UpsertModelConfigRequest{
 		ProviderID:           "custom-openai",
@@ -64,6 +66,12 @@ func TestUpsertModelCreatesOfficialPiShape(t *testing.T) {
 		MaxTokens:            32000,
 		Reasoning:            true,
 		ImageInput:           true,
+		ReserveTokens:        &reserveTokens,
+		KeepRecentTokens:     &keepRecentTokens,
+		ImageMaxWidth:        &imageMaxWidth,
+		ImageMaxHeight:       &imageMaxHeight,
+		ImageMaxBytes:        &imageMaxBytes,
+		ImageJPEGQuality:     &imageJPEGQuality,
 		ThinkingLevelMapJSON: `{"off":null,"xhigh":"xhigh","max":"max"}`,
 		ModelCompatJSON:      `{"supportsReasoningEffort":true}`,
 	})
@@ -94,6 +102,10 @@ func TestUpsertModelCreatesOfficialPiShape(t *testing.T) {
 	if model["id"] != "gpt-test" || model["reasoning"] != true || model["contextWindow"] != float64(200000) {
 		t.Fatalf("unexpected model: %#v", model)
 	}
+	resize := model["inputLimits"].(map[string]any)["images"].(map[string]any)["resize"].(map[string]any)
+	if resize["maxWidth"] != float64(1568) || resize["maxBytes"] != float64(524288) || resize["jpegQuality"] != float64(75) {
+		t.Fatalf("unexpected image resize profile: %#v", resize)
+	}
 	thinkingLevelMap, ok := model["thinkingLevelMap"].(map[string]any)
 	_, hasOff := thinkingLevelMap["off"]
 	if !ok || !hasOff || thinkingLevelMap["off"] != nil || thinkingLevelMap["xhigh"] != "xhigh" || thinkingLevelMap["max"] != "max" {
@@ -101,6 +113,17 @@ func TestUpsertModelCreatesOfficialPiShape(t *testing.T) {
 	}
 	if snapshot.Providers[0].Models[0].ThinkingLevelMapJSON == "" {
 		t.Fatal("thinking level map was not returned to the editor")
+	}
+	managed := snapshot.Providers[0].Models[0]
+	if managed.ReserveTokens == nil || *managed.ReserveTokens != reserveTokens || managed.ImageJPEGQuality == nil || *managed.ImageJPEGQuality != imageJPEGQuality {
+		t.Fatalf("Pi 0.87 limits were not returned to the editor: %#v", managed)
+	}
+	settingsData, err := os.ReadFile(filepath.Join(filepath.Dir(path), "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if !strings.Contains(string(settingsData), `"custom-openai/gpt-test"`) || !strings.Contains(string(settingsData), `"reserveTokens": 24000`) {
+		t.Fatalf("model compaction override was not written:\n%s", settingsData)
 	}
 }
 
@@ -227,6 +250,9 @@ func TestUpsertModelRejectsUnsafeOrInvalidFields(t *testing.T) {
 		{name: "unsupported api", mutate: func(request *domain.UpsertModelConfigRequest) { request.API = "custom-api" }},
 		{name: "relative base url", mutate: func(request *domain.UpsertModelConfigRequest) { request.BaseURL = "/v1" }},
 		{name: "max exceeds context", mutate: func(request *domain.UpsertModelConfigRequest) { request.MaxTokens = request.ContextWindow + 1 }},
+		{name: "negative reserve tokens", mutate: func(request *domain.UpsertModelConfigRequest) { value := -1; request.ReserveTokens = &value }},
+		{name: "zero image width", mutate: func(request *domain.UpsertModelConfigRequest) { value := 0; request.ImageMaxWidth = &value }},
+		{name: "invalid JPEG quality", mutate: func(request *domain.UpsertModelConfigRequest) { value := 101; request.ImageJPEGQuality = &value }},
 		{name: "invalid compat", mutate: func(request *domain.UpsertModelConfigRequest) { request.ModelCompatJSON = "[]" }},
 		{name: "trailing compat data", mutate: func(request *domain.UpsertModelConfigRequest) { request.ModelCompatJSON = `{} {}` }},
 		{name: "invalid thinking level key", mutate: func(request *domain.UpsertModelConfigRequest) { request.ThinkingLevelMapJSON = `{"turbo":"turbo"}` }},
@@ -250,6 +276,10 @@ func TestDeleteModelPreservesProvider(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
+	settingsPath := filepath.Join(filepath.Dir(path), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"compaction":{"modelOverrides":{"proxy/one":{"reserveTokens":1000},"proxy/two":{"reserveTokens":2000}}}}`), 0o600); err != nil {
+		t.Fatalf("write settings fixture: %v", err)
+	}
 	service := newModelConfigService(path, nil)
 
 	snapshot, err := service.DeleteModel(domain.DeleteModelConfigRequest{ProviderID: "proxy", ModelID: "one"})
@@ -262,6 +292,60 @@ func TestDeleteModelPreservesProvider(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), `"future": true`) {
 		t.Fatalf("provider metadata was not preserved:\n%s", data)
+	}
+	settings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(settings), `"proxy/one"`) || !strings.Contains(string(settings), `"proxy/two"`) {
+		t.Fatalf("deleted model compaction override was not cleaned up:\n%s", settings)
+	}
+}
+
+func TestUpsertModelPreservesUnknownPi87FieldsWhenRenaming(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "models.json")
+	models := `{"providers":{"proxy":{"models":[{"id":"old/model","contextWindow":128000,"maxTokens":16000,"input":["text","image"],"inputLimits":{"images":{"maxPerMessage":8,"resize":{"maxWidth":2000,"futureCodec":"webp"}}}}]}}}`
+	settings := `{"theme":"dark","compaction":{"enabled":true,"reserveTokens":16384,"modelOverrides":{"proxy/old/model":{"reserveTokens":12000,"future":true}}}}`
+	if err := os.WriteFile(path, []byte(models), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := newModelConfigService(path, nil)
+	snapshot, err := service.GetModelsConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := snapshot.Providers[0].Models[0]
+	if model.ReserveTokens == nil || *model.ReserveTokens != 12000 || model.ImageMaxWidth == nil || *model.ImageMaxWidth != 2000 {
+		t.Fatalf("existing Pi 0.87 fields were not loaded: %#v", model)
+	}
+
+	keepRecentTokens, imageMaxWidth := 6000, 1568
+	_, err = service.UpsertModel(domain.UpsertModelConfigRequest{
+		OriginalProviderID: "proxy", OriginalModelID: "old/model", ProviderID: "renamed",
+		ModelID: "new/model", ContextWindow: 128000, MaxTokens: 16000, ImageInput: true,
+		KeepRecentTokens: &keepRecentTokens, ImageMaxWidth: &imageMaxWidth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelData, _ := os.ReadFile(path)
+	settingsData, _ := os.ReadFile(filepath.Join(directory, "settings.json"))
+	for _, expected := range []string{`"maxPerMessage": 8`, `"futureCodec": "webp"`, `"maxWidth": 1568`} {
+		if !strings.Contains(string(modelData), expected) {
+			t.Fatalf("models.json lost %s:\n%s", expected, modelData)
+		}
+	}
+	for _, expected := range []string{`"theme": "dark"`, `"enabled": true`, `"renamed/new/model"`, `"keepRecentTokens": 6000`, `"future": true`} {
+		if !strings.Contains(string(settingsData), expected) {
+			t.Fatalf("settings.json lost %s:\n%s", expected, settingsData)
+		}
+	}
+	if strings.Contains(string(settingsData), `"proxy/old/model"`) || strings.Contains(string(settingsData), `"reserveTokens": 12000`) {
+		t.Fatalf("old compaction override was not migrated cleanly:\n%s", settingsData)
 	}
 }
 

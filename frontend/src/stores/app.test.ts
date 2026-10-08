@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   openWorkspaceWith: vi.fn(),
   listSessions: vi.fn(),
   getSessionSnapshot: vi.fn(),
+  searchSessionText: vi.fn(),
+  cacheComposerImage: vi.fn(),
+  readComposerImage: vi.fn(),
   getConfiguredModels: vi.fn(),
   addWorkspace: vi.fn(),
   removeWorkspace: vi.fn(),
@@ -41,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   editSessionMessage: vi.fn(),
   replaySessionMessage: vi.fn(),
   deleteSessionMessage: vi.fn(),
+  excludeSessionMessageFromContext: vi.fn(),
   exportSession: vi.fn(),
   setModel: vi.fn(),
   setThinkingLevel: vi.fn(),
@@ -79,6 +83,9 @@ vi.mock("../services/catalog", () => ({
     openWorkspaceWith: mocks.openWorkspaceWith,
     listSessions: mocks.listSessions,
     getSessionSnapshot: mocks.getSessionSnapshot,
+    searchSessionText: mocks.searchSessionText,
+    cacheComposerImage: mocks.cacheComposerImage,
+    readComposerImage: mocks.readComposerImage,
     addWorkspace: mocks.addWorkspace,
     removeWorkspace: mocks.removeWorkspace,
     deleteWorkspaceSessions: mocks.deleteWorkspaceSessions,
@@ -116,6 +123,7 @@ vi.mock("../services/agent", () => ({
     editSessionMessage: mocks.editSessionMessage,
     replaySessionMessage: mocks.replaySessionMessage,
     deleteSessionMessage: mocks.deleteSessionMessage,
+    excludeSessionMessageFromContext: mocks.excludeSessionMessageFromContext,
     exportSession: mocks.exportSession,
     setModel: mocks.setModel,
     setThinkingLevel: mocks.setThinkingLevel,
@@ -157,7 +165,7 @@ vi.mock("../services/terminal", () => ({
 import { useAppStore } from "./app";
 
 describe("app store", () => {
-  it("keeps background browser activity in its owning conversation without stealing a file tab", async () => {
+  it("reveals created and selected browser tabs while keeping state updates in their owning conversation", async () => {
     const store = useAppStore();
     store.scheduleDesktopStateSave = vi.fn();
     store.threads = ["a", "b"].map(id => ({ id, title: id, workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: false, generation: 0 }));
@@ -165,8 +173,15 @@ describe("app store", () => {
     store.openPanelTab({ id: "file", kind: "file", title: "file.ts", pinned: true });
     const status = { tabId: "browser-a", threadId: "a", attached: true, human: false, temporary: true, loading: false, canGoBack: false, canGoForward: false, url: "https://example.com", title: "Example" };
     store.handleBrowserEvent({ type: "opened", threadId: "a", tabId: "browser-a", status });
-    expect(store.activePanelTab?.id).toBe("file");
+    expect(store.activePanelTab?.id).toBe("browser-a");
+    expect(store.inspectorOpen).toBe(true);
+    expect(store.inspectorTab).toBe("browser");
     expect(store.activePanel?.tabs.at(-1)?.title).toBe("Example");
+    store.selectPanelTab("file");
+    store.toggleInspector();
+    store.handleBrowserEvent({ type: "state", threadId: "a", tabId: "browser-a", status });
+    expect(store.activePanelTab?.id).toBe("file");
+    expect(store.inspectorOpen).toBe(false);
     store.handleBrowserEvent({ type: "opened", threadId: "b", tabId: "browser-b", status: { ...status, tabId: "browser-b", threadId: "b" } });
     expect(store.activePanelTab?.id).toBe("file");
     expect(store.inspectorByThread.b.tabs).toHaveLength(1);
@@ -180,6 +195,9 @@ describe("app store", () => {
     store.handleBrowserEvent({ type: "closed", threadId: "b", tabId: "browser-b" });
     expect(store.inspectorByThread.b.tabs).toHaveLength(0);
     expect(store.activePanelTab?.id).toBe("file");
+    store.handleBrowserEvent({ type: "selected", threadId: "a", tabId: "browser-a", status });
+    expect(store.activePanelTab?.id).toBe("browser-a");
+    expect(store.inspectorOpen).toBe(true);
   });
   it("isolates panel tabs, preview slots, historical diffs and view state per conversation", async () => {
     const store = useAppStore();
@@ -250,6 +268,9 @@ describe("app store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+    mocks.searchSessionText.mockResolvedValue({ text: "", messageCount: 0 });
+    mocks.cacheComposerImage.mockResolvedValue("a".repeat(64));
+    mocks.readComposerImage.mockResolvedValue("YQ==");
     mocks.eventHandler = undefined;
     mocks.terminalEventHandler = undefined;
     mocks.getBootstrapState.mockResolvedValue({
@@ -345,22 +366,17 @@ describe("app store", () => {
         modifiedAt: "2026-08-10T09:00:00Z",
       }],
     });
-    mocks.getSessionSnapshot.mockResolvedValueOnce({
-      messageCount: 2,
-      messages: [
-        { role: "user", content: "Inspect the worker" },
-        { role: "assistant", content: [{ type: "text", text: "The hidden semaphore is released here." }] },
-      ],
-    });
+    mocks.searchSessionText.mockResolvedValueOnce({ messageCount: 2, text: "Inspect the worker\nThe hidden semaphore is released here." });
 
     expect(store.filteredThreads).toEqual([]);
     await store.loadSessionSearchBodies();
 
-    expect(mocks.getSessionSnapshot).toHaveBeenCalledWith("C:\\sessions\\one.jsonl");
+    expect(mocks.searchSessionText).toHaveBeenCalledWith("C:\\sessions\\one.jsonl");
     expect(store.filteredThreads.map((thread) => thread.id)).toEqual(["thread-1"]);
 
     await store.loadSessionSearchBodies();
-    expect(mocks.getSessionSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.searchSessionText).toHaveBeenCalledTimes(1);
+    expect(mocks.getSessionSnapshot).not.toHaveBeenCalled();
   });
 
   it("does not mark loaded sessions unavailable when desktop state persistence fails", async () => {
@@ -1685,6 +1701,61 @@ describe("app store", () => {
     expect(store.sessionStatsByThread[thread.id]?.totalMessages).toBe(2);
   });
 
+  it("restores missing nested events and stops unfinished child spinners", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.generation = 11; thread.started = true;
+    const emit = (type: string, payload: Record<string, unknown>) => store.handlePiEvent({ threadId: thread.id, event: { generation: 11, type, payload } });
+    emit("tool_execution_start", { toolCallId: "parent", toolName: "codemode", args: {} });
+    emit("message_end", { message: { role: "toolResult", toolCallId: "parent", nestedCalls: { complete: false, calls: [{ id: "missing", name: "read", status: "unfinished" }] } } });
+    expect(store.activeMessages[0].tools[0]).toMatchObject({ nestedCallsIncomplete: true, children: [{ id: "missing", status: "unfinished", resultReceived: false }] });
+    emit("tool_execution_start", { toolCallId: "child", toolName: "read", parentToolCallId: "parent", args: {} });
+    emit("agent_end", {});
+    expect(store.activeMessages[0].tools[0].children?.[1].status).toBe("unfinished");
+  });
+
+  it("attaches late nested events to their original assistant", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.generation = 11; thread.started = true;
+    const emit = (type: string, payload: Record<string, unknown>) => store.handlePiEvent({ threadId: thread.id, event: { generation: 11, type, payload } });
+    emit("tool_execution_start", { toolCallId: "parent", toolName: "codemode" });
+    emit("message_start", { message: { role: "assistant", id: "next-assistant", content: [] } });
+    emit("tool_execution_start", { toolCallId: "parent/1", toolName: "read", parentToolCallId: "parent" });
+    emit("tool_execution_end", { toolCallId: "parent/1", parentToolCallId: "parent", durationMs: 9, result: { content: [{ type: "text", text: "late result" }] } });
+    expect(store.activeMessages[0].tools[0].children?.[0]).toMatchObject({ output: "late result", durationMs: 9, status: "complete" });
+    expect(store.activeMessages[1].tools).toHaveLength(0);
+  });
+
+  it("keeps nested calls inside their parent and uses native durations", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.generation = 11; thread.started = true;
+    const emit = (type: string, payload: Record<string, unknown>) => store.handlePiEvent({ threadId: thread.id, event: { generation: 11, type, payload } });
+    emit("tool_execution_start", { toolCallId: "parent", toolName: "codemode", args: {} });
+    emit("tool_execution_start", { toolCallId: "child", toolName: "read", parentToolCallId: "parent", args: { path: "main.go" } });
+    emit("tool_execution_end", { toolCallId: "child", parentToolCallId: "parent", durationMs: 7, result: { content: [{ type: "text", text: "child result" }] } });
+    expect(store.activeMessages[0].tools).toHaveLength(1);
+    expect(store.activeMessages[0].tools[0].children?.[0]).toMatchObject({ id: "child", output: "child result", durationMs: 7, status: "complete" });
+    expect(store.activeMessages[0].activeExecution).toBe("tool");
+    emit("tool_execution_end", { toolCallId: "parent", durationMs: 23, result: {} });
+    expect(store.activeMessages[0].tools[0].durationMs).toBe(23);
+  });
+
+  it.each([[true, undefined, "任务已停止"], [false, "Upstream failed", "任务执行失败"]])("distinguishes cancellation and failure in notifications", async (aborted, error, title) => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.generation = 8; thread.started = true;
+    store.messagesByThread[thread.id] = [{ id: "last", role: "assistant", text: "", thinking: "", timestamp: "", streaming: false, tools: [], error: error as string | undefined }];
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_settled", payload: { aborted } } });
+    expect(mocks.notifyDesktop).toHaveBeenCalledWith(title, "New task");
+  });
+
   it("captures Pi edit result diffs and tool duration from RPC events", async () => {
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "deny");
@@ -1910,6 +1981,35 @@ describe("app store", () => {
       event: { generation: 5, type: "queue_update", payload: { steering: ["Inspect logs"], followUp: ["Run tests"] } },
     });
     expect(store.activeQueue).toEqual({ steering: ["Inspect logs"], followUp: ["Run tests"] });
+  });
+
+  it("tracks the latest prompt-cache result across resumed and live messages", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 5;
+
+    store.applySessionSnapshot(thread, {
+      messages: [
+        { role: "assistant", content: [], usage: { input: 12_000, cacheRead: 0, cacheWrite: 4_000 } },
+        { role: "assistant", content: [], usage: { input: 2_000, cacheRead: 18_000, cacheWrite: 0 } },
+      ],
+      messageCount: 2,
+    });
+    expect(store.activePromptCache).toEqual({
+      input: 2_000, cacheRead: 18_000, cacheWrite: 0, cacheObserved: true,
+    });
+
+    store.handlePiEvent({
+      threadId: thread.id,
+      event: { generation: 5, type: "message_end", payload: { message: {
+        role: "assistant", content: [], usage: { input: 20_000, cacheRead: 0, cacheWrite: 0 },
+      } } },
+    });
+    expect(store.activePromptCache).toEqual({
+      input: 20_000, cacheRead: 0, cacheWrite: 0, cacheObserved: true,
+    });
   });
 
   it("places successful compaction at the live Pi event position without temporary timeline notices", async () => {
@@ -3068,7 +3168,7 @@ describe("app store", () => {
         { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "main.go" } },
         { type: "toolCall", id: "tool-pending", name: "edit", arguments: { path: "pending.go", oldText: "old", newText: "new" } },
       ], timestamp: 1786348860000 },
-      { role: "toolResult", toolCallId: "tool-1", content: [{ type: "text", text: "package main" }], isError: false },
+      { role: "toolResult", toolCallId: "tool-1", content: [{ type: "text", text: "package main" }], isError: false, durationMs: 8, nestedCalls: { complete: false, calls: [{ id: "tool-1/1", name: "read", arguments: { path: "other.go" }, status: "ok", durationMs: 3 }, { id: "tool-1/1/1", name: "read", status: "unfinished" }] } },
       ],
     });
     const store = useAppStore();
@@ -3085,7 +3185,8 @@ describe("app store", () => {
     });
     expect(store.activeMessages[2]).toMatchObject({ role: "assistant", text: "I checked it.", thinking: "Check files" });
     expect(store.activeMessages[2].tools[0]).toMatchObject({ id: "tool-1", output: "package main", resultReceived: true, status: "complete" });
-    expect(store.activeMessages[2].tools[1]).toMatchObject({ id: "tool-pending", status: "complete" });
+    expect(store.activeMessages[2].tools[0]).toMatchObject({ durationMs: 8, nestedCallsIncomplete: true, children: [{ id: "tool-1/1", name: "read", durationMs: 3, status: "complete", children: [{ id: "tool-1/1/1", status: "unfinished" }] }] });
+    expect(store.activeMessages[2].tools[1]).toMatchObject({ id: "tool-pending", status: "unfinished" });
     expect(store.activeMessages[2].tools[1].resultReceived).toBeUndefined();
     expect(store.activeSessionState?.model).toEqual({ provider: "openai", id: "gpt-5" });
     expect(store.transcriptStateByThread["session-session-1"]).toBe("loaded");
@@ -3521,7 +3622,7 @@ describe("app store", () => {
     expect(store.activeDraft).toBe("");
   });
 
-  it("edits and deletes persisted messages before reloading their local snapshot", async () => {
+  it("edits, excludes, and deletes persisted messages before reloading their local snapshot", async () => {
     mocks.listSessions.mockResolvedValueOnce([{
       id: "session-1", path: "C:\\sessions\\one.jsonl", cwd: "D:\\work\\repo", title: "Runtime audit",
       firstMessage: "Inspect runtime", createdAt: "2026-08-10T08:00:00Z", modifiedAt: "2026-08-10T09:00:00Z", messageCount: 2,
@@ -3537,8 +3638,13 @@ describe("app store", () => {
       ] })
       .mockResolvedValueOnce({ messages: [
         { role: "user", content: "After", piDeskEntryId: "entry-1" },
+        { role: "assistant", content: "Reply", piDeskEntryId: "entry-2", piDeskContextExcluded: true },
+      ] })
+      .mockResolvedValueOnce({ messages: [
+        { role: "user", content: "After", piDeskEntryId: "entry-1" },
       ] });
     mocks.editSessionMessage.mockResolvedValueOnce({});
+    mocks.excludeSessionMessageFromContext.mockResolvedValueOnce({});
     mocks.deleteSessionMessage.mockResolvedValueOnce({});
     const store = useAppStore();
     await store.initialize();
@@ -3549,6 +3655,13 @@ describe("app store", () => {
       threadId: "session-session-1", path: "C:\\sessions\\one.jsonl", entryId: "entry-1", text: "After",
     });
     expect(store.activeMessages[0].text).toBe("After");
+
+    store.bootstrap!.runtime.version = "0.87.0";
+    expect(await store.excludeFromContext("entry-2")).toBe(true);
+    expect(mocks.excludeSessionMessageFromContext).toHaveBeenCalledWith({
+      threadId: "session-session-1", path: "C:\\sessions\\one.jsonl", entryId: "entry-2",
+    });
+    expect(store.activeMessages[1].contextExcluded).toBe(true);
 
     expect(await store.deleteMessage(store.activeMessages[1].id)).toBe(true);
     expect(mocks.deleteSessionMessage).toHaveBeenCalledWith({
@@ -3733,4 +3846,153 @@ describe("app store", () => {
     expect(mocks.sessionFileChanges).not.toHaveBeenCalled();
     expect(store.sessionChangesByThread["t2"]).toBeUndefined();
   });
+  it("serializes desktop saves and coalesces changes into the latest snapshot", async () => {
+    const store = useAppStore();
+    store.$patch({ catalogReady: true, activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "idle", started: false, generation: 0 }] });
+    let release!: () => void;
+    mocks.saveDesktopState.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
+    store.draftsByThread.t = "old";
+    const first = store.persistDesktopState();
+    await Promise.resolve();
+    store.draftsByThread.t = "middle";
+    const second = store.persistDesktopState();
+    store.draftsByThread.t = "latest";
+    const third = store.persistDesktopState();
+    expect(mocks.saveDesktopState).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second, third]);
+    expect(mocks.saveDesktopState).toHaveBeenCalledTimes(2);
+    expect(mocks.saveDesktopState.mock.calls.map(([state]) => state.threads[0].draft)).toEqual(["old", "latest"]);
+  });
+
+  it("persists image references and restores queues paused until explicit resume", async () => {
+    const store = useAppStore();
+    store.$patch({ catalogReady: true, activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "idle", started: false, generation: 0 }],
+      attachmentsByThread: { t: [{ id: "a", name: "draft.png", mimeType: "image/png", data: "YQ==", previewUrl: "data:image/png;base64,YQ==" }] },
+      pendingPromptsByThread: { t: [{ id: "p", text: "queued text", createdAt: "now", images: [{ id: "b", name: "queue.png", mimeType: "image/png", data: "Yg==", previewUrl: "data:image/png;base64,Yg==" }] }] },
+    });
+    await store.persistDesktopState();
+    const metadata = mocks.saveDesktopState.mock.calls.at(-1)![0].threads[0].composerJson;
+    expect(metadata).not.toContain("YQ=="); expect(metadata).not.toContain("Yg=="); expect(metadata).not.toContain("previewUrl");
+    expect(mocks.cacheComposerImage).toHaveBeenCalledTimes(2);
+    await store.restoreComposer("t", metadata);
+    expect(store.activeAttachments[0].data).toBe("YQ==");
+    expect(store.pendingPromptsPausedByThread.t).toBe(true);
+    await store.dispatchNextPendingPrompt("t");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    await store.resumePendingPrompts();
+    expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "queued text" }));
+    expect(store.activePendingPrompts).toHaveLength(0);
+    await store.persistDesktopState();
+  });
+
+  it("retains queued text when a cached image is missing and blocks dispatch", async () => {
+    const store = useAppStore();
+    store.$patch({ activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "idle", started: false, generation: 0 }] });
+    mocks.readComposerImage.mockRejectedValueOnce(new Error("missing"));
+    await store.restoreComposer("t", JSON.stringify({ pending: [{ id: "p", text: "keep this text", createdAt: "now", images: [{ id: "i", name: "missing.png", mimeType: "image/png", cacheKey: "a".repeat(64) }] }] }));
+    await store.resumePendingPrompts();
+    expect(store.activePendingPrompts[0].text).toBe("keep this text");
+    expect(store.activePendingPrompts[0].images[0].data).toBe("");
+    expect(store.activeThread!.status).toBe("attention");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending body search and discards late results", async () => {
+    const store = useAppStore();
+    store.$patch({ searchQuery: "needle", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "idle", started: false, generation: 0, sessionFile: "D:/sessions/one.jsonl" }] });
+    let resolve!: (value: { text: string; messageCount: number }) => void;
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const request = Object.assign(new Promise(resolveCallback => { resolve = resolveCallback; }), { cancel });
+    mocks.searchSessionText.mockReturnValueOnce(request);
+    const searching = store.loadSessionSearchBodies();
+    store.searchQuery = ""; store.cancelSessionSearch();
+    resolve({ text: "needle", messageCount: 4 }); await searching;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(store.searchBodyLoading).toBe(false);
+    expect(store.searchBodyTextByThread.t).toBeUndefined();
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)("finalizes scheduled runs as %s only at settlement", status => {
+    const store = useAppStore();
+    store.$patch({ activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "running", started: true, generation: 4 }], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", frequency: "daily", enabled: true, lastThreadId: "t", lastStatus: "started", createdAt: "now", updatedAt: "now" }] });
+    if (status === "failed") store.messagesByThread.t = [{ id: "a", role: "assistant", text: "", thinking: "", timestamp: "now", streaming: false, tools: [], error: "provider failed" }];
+    store.handlePiEvent({ threadId: "t", event: { generation: 4, type: "agent_end", payload: {} } });
+    expect(store.scheduledTasks[0].lastStatus).toBe("started");
+    store.handlePiEvent({ threadId: "t", event: { generation: 4, type: "agent_settled", payload: { aborted: status === "cancelled" } } });
+    expect(store.scheduledTasks[0].lastStatus).toBe(status);
+  });
+
+  it("blocks a second scheduled run while its linked session is running", async () => {
+    const store = useAppStore();
+    store.$patch({ threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "attention", started: true, generation: 4 }], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", frequency: "daily", enabled: true, lastThreadId: "t", lastStatus: "started", createdAt: "now", updatedAt: "now" }] });
+    await store.runScheduledTask("s"); expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks history changes before stopping a large session", async () => {
+    const store = useAppStore();
+    store.$patch({ activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", sessionFile: "D:/sessions/one.jsonl", trust: "deny", status: "idle", started: true, generation: 4 }], sessionMutationErrorByThread: { t: "64 MiB limit" }, messagesByThread: { t: [{ id: "u", entryId: "entry", role: "user", text: "question", thinking: "", timestamp: "now", streaming: false, tools: [] }] } });
+    expect(await store.editMessage("u", "edit")).toBe(false);
+    expect(await store.deleteMessage("u")).toBe(false);
+    expect(await store.forkFromMessage("u")).toBe(false);
+    await store.cloneActiveSession();
+    expect(mocks.stopSession).not.toHaveBeenCalled(); expect(mocks.editSessionMessage).not.toHaveBeenCalled(); expect(mocks.cloneSession).not.toHaveBeenCalled();
+  });
+
+  it("retains a queued prompt on disk until Pi acknowledges it", async () => {
+    const store = useAppStore();
+    store.$patch({ catalogReady: true, activeThreadId: "t", threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "idle", started: true, generation: 4 }], pendingPromptsByThread: { t: [{ id: "p", text: "still awaiting acknowledgement", images: [], createdAt: "now" }] } });
+    let acknowledge!: (value: { command: string }) => void;
+    mocks.sendPrompt.mockReturnValueOnce(new Promise(resolve => { acknowledge = resolve; }));
+    const dispatch = store.dispatchNextPendingPrompt("t");
+    await vi.waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledOnce());
+    await store.persistDesktopState();
+    const saved = mocks.saveDesktopState.mock.calls.at(-1)![0].threads[0];
+    expect(JSON.parse(saved.composerJson).pending[0].text).toBe("still awaiting acknowledgement");
+    await store.steerPendingPrompt("p"); expect(mocks.sendPrompt).toHaveBeenCalledOnce();
+    acknowledge({ command: "prompt" }); await dispatch;
+    expect(store.activePendingPrompts).toHaveLength(0);
+    await store.persistDesktopState();
+  });
+
+  it("keeps a scheduled run active after a failed stop and fails it on runtime exit", async () => {
+    const store = useAppStore();
+    store.$patch({ threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "running", started: true, generation: 4 }], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", frequency: "daily", enabled: true, lastThreadId: "t", lastStatus: "started", createdAt: "now", updatedAt: "now" }] });
+    mocks.stopSession.mockRejectedValueOnce(new Error("stop failed"));
+    expect(await store.stopThread("t")).toBe(false);
+    expect(store.scheduledTasks[0].lastStatus).toBe("started");
+    store.handlePiEvent({ threadId: "t", event: { generation: 4, type: "runtime_exit", payload: {}, error: "process died" } });
+    expect(store.scheduledTasks[0]).toMatchObject({ lastStatus: "failed", lastError: "process died" });
+  });
+
+  it.each(["stop", "delete"] as const)("marks an explicitly %s scheduled run cancelled", async action => {
+    const store = useAppStore();
+    store.$patch({ threads: [{ id: "t", title: "Task", workspace: "repo", workspacePath: "D:/repo", trust: "deny", status: "running", started: true, generation: 4 }], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", frequency: "daily", enabled: true, lastThreadId: "t", lastStatus: "started", createdAt: "now", updatedAt: "now" }] });
+    mocks.stopSession.mockImplementationOnce(async () => { store.handlePiEvent({ threadId: "t", event: { generation: 4, type: "runtime_exit", payload: {} } }); });
+    if (action === "stop") expect(await store.stopThread("t")).toBe(true);
+    else { store.deleteThreadId = "t"; await store.confirmDeleteSession(); }
+    expect(store.scheduledTasks[0].lastStatus).toBe("cancelled");
+  });
+
+  it("marks interrupted scheduled runs cancelled on restart", async () => {
+    mocks.getDesktopState.mockResolvedValueOnce({ threads: [], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", frequency: "daily", enabled: true, lastThreadId: "t", lastStatus: "started", createdAt: "now", updatedAt: "now" }] });
+    const store = useAppStore(); await store.initialize();
+    expect(store.scheduledTasks[0].lastStatus).toBe("cancelled");
+    await store.persistDesktopState();
+  });
+
+  it("records completion even when settlement precedes prompt acknowledgement", async () => {
+    const store = useAppStore();
+    store.$patch({ workspaces: [{ id: "w", name: "repo", path: "D:/repo", trust: "approve" }], scheduledTasks: [{ id: "s", name: "Scheduled", prompt: "review", workspaceId: "w", modelProvider: "openai", modelId: "gpt-5.6", thinkingLevel: "medium", frequency: "daily", enabled: true, createdAt: "now", updatedAt: "now" }] });
+    mocks.getState
+      .mockResolvedValueOnce({ model: { provider: "openai", id: "gpt-5.6" }, isStreaming: false })
+      .mockResolvedValueOnce({ model: { provider: "openai", id: "gpt-5.6" }, thinkingLevel: "medium", isStreaming: false });
+    mocks.sendPrompt.mockImplementationOnce(async ({ threadId }) => {
+      store.handlePiEvent({ threadId, event: { generation: 4, type: "agent_settled", payload: {} } });
+      return { command: "prompt" };
+    });
+    expect(await store.runScheduledTask("s")).toBeTruthy();
+    expect(store.scheduledTasks[0].lastStatus).toBe("completed");
+  });
+
 });

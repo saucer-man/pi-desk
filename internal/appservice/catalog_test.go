@@ -2,9 +2,11 @@ package appservice
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +83,10 @@ func (index *fakeSessionLister) Snapshot(_ string) (sessionindex.Snapshot, error
 		Model:        index.model,
 		MessageCount: len(index.messages),
 	}, index.err
+}
+
+func (index *fakeSessionLister) SearchText(context.Context, string) (string, int, error) {
+	return "search text", len(index.messages), index.err
 }
 
 func TestCatalogServiceWorkspaceLifecycle(t *testing.T) {
@@ -558,5 +564,67 @@ func TestCatalogServiceRejectsUnavailablePicker(t *testing.T) {
 	service := newCatalogService(workspace.NewCatalog(filepath.Join(t.TempDir(), "state.json")), &fakeSessionLister{}, nil)
 	if _, err := service.PickWorkspace(domain.PickWorkspaceRequest{}); err == nil {
 		t.Fatal("expected picker error")
+	}
+}
+
+func TestComposerImageCacheAndMetadata(t *testing.T) {
+	root := t.TempDir()
+	service := newCatalogService(workspace.NewCatalog(filepath.Join(root, "state.json")), &fakeSessionLister{}, nil)
+	created, err := service.AddWorkspace(domain.AddWorkspaceRequest{Path: root, Trust: "deny"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := domain.ImageContent{Type: "image", MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("image bytes"))}
+	key, err := service.CacheComposerImage(image)
+	if err != nil || len(key) != 64 {
+		t.Fatalf("cache: %q, %v", key, err)
+	}
+	second, err := service.CacheComposerImage(image)
+	if err != nil || second != key {
+		t.Fatalf("dedup: %q, %v", second, err)
+	}
+	data, err := service.ReadComposerImage(key)
+	if err != nil || data != image.Data {
+		t.Fatalf("read: %q, %v", data, err)
+	}
+	if _, err := service.ReadComposerImage("../../state.json"); err == nil {
+		t.Fatal("accepted path traversal")
+	}
+	metadata := `{"attachments":[{"id":"i","name":"test.png","mimeType":"image/png","cacheKey":"` + key + `"}],"pending":[{"id":"p","text":"queued text","createdAt":"now","images":[]}]}`
+	state := domain.DesktopState{Threads: []domain.DesktopThreadState{{ID: "thread", Title: "Task", WorkspaceID: created.ID, WorkspacePath: root, Trust: "deny", Status: "idle", ComposerJSON: metadata}}}
+	if err := service.SaveDesktopState(state); err != nil {
+		t.Fatal(err)
+	}
+	disk, err := os.ReadFile(filepath.Join(root, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(disk), image.Data) || !strings.Contains(string(disk), key) {
+		t.Fatal("cache references were not isolated from payloads")
+	}
+	restored, err := service.GetDesktopState()
+	if err != nil || restored.Threads[0].ComposerJSON != metadata {
+		t.Fatalf("restore: %#v, %v", restored, err)
+	}
+	if err := validateComposerJSON(strings.Replace(metadata, `"cacheKey":"`+key+`"`, `"data":"secret"`, 1)); err == nil {
+		t.Fatal("inline image data accepted")
+	}
+	if err := os.WriteFile(filepath.Join(service.catalog.AttachmentDirectory(), key), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadComposerImage(key); err == nil {
+		t.Fatal("corrupt cache accepted")
+	}
+	if repaired, err := service.CacheComposerImage(image); err != nil || repaired != key {
+		t.Fatalf("repair: %q, %v", repaired, err)
+	}
+	if data, err := service.ReadComposerImage(key); err != nil || data != image.Data {
+		t.Fatalf("read repaired cache: %q, %v", data, err)
+	}
+	if err := os.Remove(filepath.Join(service.catalog.AttachmentDirectory(), key)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadComposerImage(key); err == nil {
+		t.Fatal("missing cache accepted")
 	}
 }

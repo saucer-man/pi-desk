@@ -22,6 +22,12 @@ type ManagedModel struct {
 	MaxTokens            int    `json:"maxTokens"`
 	Reasoning            bool   `json:"reasoning"`
 	ImageInput           bool   `json:"imageInput"`
+	ReserveTokens        *int   `json:"reserveTokens,omitempty"`
+	KeepRecentTokens     *int   `json:"keepRecentTokens,omitempty"`
+	ImageMaxWidth        *int   `json:"imageMaxWidth,omitempty"`
+	ImageMaxHeight       *int   `json:"imageMaxHeight,omitempty"`
+	ImageMaxBytes        *int   `json:"imageMaxBytes,omitempty"`
+	ImageJPEGQuality     *int   `json:"imageJpegQuality,omitempty"`
 	ThinkingLevelMapJSON string `json:"thinkingLevelMapJson,omitempty"`
 	CompatJSON           string `json:"compatJson,omitempty"`
 }
@@ -50,6 +56,12 @@ type UpsertModelConfigRequest struct {
 	MaxTokens            int               `json:"maxTokens"`
 	Reasoning            bool              `json:"reasoning"`
 	ImageInput           bool              `json:"imageInput"`
+	ReserveTokens        *int              `json:"reserveTokens,omitempty"`
+	KeepRecentTokens     *int              `json:"keepRecentTokens,omitempty"`
+	ImageMaxWidth        *int              `json:"imageMaxWidth,omitempty"`
+	ImageMaxHeight       *int              `json:"imageMaxHeight,omitempty"`
+	ImageMaxBytes        *int              `json:"imageMaxBytes,omitempty"`
+	ImageJPEGQuality     *int              `json:"imageJpegQuality,omitempty"`
 	ThinkingLevelMapJSON string            `json:"thinkingLevelMapJson,omitempty"`
 	ModelCompatJSON      string            `json:"modelCompatJson,omitempty"`
 }
@@ -75,12 +87,13 @@ type DeleteProviderConfigRequest struct {
 }
 
 type TestModelConfigRequest struct {
-	BaseURL string            `json:"baseUrl"`
-	API     string            `json:"api"`
-	APIKey  string            `json:"apiKey,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	ModelID string            `json:"modelId"`
-	Prompt  string            `json:"prompt"`
+	ProviderID string            `json:"providerId,omitempty"`
+	BaseURL    string            `json:"baseUrl"`
+	API        string            `json:"api"`
+	APIKey     string            `json:"apiKey,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	ModelID    string            `json:"modelId"`
+	Prompt     string            `json:"prompt"`
 }
 
 type ModelTestResult struct {

@@ -148,6 +148,29 @@ func TestAgentServiceEditsPersistedMessageAndReloadsPi(t *testing.T) {
 	}
 }
 
+func TestAgentServiceExcludesPersistedMessageAndReloadsPi(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.jsonl")
+	if err := os.WriteFile(path, []byte("{\"type\":\"session\",\"version\":3,\"id\":\"session\",\"cwd\":\"D:/repo\"}\n"+
+		"{\"type\":\"message\",\"id\":\"user-1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Before\"}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeAgentRuntime{stateData: json.RawMessage(`{"sessionFile":` + strconv.Quote(path) + `,"isStreaming":false}`)}
+	service := newAgentService(runtime)
+	service.index = sessionindex.New(root)
+
+	if _, err := service.ExcludeSessionMessageFromContext(domain.SessionMessageRequest{ThreadID: "thread-1", Path: path, EntryID: "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"type":"context_edit"`) || !strings.Contains(string(data), `"targetId":"user-1"`) || runtime.command["type"] != "switch_session" {
+		t.Fatalf("session=%s command=%#v", data, runtime.command)
+	}
+}
+
 func TestAgentServiceReplaysLatestUserMessageInSameSession(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "project")
@@ -223,7 +246,7 @@ func TestAgentServiceRetainsAssistantForkWhenSwitchOutcomeIsUnknown(t *testing.T
 }
 
 func TestAgentServiceCancelledHistorySwitch(t *testing.T) {
-	for _, operation := range []string{"edit", "delete", "replay", "fork"} {
+	for _, operation := range []string{"edit", "delete", "exclude", "replay", "fork"} {
 		t.Run(operation, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "session.jsonl")
@@ -245,6 +268,8 @@ func TestAgentServiceCancelledHistorySwitch(t *testing.T) {
 				_, err = service.EditSessionMessage(request)
 			case "delete":
 				_, err = service.DeleteSessionMessage(request)
+			case "exclude":
+				_, err = service.ExcludeSessionMessageFromContext(request)
 			case "replay":
 				_, err = service.ReplaySessionMessage(request)
 			case "fork":

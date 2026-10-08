@@ -81,11 +81,31 @@ const contextEstimated = computed(() => sessionStats.value?.contextUsage?.estima
 const contextWindow = computed(() => sessionStats.value?.contextUsage?.contextWindow ?? currentModel.value?.contextWindow);
 const inputTokens = computed(() => tokenUsage.value?.input);
 const outputTokens = computed(() => tokenUsage.value?.output);
-const cacheTokens = computed(() => {
-  const usage = tokenUsage.value;
-  if (!usage) return undefined;
-  return (typeof usage.cacheRead === "number" ? usage.cacheRead : 0)
-    + (typeof usage.cacheWrite === "number" ? usage.cacheWrite : 0);
+const promptCache = computed(() => appStore.activePromptCache);
+const promptCacheLifetimeKnown = computed(() => Object.values(currentModel.value?.promptCache ?? {}).some((seconds) => typeof seconds === "number" && seconds > 0));
+const promptCacheState = computed(() => {
+  const status = promptCache.value;
+  if (!status) return promptCacheLifetimeKnown.value ? "ready" : "waiting";
+  if (status.cacheRead > 0) return "hit";
+  if (status.cacheWrite > 0) return "write";
+  return status.cacheObserved || promptCacheLifetimeKnown.value ? "miss" : "inactive";
+});
+const promptCacheHitRate = computed(() => {
+  const status = promptCache.value;
+  const promptTokens = status ? status.input + status.cacheRead + status.cacheWrite : 0;
+  return status && promptTokens > 0 ? Math.round((status.cacheRead / promptTokens) * 100) : 0;
+});
+const promptCacheLabel = computed(() => {
+  if (promptCacheState.value === "hit") return tr("composer.cacheHit", { percent: promptCacheHitRate.value });
+  return tr(`composer.cache${promptCacheState.value.charAt(0).toUpperCase()}${promptCacheState.value.slice(1)}`);
+});
+const promptCacheTitle = computed(() => {
+  const status = promptCache.value;
+  return `${tr("composer.promptCacheStatus")}: ${promptCacheLabel.value} · ${tr("composer.cacheLatest", {
+    read: exactTokens(status?.cacheRead), write: exactTokens(status?.cacheWrite),
+  })} · ${tr("composer.cacheSession", {
+    read: exactTokens(tokenUsage.value?.cacheRead), write: exactTokens(tokenUsage.value?.cacheWrite),
+  })}`;
 });
 const contextPercent = computed(() => {
   const reported = sessionStats.value?.contextUsage?.percent;
@@ -601,7 +621,11 @@ onBeforeUnmount(() => {
     <div class="composer-input-stack" :class="{ 'has-todo': Boolean(piDeskTodo), 'has-queue': queuedMessages.length > 0 }">
       <PiDeskGoalPanel v-if="piDeskGoal" :key="piDeskGoalKey" :goal="piDeskGoal" :running="agentRunning" @command="(command: string) => void appStore.sendGoalCommand(command)" />
       <PiDeskTodoPanel v-if="piDeskTodo" :key="piDeskTodoKey" :todo="piDeskTodo" />
-      <div v-if="queuedMessages.length" class="queue-panel composer-stack-panel" :class="ui.panel" aria-live="polite">
+      <div v-if="queuedMessages.length" class="queue-panel composer-stack-panel !bg-[var(--bg-composer)]" :class="ui.panel" aria-live="polite">
+      <div v-if="appStore.pendingPromptsPausedByThread?.[appStore.activeThreadId]" class="queue-row" role="status">
+        <span>{{ tr("composer.restoredQueuePaused") }}</span>
+        <button class="queue-steer" type="button" @click="void appStore.resumePendingPrompts()">{{ tr("composer.resumeQueue") }}</button>
+      </div>
       <div class="queue-list">
         <div v-for="item in queuedMessages" :key="item.id" class="queue-row" :class="ui.listItem">
           <CornerDownRight :size="15" />
@@ -631,11 +655,11 @@ onBeforeUnmount(() => {
             <img v-if="item.images[0]" class="queue-thumbnail" :src="item.images[0].previewUrl" :alt="item.images[0].name" />
             <span class="queue-text" :title="item.text || tr('composer.image')">{{ item.text || tr("composer.image") }}</span>
             <span class="queue-actions">
-              <button class="queue-steer" type="button" :title="tr('composer.steerNow')" :disabled="!agentRunning" @click="void appStore.steerPendingPrompt(item.id)">
+              <button class="queue-steer" type="button" :title="tr('composer.steerNow')" :disabled="!agentRunning || Boolean(appStore.pendingPromptDispatchByThread?.[appStore.activeThreadId])" @click="void appStore.steerPendingPrompt(item.id)">
                 <Forward :size="14" /><span>{{ tr("composer.adjustDirection") }}</span>
               </button>
-              <button type="button" :title="tr('composer.editQueued')" @click="beginQueueEdit(item.id, item.text, item.images)"><Pencil :size="14" /></button>
-              <button type="button" :title="tr('composer.deleteQueued')" @click="appStore.removePendingPrompt(item.id)"><Trash2 :size="14" /></button>
+              <button type="button" :title="tr('composer.editQueued')" :disabled="appStore.pendingPromptDispatchByThread?.[appStore.activeThreadId] === item.id" @click="beginQueueEdit(item.id, item.text, item.images)"><Pencil :size="14" /></button>
+              <button type="button" :title="tr('composer.deleteQueued')" :disabled="appStore.pendingPromptDispatchByThread?.[appStore.activeThreadId] === item.id" @click="appStore.removePendingPrompt(item.id)"><Trash2 :size="14" /></button>
             </span>
           </template>
         </div>
@@ -643,7 +667,7 @@ onBeforeUnmount(() => {
     </div>
     <div
       ref="composer"
-      class="composer !overflow-visible"
+      class="composer !overflow-visible !bg-[var(--bg-composer)]"
       :class="[ui.panel, { 'has-draft': draft.trim().length > 0 || appStore.activeAttachments.length > 0, 'drag-active': dragActive }]"
       @dragenter.prevent="dragActive = true"
       @dragover.prevent="dragActive = true"
@@ -658,6 +682,7 @@ onBeforeUnmount(() => {
           <button class="attachment-preview-remove" type="button" title="Remove image" @click.stop="appStore.removeActiveAttachment(image.id)"><X :size="12" /></button>
         </div>
       </div>
+      <div v-if="appStore.activeAttachments.some(image => !image.data) || queuedMessages.some(prompt => prompt.images.some(image => !image.data))" class="attachment-error" role="alert">{{ tr("composer.missingCachedImage") }}</div>
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
       <div class="composer-editor" @keydown.capture="onKeydown" @paste.capture="onPaste">
         <MarkdownEditor
@@ -852,10 +877,13 @@ onBeforeUnmount(() => {
           </div>
           <div
             class="composer-token-metric is-cache"
-            :title="`${tr('composer.cacheTokens')}: ${exactTokens(cacheTokens)} ${tr('composer.tokens')} · ${tr('composer.cacheReadTokens')}: ${exactTokens(tokenUsage?.cacheRead)} · ${tr('composer.cacheWriteTokens')}: ${exactTokens(tokenUsage?.cacheWrite)}`"
+            :data-cache-state="promptCacheState"
+            :title="promptCacheTitle"
+            role="status"
+            aria-atomic="true"
           >
             <Database :size="14" aria-hidden="true" />
-            <span><small>{{ tr("composer.cacheTokens") }}</small><strong>{{ formatTokens(cacheTokens) }}</strong></span>
+            <span><small>{{ tr("composer.cacheTokens") }}</small><strong>{{ promptCacheLabel }}</strong></span>
           </div>
         </div>
     <div v-if="appStore.activeExtensionStatuses.length" class="extension-status-list" aria-live="polite">

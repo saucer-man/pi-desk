@@ -69,44 +69,6 @@ func TestMcpConfigServiceListsProjectPiOverride(t *testing.T) {
 	}
 }
 
-func TestMcpConfigServiceUsesAdapterEffectiveConfiguration(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("Node.js is unavailable")
-	}
-	root := t.TempDir()
-	agent := filepath.Join(root, "agent")
-	moduleDirectory := filepath.Join(agent, "npm", "node_modules", "pi-mcp-adapter")
-	if err := os.MkdirAll(filepath.Join(moduleDirectory, "dist"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(moduleDirectory, "package.json"), []byte(`{"type":"module"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	module := `
-export function loadMcpConfig() { return { mcpServers: { shared: { url: "https://example.test/mcp", headers: { "X-Test": "kept" } } } }; }
-export function getMcpDiscoverySummary() { return { sources: [{ id: "shared-project", label: "project standard MCP", path: "PROJECT/.mcp.json", exists: true, scope: "project", kind: "shared", serverCount: 1 }], agentPlugins: [] }; }
-export function getServerProvenance() { return new Map([["shared", { kind: "project" }]]); }
-`
-	if err := os.WriteFile(filepath.Join(moduleDirectory, "dist", "config.js"), []byte(module), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	project := filepath.Join(root, "project")
-	if err := os.MkdirAll(project, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	service := newMcpConfigService(agent, fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
-
-	snapshot, err := service.ListMcpServers(domain.ListMcpServersRequest{WorkspacePath: project})
-	if err != nil || snapshot.AdapterNotice != "" || len(snapshot.EffectiveServers) != 1 || len(snapshot.Sources) != 1 {
-		t.Fatalf("unexpected adapter MCP snapshot %#v, %v", snapshot, err)
-	}
-	server := snapshot.EffectiveServers[0]
-	if server.Name != "shared" || server.Scope != domain.McpConfigScopeProject || !strings.Contains(server.Definition, "X-Test") {
-		t.Fatalf("unexpected effective MCP server %#v", server)
-	}
-}
-
 func TestMcpConfigServiceRenamesAndDeletesServer(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -150,65 +112,10 @@ func TestMcpConfigServiceRejectsProjectScopeAndUnsafeDefinitions(t *testing.T) {
 func TestMcpConfigServiceTestServerValidatesBeforeStartingClient(t *testing.T) {
 	t.Parallel()
 	service := newMcpConfigService(filepath.Join(t.TempDir(), "agent"), nil)
-	if _, err := service.TestMcpServer(domain.TestMcpServerRequest{Definition: `{"disabled":true}`}); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, err := service.TestMcpServer(domain.TestMcpServerRequest{Definition: `{"disabled":true}`}); err == nil || !strings.Contains(err.Error(), "trusted project") {
 		t.Fatalf("expected invalid definition error, got %v", err)
 	}
-	if _, err := service.TestMcpServer(domain.TestMcpServerRequest{Definition: `{"command":"node"}`}); err == nil || !strings.Contains(err.Error(), "install or update") {
-		t.Fatalf("expected missing adapter error, got %v", err)
-	}
-}
 
-func TestMcpConfigServiceEngineStatusDetectsAdapterAndShadowPaths(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("HOME", root)
-	t.Setenv("USERPROFILE", root)
-	agent := filepath.Join(root, "agent")
-	if err := os.MkdirAll(agent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(agent, "settings.json"), []byte(`{"packages":["npm:other",{"source":"npm:pi-mcp-adapter@1.2.0"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	shadow := filepath.Join(root, ".config", "mcp", "mcp.json")
-	if err := os.MkdirAll(filepath.Dir(shadow), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(shadow, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	project := filepath.Join(root, "project")
-	projectShadows := []string{filepath.Join(project, ".mcp.json")}
-	for _, projectShadow := range projectShadows {
-		if err := os.MkdirAll(filepath.Dir(projectShadow), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(projectShadow, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service := newMcpConfigService(agent, fakeWorkspaceResolver{record: workspace.Record{Path: project, Location: workspace.Location{Kind: workspace.KindLocal}}})
-
-	status, err := service.GetMcpEngineStatus(domain.McpEngineStatusRequest{WorkspacePath: project})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !status.Installed || !status.Enabled || status.Source != "npm:pi-mcp-adapter@1.2.0" {
-		t.Fatalf("unexpected engine status %#v", status)
-	}
-	expectedShadows := append([]string{shadow}, projectShadows...)
-	if len(status.ShadowedPaths) != len(expectedShadows) {
-		t.Fatalf("unexpected shadowed paths %#v", status.ShadowedPaths)
-	}
-	for index, expected := range expectedShadows {
-		if status.ShadowedPaths[index] != expected {
-			t.Fatalf("unexpected shadowed paths %#v", status.ShadowedPaths)
-		}
-	}
-
-	empty, err := newMcpConfigService(filepath.Join(root, "missing-agent"), nil).GetMcpEngineStatus(domain.McpEngineStatusRequest{WorkspacePath: project})
-	if err != nil || empty.Installed || len(empty.ShadowedPaths) != 1 {
-		t.Fatalf("unexpected empty engine status %#v, %v", empty, err)
-	}
 }
 
 func TestMcpConfigServiceListImportableMcpServersScansHostConfigs(t *testing.T) {
@@ -247,5 +154,77 @@ func TestMcpConfigServiceListImportableMcpServersScansHostConfigs(t *testing.T) 
 	}
 	if !strings.Contains(candidates[1].Definition, "mcp-server-git") {
 		t.Fatalf("definition was not preserved: %s", candidates[1].Definition)
+	}
+}
+
+func TestNativeMcpDefinitionMigratesDisabledAndRejectsLegacyTransports(t *testing.T) {
+	definition, _, err := parseMcpDefinition(`{"command":"node","disabled":true,"headers":{"X-Test":"kept"}}`)
+	if err != nil || definition["enabled"] != false || definition["disabled"] != nil {
+		t.Fatalf("invalid migration: %#v, %v", definition, err)
+	}
+	for _, value := range []string{`{"socket":"/tmp/mcp"}`, `{"url":"https://example.test","type":"sse"}`} {
+		if _, _, err := parseMcpDefinition(value); err == nil {
+			t.Fatalf("accepted unsupported transport: %s", value)
+		}
+	}
+}
+
+func TestMcpNativeOverridesAndLegacyNames(t *testing.T) {
+	root := t.TempDir()
+	agent := filepath.Join(root, "agent")
+	project := filepath.Join(root, "project")
+	service := newMcpConfigService(agent, fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
+	if err := writeMcpConfig(filepath.Join(agent, "mcp.json"), map[string]any{"mcpServers": map[string]any{"docs": map[string]any{"command": "node"}, "old.name": map[string]any{"command": "node"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetMcpServer(domain.McpServerRequest{Scope: domain.McpConfigScopeGlobal, Name: "old.name"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeGlobal, OriginalName: "old.name", Name: "old-name", Definition: `{"command":"node"}`}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeProject, WorkspacePath: project, Name: "docs", Definition: `{"enabled":false,"exposure":"hidden"}`})
+	if err != nil || !result.Disabled {
+		t.Fatalf("native project override: %#v, %v", result, err)
+	}
+	if _, err := validMcpServerName("中文"); err == nil {
+		t.Fatal("native Pi requires ASCII server names")
+	}
+}
+
+func TestNativeMcpProbeUsesPiWithoutChangingConfig(t *testing.T) {
+	bin := os.Getenv("PI_DESK_TEST_NATIVE_PI")
+	if bin == "" {
+		t.Skip("set PI_DESK_TEST_NATIVE_PI for native Pi integration")
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	script := `import readline from 'node:readline';
+for await (const line of readline.createInterface({input:process.stdin})) {
+ const m = JSON.parse(line); if (m.id === undefined) continue;
+ const result = m.method === 'initialize' ? {protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}} : m.method === 'tools/list' ? {tools:[{name:'search',description:'Search fixture',inputSchema:{type:'object'}}]} : {};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');
+}`
+	server := filepath.Join(directory, "server.mjs")
+	if err := os.WriteFile(server, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := json.Marshal(map[string]any{"command": node, "args": []string{server}, "enabled": false})
+	config := filepath.Join(directory, "mcp.json")
+	if err := writeMcpConfig(config, map[string]any{"mcpServers": map[string]any{"fixture": json.RawMessage(definition)}}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(config)
+	result, err := newMcpConfigService(directory, nil).TestMcpServer(domain.TestMcpServerRequest{Name: "fixture", Definition: string(definition)})
+	if err != nil || !strings.Contains(result.Output, "search") {
+		t.Fatalf("native MCP probe: %#v, %v", result, err)
+	}
+	after, _ := os.ReadFile(config)
+	if string(after) != string(before) {
+		t.Fatal("connection test changed saved MCP config")
 	}
 }

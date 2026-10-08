@@ -921,6 +921,9 @@ describe("ComposerBar", () => {
         contextUsage: { tokens: 60_000, contextWindow: 200_000, percent: 30, estimated: true },
         tokens: { input: 50_000, output: 10_000, cacheRead: 40_000, cacheWrite: 5_000, total: 105_000 },
       } },
+      promptCacheByThread: { "thread-stats": {
+        input: 5_000, cacheRead: 40_000, cacheWrite: 0, cacheObserved: true,
+      } },
     });
 
     const wrapper = mount(ComposerBar, { global: { plugins: [pinia] } });
@@ -934,10 +937,17 @@ describe("ComposerBar", () => {
     expect(context.attributes("title")).toContain("~60,000 / 200,000");
     expect(metrics.get(".is-input").text()).toContain("Input50K");
     expect(metrics.get(".is-output").text()).toContain("Output10K");
-    expect(metrics.get(".is-cache").text()).toContain("Cache45K");
-    expect(metrics.get(".is-cache").attributes("title")).toContain("Cache read: 40,000");
-    expect(metrics.get(".is-cache").attributes("title")).toContain("Cache write: 5,000");
+    expect(metrics.get(".is-cache").text()).toContain("CacheHit 89%");
+    expect(metrics.get(".is-cache").attributes("data-cache-state")).toBe("hit");
+    expect(metrics.get(".is-cache").attributes("role")).toBe("status");
+    expect(metrics.get(".is-cache").attributes("title")).toContain("Latest: 40,000 read / 0 written");
+    expect(metrics.get(".is-cache").attributes("title")).toContain("Session: 40,000 read / 5,000 written");
     expect(wrapper.find(".composer-context-summary").exists()).toBe(false);
+
+    store.promptCacheByThread["thread-stats"] = { input: 45_000, cacheRead: 0, cacheWrite: 0, cacheObserved: true };
+    await wrapper.vm.$nextTick();
+    expect(metrics.get(".is-cache").text()).toContain("CacheMiss");
+    expect(metrics.get(".is-cache").attributes("data-cache-state")).toBe("miss");
 
     expect(wrapper.find(".completion-menu").exists()).toBe(true);
     await wrapper.get(".model-button").trigger("click");
@@ -981,4 +991,12 @@ describe("ComposerBar", () => {
     await restricted.trigger("click");
     expect(store.setActiveWorkspaceTrust).toHaveBeenCalledWith("deny");
   });
+});
+
+it("preserves original image bytes and MIME type", async () => {
+  const { prepareImage: readImage } = await vi.importActual<typeof import("../utils/imageAttachments")>("../utils/imageAttachments");
+  const file = new File([new Uint8Array([0, 1, 2, 255])], "original.png", { type: "image/png" });
+  const image = await readImage(file);
+  expect(image.data).toBe("AAEC/w==");
+  expect(image.mimeType).toBe("image/png");
 });

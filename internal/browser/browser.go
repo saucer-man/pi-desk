@@ -1,5 +1,5 @@
 // Package browser hosts embedded WebView2 pages and their scoped CDP tools.
-// The WebSocket client is also shared with the legacy Chromium helpers.
+// The CDP client is shared by the embedded page inspector.
 package browser
 
 import (
@@ -7,11 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,14 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	portFileName      = "DevToolsActivePort"
-	discoverTimeout   = 3 * time.Second
-	callTimeout       = 20 * time.Second
-	launchWaitTimeout = 15 * time.Second
-)
-
-var ErrBrowserNotRunning = errors.New("managed browser is not running; ask Pi to use a browser tool first")
+const callTimeout = 20 * time.Second
 
 // ProfileDir is the dedicated Chromium user data directory, shared with the
 // extension (LOCALAPPDATA on Windows so browser caches stay out of Roaming).
@@ -40,151 +30,6 @@ func ProfileDir() (string, error) {
 		base = config
 	}
 	return filepath.Join(base, "pi-desk", "browser"), nil
-}
-
-// ReadPortFile parses DevToolsActivePort: line one is the port, line two the
-// browser-level WebSocket path.
-func ReadPortFile(profileDir string) (port int, wsPath string, err error) {
-	content, readErr := os.ReadFile(filepath.Join(profileDir, portFileName))
-	if readErr != nil {
-		return 0, "", ErrBrowserNotRunning
-	}
-	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	if len(lines) == 0 {
-		return 0, "", fmt.Errorf("empty %s in %s", portFileName, profileDir)
-	}
-	port, parseErr := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if parseErr != nil || port <= 0 || port > 65535 {
-		return 0, "", fmt.Errorf("invalid port in %s: %q", portFileName, strings.TrimSpace(lines[0]))
-	}
-	wsPath = "/devtools/browser"
-	if len(lines) > 1 {
-		wsPath = strings.TrimSpace(lines[1])
-	}
-	return port, wsPath, nil
-}
-
-// Target describes one attachable page (tab) of the managed browser.
-type Target struct {
-	Port   int
-	PageWS string
-	URL    string
-	Title  string
-}
-
-// Locate finds an installed Chromium executable, preferring Chrome over Edge.
-func Locate() (string, error) {
-	candidates := []struct{ root, rest string }{
-		{os.Getenv("ProgramFiles"), `Google\Chrome\Application\chrome.exe`},
-		{os.Getenv("ProgramFiles(x86)"), `Google\Chrome\Application\chrome.exe`},
-		{os.Getenv("LocalAppData"), `Google\Chrome\Application\chrome.exe`},
-		{os.Getenv("ProgramFiles"), `Microsoft\Edge\Application\msedge.exe`},
-		{os.Getenv("ProgramFiles(x86)"), `Microsoft\Edge\Application\msedge.exe`},
-	}
-	for _, candidate := range candidates {
-		if candidate.root == "" {
-			continue
-		}
-		path := filepath.Join(candidate.root, candidate.rest)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, nil
-		}
-	}
-	return "", errors.New("no Chromium browser found; install Google Chrome or Microsoft Edge")
-}
-
-// Launch starts a detached managed Chromium with the dedicated profile and
-// waits for its DevTools endpoint. Safe to race with the extension's own
-// launcher: a second invocation with the same user data directory forwards
-// to the running instance.
-func Launch(profileDir string) (Target, error) {
-	executable, err := Locate()
-	if err != nil {
-		return Target{}, err
-	}
-	if err := os.MkdirAll(profileDir, 0o700); err != nil {
-		return Target{}, fmt.Errorf("create browser profile directory: %w", err)
-	}
-	command := exec.Command(executable,
-		"--remote-debugging-port=0", "--user-data-dir="+profileDir,
-		"--no-first-run", "--no-default-browser-check",
-		"--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
-		"about:blank")
-	if err := command.Start(); err != nil {
-		return Target{}, fmt.Errorf("start managed browser: %w", err)
-	}
-	go func() { _ = command.Wait() }()
-	deadline := time.Now().Add(launchWaitTimeout)
-	for time.Now().Before(deadline) {
-		if target, discoverErr := DiscoverPage(profileDir); discoverErr == nil {
-			return target, nil
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	return Target{}, errors.New("timed out waiting for the managed browser to start")
-}
-
-type cdpTargetInfo struct {
-	Type                 string `json:"type"`
-	URL                  string `json:"url"`
-	Title                string `json:"title"`
-	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-}
-
-// NewPage creates an independent CDP page without replacing the agent's page.
-func NewPage(profileDir string) (Target, error) {
-	target, err := DiscoverPage(profileDir)
-	if errors.Is(err, ErrBrowserNotRunning) {
-		target, err = Launch(profileDir)
-	}
-	if err != nil {
-		return Target{}, err
-	}
-	request, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://127.0.0.1:%d/json/new?about:blank", target.Port), nil)
-	if err != nil {
-		return Target{}, err
-	}
-	response, err := (&http.Client{Timeout: discoverTimeout}).Do(request)
-	if err != nil {
-		return Target{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return Target{}, fmt.Errorf("create browser page: HTTP %d", response.StatusCode)
-	}
-	var page cdpTargetInfo
-	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
-		return Target{}, err
-	}
-	return Target{Port: target.Port, PageWS: page.WebSocketDebuggerURL, URL: page.URL, Title: page.Title}, nil
-}
-
-// DiscoverPage finds the first inspectable page target of the managed browser.
-func DiscoverPage(profileDir string) (Target, error) {
-	port, _, err := ReadPortFile(profileDir)
-	if err != nil {
-		return Target{}, err
-	}
-	request, requestErr := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/json/list", port), nil)
-	if requestErr != nil {
-		return Target{}, requestErr
-	}
-	client := &http.Client{Timeout: discoverTimeout}
-	response, err := client.Do(request)
-	if err != nil {
-		return Target{}, ErrBrowserNotRunning
-	}
-	defer response.Body.Close()
-	var targets []cdpTargetInfo
-	if err := json.NewDecoder(response.Body).Decode(&targets); err != nil {
-		return Target{}, fmt.Errorf("decode browser target list: %w", err)
-	}
-	for _, target := range targets {
-		if target.Type == "page" && target.WebSocketDebuggerURL != "" && !strings.HasPrefix(target.URL, "devtools://") {
-			return Target{Port: port, PageWS: target.WebSocketDebuggerURL, URL: target.URL, Title: target.Title}, nil
-		}
-	}
-	return Target{}, errors.New("managed browser has no open page")
 }
 
 type cdpMessage struct {

@@ -1,5 +1,5 @@
 export type ScheduledTaskFrequency = "once" | "hourly" | "daily" | "weekdays" | "weekly";
-export type ScheduledTaskRunStatus = "started" | "failed";
+export type ScheduledTaskRunStatus = "started" | "completed" | "failed" | "cancelled";
 export const scheduledTaskThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface ScheduledTask {

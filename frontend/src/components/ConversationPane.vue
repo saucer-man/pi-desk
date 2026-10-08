@@ -386,6 +386,9 @@ onBeforeUnmount(() => {
         </aside>
       </nav>
       <div ref="timeline" class="timeline h-full w-full min-w-0 overflow-x-clip overflow-y-auto" role="log" aria-live="polite" @scroll="onTimelineScroll">
+      <div v-if="appStore.sessionMutationErrorByThread?.[appStore.activeThreadId]" class="conversation-operation-banner mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]" role="status">
+        {{ tr("conversation.historyMutationLimit") }}
+      </div>
       <div v-if="appStore.activeSessionOperation === 'Compacting'" class="conversation-operation-banner mb-4 inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] px-3 py-2 text-xs text-[var(--text-secondary)] shadow-sm" role="status" aria-live="polite">
         <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
         <span>{{ tr("topbar.compacting") }}</span>

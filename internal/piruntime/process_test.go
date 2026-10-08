@@ -24,7 +24,7 @@ func TestBuildPiArgsRequiresTrustAndPreservesSessionOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildPiArgs returned an error: %v", err)
 	}
-	for _, expected := range []string{"--mode", "rpc", "--session", sessionPath, "--name", "Desktop task", "--approve", "--offline", "--no-themes", "--no-skills", "--no-extensions"} {
+	for _, expected := range []string{"--mode", "rpc", "--session", sessionPath, "--name", "Desktop task", "--approve", "--offline", "--no-themes", "--no-skills", "--no-extensions", "builtin:mcp", "builtin:codemode", "builtin:tool-search", "builtin:llama.cpp"} {
 		if !slices.Contains(args, expected) {
 			t.Fatalf("missing %q in %#v", expected, args)
 		}
@@ -56,6 +56,9 @@ func TestBuildPiArgsForRemoteAdapterDisablesLocalToolFallback(t *testing.T) {
 		if !slices.Contains(args, expected) {
 			t.Fatalf("missing %q in %#v", expected, args)
 		}
+	}
+	if slices.Contains(args, "builtin:mcp") || slices.Contains(args, "builtin:codemode") {
+		t.Fatal("remote mode enabled local built-in extensions")
 	}
 	environment, err := processEnvironment(config)
 	if err != nil {

@@ -28,7 +28,11 @@ describe("teleported dialog theme inheritance", () => {
     expect(tokens).toContain("--bg-settings: #f8f8f8");
     expect(tokens).toContain("--bg-conversation: #f8f8f8");
     expect(tokens).toContain("--bg-card: #ffffff");
-    expect(tokens).toContain("--bg-composer: var(--bg-card)");
+    expect(tokens).toContain("--bg-sidebar: #ececee");
+    expect(tokens).toContain("--bg-composer: #ffffff");
+    expect(tokens).toContain("--bg-user-message: #f3f3f3");
+    expect(tokens).toContain("--sidebar-workspace-text: #757576");
+    expect(tokens).toContain("--sidebar-thread-text: #262626");
   });
 
   it("publishes global font-family and root-size preference tokens", async () => {

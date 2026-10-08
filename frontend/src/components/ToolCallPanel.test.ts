@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import ToolCallPanel from "./ToolCallPanel.vue";
 
 describe("ToolCallPanel", () => {
+  it("renders nested tool disclosures and incomplete history without context actions", () => {
+    const wrapper = mount(ToolCallPanel, { props: { tool: {
+      id: "parent", name: "codemode", output: "done", status: "complete", nestedCallsIncomplete: true,
+      children: [{ id: "child", name: "read", output: "child output", durationMs: 12, status: "complete" }],
+    } } });
+    expect(wrapper.findAll("details.tool-call")).toHaveLength(2);
+    expect(wrapper.text()).toContain("12ms");
+    expect(wrapper.text()).toContain("Nested tool records are incomplete");
+    expect(wrapper.findAll(".tool-context-action")).toHaveLength(0);
+  });
+
   it("summarizes commands and exposes input and output copy actions", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -51,6 +62,22 @@ describe("ToolCallPanel", () => {
     });
 
     await expect(wrapper.get('[aria-label="Copy tool output"]').trigger("click")).resolves.toBeUndefined();
+  });
+
+  it("excludes a persisted tool result from future context", async () => {
+    const excludeFromContext = vi.fn().mockResolvedValue(true);
+    const tool = { id: "tool-context", entryId: "result-entry", name: "read", output: "content", status: "complete" as const };
+    const wrapper = mount(ToolCallPanel, { props: { tool, excludeFromContext } });
+
+    await wrapper.get('[aria-label="Exclude from future context"]').trigger("click");
+    expect(wrapper.get("details").attributes("open")).toBeDefined();
+    expect(wrapper.get(".tool-context-confirm").text()).toContain("tool result");
+    await wrapper.get(".tool-context-confirm button:last-child").trigger("click");
+    expect(excludeFromContext).toHaveBeenCalledWith("result-entry");
+
+    await wrapper.setProps({ tool: { ...tool, contextExcluded: true } });
+    expect(wrapper.get(".tool-context-badge").text()).toBe("Excluded from context");
+    expect(wrapper.find(".tool-context-action").exists()).toBe(false);
   });
 
   it("shows duration and a colored inline diff for edit and write tools", () => {

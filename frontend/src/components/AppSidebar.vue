@@ -93,6 +93,7 @@ const defaultExpandedWorkspaceID = computed(() => {
 
 watch(() => appStore.searchQuery, (query) => {
   if (query.trim()) void appStore.loadSessionSearchBodies();
+  else appStore.cancelSessionSearch();
 });
 
 function isWorkspaceCollapsed(workspaceID: string): boolean {
@@ -370,7 +371,7 @@ onBeforeUnmount(() => {
           <button
             v-else
             type="button"
-            class="workspace-row flex h-full min-w-0 flex-1 items-center gap-2 rounded-md bg-transparent px-2 text-left text-sm text-[var(--text)] hover:bg-transparent"
+            class="workspace-row flex h-full min-w-0 flex-1 items-center gap-2 rounded-md bg-transparent px-2 text-left text-sm text-[var(--sidebar-workspace-text)] hover:bg-transparent"
             :aria-expanded="!isWorkspaceCollapsed(group.workspace.id)"
             :title="group.workspace.kind === 'ssh' ? group.workspace.remoteRoot : group.workspace.path"
             @click="toggleWorkspace(group.workspace.id)"
@@ -400,14 +401,14 @@ onBeforeUnmount(() => {
           <button
             v-for="thread in group.threads"
             :key="thread.id"
-            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-transparent pl-8 pr-2 text-left text-[var(--font-size-label)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)]"
-            :class="{ 'is-active bg-[var(--bg-active)] text-[var(--text)]': appStore.activeThreadId === thread.id }"
+            class="thread-row flex h-8 w-full min-w-0 items-center gap-2 rounded-md bg-transparent pl-8 pr-2 text-left text-[var(--font-size-label)] text-[var(--sidebar-thread-text)] hover:bg-[var(--bg-hover)] hover:text-[var(--sidebar-thread-active-text)] active:bg-[var(--bg-active)]"
+            :class="{ 'is-active bg-[var(--bg-active)] text-[var(--sidebar-thread-active-text)]': appStore.activeThreadId === thread.id }"
             type="button"
             :title="thread.title"
             @click="appStore.selectThread(thread.id)"
             @contextmenu.prevent="openTaskMenu($event, thread.id)"
           >
-            <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started text-[var(--text)]': thread.started }">{{ thread.title }}</span>
+            <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started text-[var(--sidebar-thread-active-text)]': thread.started }">{{ thread.title }}</span>
             <time v-if="relativeTime(thread.modifiedAt || thread.createdAt)" class="thread-time" :datetime="thread.modifiedAt || thread.createdAt">{{ relativeTime(thread.modifiedAt || thread.createdAt) }}</time>
             <span
               v-if="thread.status === 'running' || thread.status === 'starting'"
@@ -444,7 +445,7 @@ onBeforeUnmount(() => {
       <button v-if="taskMenuWorkspace?.kind !== 'ssh'" type="button" role="menuitem" @click="void openTaskWorkspace()"><FolderOpen :size="14" />{{ tr("sidebar.openWorkspace") }}</button>
       <button type="button" role="menuitem" @click="void beginTaskRename()"><Pencil :size="14" />{{ tr("topbar.rename") }}</button>
       <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('branch')"><GitBranch :size="14" />{{ tr("topbar.branches") }}</button>
-      <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('clone')"><Copy :size="14" />{{ tr("topbar.clone") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation) || Boolean(appStore.sessionMutationErrorByThread[taskMenuThread.id])" @click="void runTaskAction('clone')"><Copy :size="14" />{{ tr("topbar.clone") }}</button>
       <button type="button" role="menuitem" :disabled="!taskMenuThread.sessionFile || Boolean(appStore.activeSessionOperation)" @click="void runTaskAction('export')"><Download :size="14" />{{ tr("topbar.export") }}</button>
       <button type="button" role="menuitem" :disabled="!taskMenuThread.started" @click="void runTaskAction('compact')"><Sparkles :size="14" />{{ tr("topbar.compact") }}</button>
       <button v-if="taskMenuThread.started" type="button" role="menuitem" @click="void appStore.stopThread(taskMenuThread.id)"><Square :size="14" />{{ tr("sidebar.closePi") }}</button>

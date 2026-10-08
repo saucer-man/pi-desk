@@ -5,7 +5,7 @@ import type { BrowserStatus } from "../../bindings/pi-desk/internal/domain";
 export interface BrowserEvent {
   tabId: string;
   threadId: string;
-  type: "opened" | "state" | "closed";
+  type: "opened" | "selected" | "state" | "closed";
   status?: BrowserStatus;
 }
 export const browserService = {

@@ -41,6 +41,10 @@ export function EditSessionMessage(request: domain$0.SessionMessageRequest): $Ca
     return $Call.ByID(1154625060, request);
 }
 
+export function ExcludeSessionMessageFromContext(request: domain$0.SessionMessageRequest): $CancellablePromise<domain$0.CommandResult> {
+    return $Call.ByID(130865583, request);
+}
+
 export function ExportSession(request: domain$0.ExportSessionRequest): $CancellablePromise<domain$0.CommandResult> {
     return $Call.ByID(1940287575, request);
 }

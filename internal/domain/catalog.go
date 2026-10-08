@@ -117,9 +117,15 @@ type SessionModel struct {
 }
 
 type SessionSnapshot struct {
-	Messages     []json.RawMessage `json:"messages"`
-	Model        *SessionModel     `json:"model,omitempty"`
-	MessageCount int               `json:"messageCount"`
+	Messages      []json.RawMessage `json:"messages"`
+	Model         *SessionModel     `json:"model,omitempty"`
+	MessageCount  int               `json:"messageCount"`
+	MutationError string            `json:"mutationError,omitempty"`
+}
+
+type SessionSearchText struct {
+	Text         string `json:"text"`
+	MessageCount int    `json:"messageCount"`
 }
 
 type SessionTokenUsage struct {
@@ -196,6 +202,7 @@ type DesktopThreadState struct {
 	Status        string `json:"status"`
 	SessionPath   string `json:"sessionPath,omitempty"`
 	Draft         string `json:"draft,omitempty"`
+	ComposerJSON  string `json:"composerJson,omitempty"`
 	CreatedAt     string `json:"createdAt,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 	Unread        bool   `json:"unread,omitempty"`

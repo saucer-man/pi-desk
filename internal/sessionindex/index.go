@@ -26,7 +26,7 @@ import (
 const (
 	maxConcurrentLoads = 10
 	maxSessionBytes    = 64 << 20
-	maxLineBytes       = 8 << 20
+	maxLineBytes       = 32 << 20
 	maxTitleRunes      = 80
 )
 
@@ -515,6 +515,75 @@ func (index *Index) Snapshot(path string) (Snapshot, error) {
 	}, nil
 }
 
+// SearchText returns only searchable text, never image payloads or tool arguments.
+func (index *Index) SearchText(ctx context.Context, path string) (string, int, error) {
+	canonical, err := index.ValidatePath(path)
+	if err != nil {
+		return "", 0, err
+	}
+	entries, err := readTranscriptEntriesContext(ctx, canonical)
+	if err != nil {
+		return "", 0, err
+	}
+	entries = activeTranscriptPath(entries)
+	var text strings.Builder
+	for _, raw := range transcriptMessages(entries) {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
+		var message struct {
+			Content json.RawMessage `json:"content"`
+			Command string          `json:"command"`
+			Output  string          `json:"output"`
+			Summary string          `json:"summary"`
+		}
+		if json.Unmarshal(raw, &message) != nil {
+			continue
+		}
+		for _, value := range []string{message.Command, message.Output, message.Summary} {
+			if value != "" {
+				text.WriteString(value)
+				text.WriteByte('\n')
+			}
+		}
+		var value string
+		if json.Unmarshal(message.Content, &value) == nil {
+			text.WriteString(value)
+			text.WriteByte('\n')
+			continue
+		}
+		var blocks []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		}
+		if json.Unmarshal(message.Content, &blocks) == nil {
+			for _, block := range blocks {
+				if block.Type == "text" {
+					text.WriteString(block.Text)
+					text.WriteByte('\n')
+				}
+				if block.Type == "thinking" {
+					text.WriteString(block.Thinking)
+					text.WriteByte('\n')
+				}
+			}
+		}
+	}
+	return text.String(), transcriptMessageCount(entries), nil
+}
+
+func MutationError(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "Session file is unavailable."
+	}
+	if info.Size() > maxSessionBytes {
+		return "Session exceeds 64 MiB; history changes are disabled. Reading and exporting remain available."
+	}
+	return ""
+}
+
 // TextEdit is one ordered old→new replacement recorded by an edit tool call.
 type TextEdit struct {
 	Old string
@@ -786,9 +855,15 @@ func transcriptMessageCount(entries []rawEntry) int {
 }
 
 func transcriptMessages(entries []rawEntry) []json.RawMessage {
+	excluded := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Type == "context_edit" && entry.TargetID != "" {
+			excluded[entry.TargetID] = bytes.Equal(bytes.TrimSpace(entry.Replacement), []byte("null"))
+		}
+	}
 	messages := make([]json.RawMessage, 0, len(entries))
 	for _, entry := range entries {
-		message, _, ok := transcriptMessage(entry)
+		message, _, ok := transcriptMessage(entry, excluded[entry.ID])
 		if ok {
 			messages = append(messages, message)
 		}
@@ -817,7 +892,7 @@ func transcriptEntryVisible(entry rawEntry) bool {
 	}
 }
 
-func transcriptMessage(entry rawEntry) (json.RawMessage, string, bool) {
+func transcriptMessage(entry rawEntry, contextExcluded bool) (json.RawMessage, string, bool) {
 	if entry.Type == "compaction" {
 		marker, err := compactionWithEntryID(entry)
 		return marker, "piDeskCompaction", err == nil
@@ -836,7 +911,7 @@ func transcriptMessage(entry rawEntry) (json.RawMessage, string, bool) {
 	default:
 		return nil, "", false
 	}
-	message, err := messageWithEntryID(entry.Message, entry.ID, !entry.SyntheticID, entry.Timestamp)
+	message, err := messageWithEntryID(entry.Message, entry.ID, !entry.SyntheticID, entry.Timestamp, contextExcluded)
 	return message, envelope.Role, err == nil
 }
 
@@ -861,7 +936,7 @@ func compactionWithEntryID(entry rawEntry) (json.RawMessage, error) {
 	return json.RawMessage(encoded), nil
 }
 
-func messageWithEntryID(message json.RawMessage, entryID string, persisted bool, entryTimestamp string) (json.RawMessage, error) {
+func messageWithEntryID(message json.RawMessage, entryID string, persisted bool, entryTimestamp string, contextExcluded bool) (json.RawMessage, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(message, &envelope); err != nil {
 		return nil, err
@@ -886,6 +961,9 @@ func messageWithEntryID(message json.RawMessage, entryID string, persisted bool,
 			return nil, err
 		}
 		envelope["piDeskEntryId"] = encodedID
+	}
+	if contextExcluded {
+		envelope["piDeskContextExcluded"] = json.RawMessage("true")
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
@@ -948,8 +1026,12 @@ type rawEntry struct {
 	Name                 string          `json:"name"`
 	Provider             string          `json:"provider"`
 	ModelID              string          `json:"modelId"`
+	Model                string          `json:"model"`
+	Usage                *rawUsage       `json:"usage"`
 	Message              json.RawMessage `json:"message"`
 	Content              json.RawMessage `json:"content"`
+	TargetID             string          `json:"targetId"`
+	Replacement          json.RawMessage `json:"replacement"`
 	Summary              string          `json:"summary"`
 	TokensBefore         int64           `json:"tokensBefore"`
 	EstimatedTokensAfter *int64          `json:"estimatedTokensAfter"`
@@ -992,38 +1074,47 @@ func readUsage(path string) (UsageSummary, string, bool) {
 	}
 	usage := UsageSummary{Sessions: 1, Models: []ModelUsage{}}
 	models := make(map[string]ModelUsage)
-	for _, entry := range activeTranscriptPath(entries) {
-		if entry.Type != "message" || len(entry.Message) == 0 {
-			continue
-		}
+	for _, entry := range entries {
 		var message rawMessage
-		if json.Unmarshal(entry.Message, &message) != nil {
-			continue
-		}
-		usage.Messages++
-		switch message.Role {
-		case "user":
-			usage.UserMessages++
-		case "assistant":
-			usage.AssistantMessages++
-			if message.Usage == nil {
+		switch entry.Type {
+		case "message":
+			if len(entry.Message) == 0 || json.Unmarshal(entry.Message, &message) != nil {
 				continue
 			}
-			tokens := tokensFromRaw(*message.Usage)
-			mergeTokens(&usage.Tokens, tokens)
-			usage.Cost += message.Usage.Cost.Total
-			provider := strings.TrimSpace(message.Provider)
-			modelID := strings.TrimSpace(message.Model)
-			key := provider + "\x00" + modelID
-			model := models[key]
-			model.Provider, model.Model = provider, modelID
-			model.AssistantMessages++
-			mergeTokens(&model.Tokens, tokens)
-			model.Cost += message.Usage.Cost.Total
-			models[key] = model
-		case "toolResult":
-			usage.ToolResults++
+			usage.Messages++
+			switch message.Role {
+			case "user":
+				usage.UserMessages++
+			case "assistant":
+				usage.AssistantMessages++
+			case "toolResult":
+				usage.ToolResults++
+			}
+		case "usage", "compaction", "branch_summary":
+			message = rawMessage{Provider: entry.Provider, Model: entry.Model, Usage: entry.Usage}
+		default:
+			continue
 		}
+		if message.Usage == nil {
+			continue
+		}
+		tokens := tokensFromRaw(*message.Usage)
+		mergeTokens(&usage.Tokens, tokens)
+		usage.Cost += message.Usage.Cost.Total
+		provider, modelID := strings.TrimSpace(message.Provider), strings.TrimSpace(message.Model)
+		// Tool and summary usage has no model attribution in the native transcript.
+		if provider == "" && modelID == "" {
+			continue
+		}
+		key := provider + "\x00" + modelID
+		model := models[key]
+		model.Provider, model.Model = provider, modelID
+		if message.Role == "assistant" {
+			model.AssistantMessages++
+		}
+		mergeTokens(&model.Tokens, tokens)
+		model.Cost += message.Usage.Cost.Total
+		models[key] = model
 	}
 	usage.Models = make([]ModelUsage, 0, len(models))
 	for _, model := range models {
@@ -1181,6 +1272,13 @@ func readSummary(path string) (Summary, bool) {
 }
 
 func readTranscriptEntries(path string) ([]rawEntry, error) {
+	return readTranscriptEntriesContext(context.Background(), path)
+}
+
+func readTranscriptEntriesContext(ctx context.Context, path string) ([]rawEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("inspect session transcript: %w", err)
@@ -1199,6 +1297,9 @@ func readTranscriptEntries(path string) ([]rawEntry, error) {
 	entries := make([]rawEntry, 0, 256)
 	lineNumber := 0
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		lineNumber++
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 || !utf8.Valid(line) {
@@ -1221,6 +1322,9 @@ func readTranscriptEntries(path string) ([]rawEntry, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read session transcript: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if len(entries) == 0 || entries[0].Type != "session" {
 		return nil, errors.New("session transcript is empty")

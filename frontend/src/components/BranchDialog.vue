@@ -125,7 +125,7 @@ function fork(node: VisibleNode) {
               class="icon-button" :class="ui.iconButton"
               type="button"
               :title="tr('branches.fork')"
-              :disabled="Boolean(appStore.activeSessionOperation)"
+              :disabled="Boolean(appStore.activeSessionOperation) || Boolean(appStore.sessionMutationErrorByThread[appStore.activeThreadId])"
               @click="fork(node)"
             ><GitFork :size="14" /></button>
           </div>
@@ -138,7 +138,7 @@ function fork(node: VisibleNode) {
         </template>
         <template v-else>
           <span v-if="appStore.activeSessionOperation" class="operation-label"><LoaderCircle :size="13" class="is-spinning" /> {{ appStore.activeSessionOperation }}</span>
-          <button class="text-button" :class="ui.button" type="button" :disabled="Boolean(appStore.activeSessionOperation)" @click="void appStore.cloneActiveSession()">{{ tr("branches.clone") }}</button>
+          <button class="text-button" :class="ui.button" type="button" :disabled="Boolean(appStore.activeSessionOperation) || Boolean(appStore.sessionMutationErrorByThread[appStore.activeThreadId])" @click="void appStore.cloneActiveSession()">{{ tr("branches.clone") }}</button>
         </template>
       </footer>
     </section>

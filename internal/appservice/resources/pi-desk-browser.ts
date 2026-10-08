@@ -349,6 +349,7 @@ export default function (pi: ExtensionAPI) {
         if (params.url !== "about:blank" && !["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http:, https: and about:blank URLs are supported.");
       }
       const target = await page(params.tabId, signal); invalidate(target.tabId);
+      await request("select", signal, target.tabId);
       if (action === "back" || action === "forward") {
         const history = await target.call<any>("Page.getNavigationHistory");
         const entry = history.entries[history.currentIndex + (action === "back" ? -1 : 1)];
@@ -357,8 +358,7 @@ export default function (pi: ExtensionAPI) {
       } else if (action === "reload") {
         await target.call("Page.reload");
       } else if (action === "navigate") {
-        const navigation = await target.call<{ errorText?: string }>("Page.navigate", { url: params.url });
-        if (navigation.errorText) throw new Error(navigation.errorText);
+        await request("navigate", signal, target.tabId, "", { url: params.url });
       } else throw new Error("Invalid navigation action.");
       return textResult({ tabId: target.tabId, action, note: "Navigation started. Wait for expected content, then read or screenshot to verify." });
     },
@@ -522,7 +522,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "browser_tabs", label: "Browser tabs",
-    description: "List/create this conversation's tabs to obtain exact tabIds. create optionally accepts url and creates a temporary tab without stealing the user's active panel. Other actions require tabId. Only temporary Agent tabs may be closed. " + workflow,
+    description: "List/create this conversation's tabs to obtain exact tabIds. create optionally accepts url and opens a temporary tab in this conversation's panel; select reveals an existing tab. Other actions require tabId. Only temporary Agent tabs may be closed. " + workflow,
     parameters: Type.Object({ action: StringEnum(["list","create","select","keep","close"]), tabId: Type.Optional(tabIdSchema), url: Type.Optional(Type.String()) }),
     async execute(_id, params, signal) {
       if (!["list","create"].includes(params.action) && !params.tabId?.trim()) throw new Error("tabId is required for this action.");

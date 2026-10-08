@@ -1,10 +1,11 @@
 export const MAX_ATTACHED_IMAGES = 10;
 export const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
-export const MAX_IMAGE_BASE64_CHARS = 6 * 1024 * 1024;
+export const MAX_IMAGE_BASE64_CHARS = 16 * 1024 * 1024;
 
 const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 export interface PreparedImage {
+  cacheKey?: string;
   id: string;
   name: string;
   data: string;
@@ -35,16 +36,8 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
   if (!SUPPORTED_IMAGE_TYPES.has(file.type)) throw new Error(`${file.name || "Image"} uses an unsupported format`);
   if (file.size > MAX_SOURCE_IMAGE_BYTES) throw new Error(`${file.name || "Image"} is larger than 10 MiB`);
 
-  const processed = file.type === "image/gif"
-    ? file
-    : await (await import("browser-image-compression")).default(file, {
-        maxSizeMB: 4,
-        maxWidthOrHeight: 2000,
-        initialQuality: 0.86,
-        useWebWorker: true,
-      });
-  const parsed = parseImageDataURL(await readDataURL(processed), processed.type || file.type);
-  if (parsed.data.length > MAX_IMAGE_BASE64_CHARS) throw new Error(`${file.name || "Image"} is too large after compression`);
+  const parsed = parseImageDataURL(await readDataURL(file), file.type);
+  if (parsed.data.length > MAX_IMAGE_BASE64_CHARS) throw new Error(`${file.name || "Image"} exceeds the RPC size limit`);
   return {
     id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
     name: file.name || "Pasted image",

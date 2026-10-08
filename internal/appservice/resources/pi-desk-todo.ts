@@ -7,8 +7,8 @@
  * model context.
  *
  * A todo list belongs to one user turn. before_agent_start clears the previous
- * turn's list before the next model run begins; tool-loop continuations inside
- * the same run keep their current list.
+ * turn's list before the next model run begins; tool-loop and automatic Goal
+ * continuations keep their current list.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -40,6 +40,7 @@ const TodoParams = Type.Object({
 const WIDGET_KEY = "pi-desk-todo";
 const ENTRY_TYPE = "pi-desk-todo";
 const SELF_MARKER = "pi-desk-todo";
+const KEEP_TODO_MARKER = "<!-- pi-desk-keep-todo -->";
 
 export default function (pi: ExtensionAPI) {
 	let todos: Todo[] = [];
@@ -106,7 +107,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Manage a todo list for the current user turn (add / toggle / clear)",
 		promptGuidelines: [
 			"Use the todo tool to track multi-step work: add items before starting, toggle done as each step completes, and clear when finished.",
-			"Todo items are scoped to the current user turn and are reset before the next user turn begins.",
+			"Todo items are scoped to the current user turn; automatic /goal continuations retain the list, while ordinary new user turns reset it.",
 			"Always present todo items in numeric ID order (#1, #2, #3...) and never regroup completed items separately.",
 			"Toggle todo items by id; call todo list first if the ids are unknown.",
 		],
@@ -219,7 +220,8 @@ export default function (pi: ExtensionAPI) {
 		updateWidget(ctx);
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (event.prompt.includes(KEEP_TODO_MARKER)) return;
 		clearPreviousTurn(ctx);
 	});
 

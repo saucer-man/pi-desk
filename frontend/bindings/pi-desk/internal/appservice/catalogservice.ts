@@ -13,6 +13,10 @@ export function AddWorkspace(request: domain$0.AddWorkspaceRequest): $Cancellabl
     return $Call.ByID(1066149365, request);
 }
 
+export function CacheComposerImage(image: domain$0.ImageContent): $CancellablePromise<string> {
+    return $Call.ByID(1132867876, image);
+}
+
 export function DeleteSession(request: domain$0.DeleteSessionRequest): $CancellablePromise<domain$0.DeletedSession> {
     return $Call.ByID(3884599674, request);
 }
@@ -57,6 +61,10 @@ export function PickWorkspace(request: domain$0.PickWorkspaceRequest): $Cancella
     return $Call.ByID(2864021601, request);
 }
 
+export function ReadComposerImage(key: string): $CancellablePromise<string> {
+    return $Call.ByID(3170365716, key);
+}
+
 export function RemoveWorkspace(request: domain$0.WorkspaceRequest): $CancellablePromise<void> {
     return $Call.ByID(1732600386, request);
 }
@@ -67,4 +75,8 @@ export function RenameWorkspace(request: domain$0.RenameWorkspaceRequest): $Canc
 
 export function SaveDesktopState(state: domain$0.DesktopState): $CancellablePromise<void> {
     return $Call.ByID(2642902473, state);
+}
+
+export function SearchSessionText(request: domain$0.SessionSnapshotRequest): $CancellablePromise<domain$0.SessionSearchText> {
+    return $Call.ByID(3078201352, request);
 }

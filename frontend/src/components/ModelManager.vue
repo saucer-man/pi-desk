@@ -45,6 +45,7 @@ type ProviderHeaderEntry = {
   name: string;
   value: string;
 };
+type OptionalNumber = number | "";
 const appStore = useAppStore();
 const snapshot = ref<ModelConfigSnapshot>();
 const loading = ref(true);
@@ -99,6 +100,12 @@ const editor = reactive({
   maxTokens: 16384,
   reasoning: false,
   imageInput: false,
+  reserveTokens: "" as OptionalNumber,
+  keepRecentTokens: "" as OptionalNumber,
+  imageMaxWidth: "" as OptionalNumber,
+  imageMaxHeight: "" as OptionalNumber,
+  imageMaxBytes: "" as OptionalNumber,
+  imageJpegQuality: "" as OptionalNumber,
   thinkingLevelMapJson: "",
   modelCompatJson: "",
 });
@@ -121,11 +128,17 @@ const fingerprint = computed(() => JSON.stringify({
   maxTokens: editor.maxTokens,
   reasoning: editor.reasoning,
   imageInput: editor.imageInput,
+  reserveTokens: editor.reserveTokens,
+  keepRecentTokens: editor.keepRecentTokens,
+  imageMaxWidth: editor.imageMaxWidth,
+  imageMaxHeight: editor.imageMaxHeight,
+  imageMaxBytes: editor.imageMaxBytes,
+  imageJpegQuality: editor.imageJpegQuality,
   thinkingLevelMapJson: editor.thinkingLevelMapJson,
   modelCompatJson: editor.modelCompatJson,
 }));
 const dirty = computed(() => fingerprint.value !== savedFingerprint.value);
-const hasRequiredProbeFields = computed(() => Boolean(editor.baseUrl.trim() && editor.api && editor.modelId.trim()));
+const hasRequiredProbeFields = computed(() => Boolean(editor.modelId.trim() && ((isExisting.value && !dirty.value) || (editor.baseUrl.trim() && editor.api))));
 const hasRequiredQuotaFields = computed(() => Boolean(editor.baseUrl.trim() && editor.api));
 const availableDiscoveredModels = computed(() => discoveredModels.value.filter((model) => !findModel(editor.providerId.trim(), model.id)));
 const modelDefaults = computed(() => defaultsForModel(editor.modelId));
@@ -204,6 +217,12 @@ function selectModel(provider: ManagedModelProvider, model: ManagedModel) {
   editor.maxTokens = model.maxTokens;
   editor.reasoning = model.reasoning;
   editor.imageInput = model.imageInput;
+  editor.reserveTokens = model.reserveTokens ?? "";
+  editor.keepRecentTokens = model.keepRecentTokens ?? "";
+  editor.imageMaxWidth = model.imageMaxWidth ?? "";
+  editor.imageMaxHeight = model.imageMaxHeight ?? "";
+  editor.imageMaxBytes = model.imageMaxBytes ?? "";
+  editor.imageJpegQuality = model.imageJpegQuality ?? "";
   editor.thinkingLevelMapJson = model.thinkingLevelMapJson ?? "";
   editor.modelCompatJson = model.compatJson ?? "";
   savedFingerprint.value = fingerprint.value;
@@ -231,6 +250,12 @@ function startNewModel() {
   editor.maxTokens = 16384;
   editor.reasoning = false;
   editor.imageInput = false;
+  editor.reserveTokens = "";
+  editor.keepRecentTokens = "";
+  editor.imageMaxWidth = "";
+  editor.imageMaxHeight = "";
+  editor.imageMaxBytes = "";
+  editor.imageJpegQuality = "";
   editor.thinkingLevelMapJson = "";
   editor.modelCompatJson = "";
   savedFingerprint.value = fingerprint.value;
@@ -340,6 +365,9 @@ function validateForm(): boolean {
   if (!editor.providerId.trim() || !editor.modelId.trim()) formError.value = tr("settings.modelIDsRequired");
   else if (/\s/.test(editor.providerId) || /\s/.test(editor.modelId)) formError.value = tr("settings.modelIDsNoSpaces");
   else if (editor.contextWindow < 1 || editor.maxTokens < 1 || editor.maxTokens > editor.contextWindow) formError.value = tr("settings.modelTokenError");
+  else if ([editor.reserveTokens, editor.keepRecentTokens].some((value) => value !== "" && (!Number.isSafeInteger(value) || value < 0))) formError.value = tr("settings.modelCompactionTokenError");
+  else if ([editor.imageMaxWidth, editor.imageMaxHeight, editor.imageMaxBytes].some((value) => value !== "" && (!Number.isSafeInteger(value) || value < 1))) formError.value = tr("settings.modelImageLimitError");
+  else if (editor.imageJpegQuality !== "" && (!Number.isSafeInteger(editor.imageJpegQuality) || editor.imageJpegQuality < 1 || editor.imageJpegQuality > 100)) formError.value = tr("settings.modelImageQualityError");
   else formError.value = validateProviderHeaders()
     ?? validateThinkingLevelMapJSON(editor.thinkingLevelMapJson)
     ?? validateObjectJSON(tr("settings.providerCompatibility"), editor.providerCompatJson)
@@ -374,6 +402,12 @@ async function saveModel(showNotice = true): Promise<boolean> {
       maxTokens: editor.maxTokens,
       reasoning: editor.reasoning,
       imageInput: editor.imageInput,
+      reserveTokens: editor.reserveTokens === "" ? undefined : editor.reserveTokens,
+      keepRecentTokens: editor.keepRecentTokens === "" ? undefined : editor.keepRecentTokens,
+      imageMaxWidth: editor.imageMaxWidth === "" ? undefined : editor.imageMaxWidth,
+      imageMaxHeight: editor.imageMaxHeight === "" ? undefined : editor.imageMaxHeight,
+      imageMaxBytes: editor.imageMaxBytes === "" ? undefined : editor.imageMaxBytes,
+      imageJpegQuality: editor.imageJpegQuality === "" ? undefined : editor.imageJpegQuality,
       thinkingLevelMapJson: editor.thinkingLevelMapJson,
       modelCompatJson: editor.modelCompatJson,
     });
@@ -414,6 +448,7 @@ async function testModel() {
   notice.value = "";
   testResult.value = undefined;
   const request = modelConfigService.test({
+    providerId: isExisting.value && !dirty.value ? editor.providerId : undefined,
     baseUrl: editor.baseUrl,
     api: editor.api,
     apiKey: editor.apiKey,
@@ -836,6 +871,37 @@ onBeforeUnmount(() => {
             <small>{{ tr("settings.thinkingLevelMapHelp") }}</small>
           </label>
         </div>
+
+        <details class="model-advanced" data-testid="model-runtime-limits">
+          <summary>{{ tr("settings.modelRuntimeLimits") }}</summary>
+          <p>{{ tr("settings.modelRuntimeLimitsHelp") }}</p>
+          <div class="model-form-grid" :class="ui.formGrid">
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.reserveTokens") }}</span>
+              <input :class="ui.input" v-model.number="editor.reserveTokens" data-testid="reserve-tokens" type="number" min="0" step="1" placeholder="16384" />
+            </label>
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.keepRecentTokens") }}</span>
+              <input :class="ui.input" v-model.number="editor.keepRecentTokens" data-testid="keep-recent-tokens" type="number" min="0" step="1" placeholder="20000" />
+            </label>
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.imageMaxWidth") }}</span>
+              <input :class="ui.input" v-model.number="editor.imageMaxWidth" data-testid="image-max-width" type="number" min="1" step="1" placeholder="2000" />
+            </label>
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.imageMaxHeight") }}</span>
+              <input :class="ui.input" v-model.number="editor.imageMaxHeight" data-testid="image-max-height" type="number" min="1" step="1" placeholder="2000" />
+            </label>
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.imageMaxBytes") }}</span>
+              <input :class="ui.input" v-model.number="editor.imageMaxBytes" data-testid="image-max-bytes" type="number" min="1" step="1" placeholder="4718592" />
+            </label>
+            <label class="model-field" :class="ui.field">
+              <span>{{ tr("settings.imageJpegQuality") }}</span>
+              <input :class="ui.input" v-model.number="editor.imageJpegQuality" data-testid="image-jpeg-quality" type="number" min="1" max="100" step="1" placeholder="80" />
+            </label>
+          </div>
+        </details>
 
         <details class="model-advanced">
           <summary>{{ tr("settings.advancedCompatibility") }}</summary>

@@ -3,6 +3,7 @@ package appservice
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,6 +34,45 @@ func TestBundledPiDeskTodoResetsStateBeforeEachUserTurn(t *testing.T) {
 	} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("bundled todo extension is missing %q", expected)
+		}
+	}
+}
+
+func TestBundledGoalContinuationsKeepTodoState(t *testing.T) {
+	t.Parallel()
+	goal := string(bundledPiDeskGoalExtension)
+	todo := string(bundledPiDeskTodoExtension)
+	for _, expected := range []string{
+		`const KEEP_TODO_MARKER = "<!-- pi-desk-keep-todo -->"`,
+		`sendGoalPrompt(ctx, "The user explicitly resumed`,
+		"sendGoalPrompt(ctx, `Continue the active /goal",
+	} {
+		if !strings.Contains(goal, expected) {
+			t.Fatalf("bundled goal extension does not preserve todo state: missing %q", expected)
+		}
+	}
+	for _, expected := range []string{
+		`const KEEP_TODO_MARKER = "<!-- pi-desk-keep-todo -->"`,
+		`if (event.prompt.includes(KEEP_TODO_MARKER)) return`,
+	} {
+		if !strings.Contains(todo, expected) {
+			t.Fatalf("bundled todo extension does not preserve goal continuation state: missing %q", expected)
+		}
+	}
+}
+
+func TestBundledGoalRejectsCompletionWithUnfinishedTodos(t *testing.T) {
+	t.Parallel()
+	content := string(bundledPiDeskGoalExtension)
+	for _, expected := range []string{
+		`function unfinishedTodoCount(ctx: ExtensionContext): number`,
+		`candidate.name === "todo"`,
+		`includes(TODO_SELF_MARKER)`,
+		`entry.customType === "pi-desk-todo"`,
+		`if (unfinishedTodos > 0)`,
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("bundled goal extension does not enforce todo completion: missing %q", expected)
 		}
 	}
 }
@@ -171,7 +211,7 @@ func TestBundledPiDeskGoalImplementsGoalLoop(t *testing.T) {
 		`name: GOAL_BLOCKED_TOOL`,
 		"goal_id does not match the current goal",
 		`pi.on("agent_settled"`,
-		`pi.sendUserMessage(buildGoalPrompt(goal, lead), { deliverAs: "followUp" })`,
+		`pi.sendUserMessage(buildGoalPrompt(goal, lead, keepTodo), { deliverAs: "followUp" })`,
 		"goal.tokenBudget !== undefined && goal.tokensUsed >= goal.tokenBudget",
 		"MAX_NO_PROGRESS_TURNS",
 		"MAX_AUTO_TURNS",
@@ -237,7 +277,7 @@ func TestBundledPiDeskSubagentsDelegatesToIsolatedChildren(t *testing.T) {
 		`name: "subagent"`,
 		`pi.registerCommand("subagents"`,
 		`args.push("--append-system-prompt", tmp.filePath)`,
-		`["--mode", "json", "-p", "--no-session", "--no-extensions"]`,
+		`["--mode", "json", "-p", "--no-session", "--no-extensions", "-e", "builtin:mcp", "-e", "builtin:codemode", "-e", "builtin:tool-search", "-e", "builtin:llama.cpp"]`,
 		"MAX_PARALLEL_TASKS",
 		"MAX_CONCURRENCY",
 		"PER_TASK_OUTPUT_CAP",
@@ -531,5 +571,50 @@ func TestPiExtensionServiceInstallsUpdatesAndRemovesBundledBrowser(t *testing.T)
 	after, err := service.ListExtensions()
 	if err != nil || after.Browser.Installed || after.Browser.UpdateAvailable {
 		t.Fatalf("unexpected browser removal status %#v, %v", after.Browser, err)
+	}
+}
+
+func TestGoalStopsAfterCancellation(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is unavailable")
+	}
+	content := bundledPiDeskGoalExtension
+	lines := strings.Split(string(content), "\n")
+	for index, line := range lines {
+		if strings.HasPrefix(line, "import ") {
+			lines[index] = ""
+		}
+	}
+	source := `const Type = new Proxy({}, {get: () => () => ({})}); const StringEnum = () => ({});` + "\n" + strings.Join(lines, "\n")
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "pi-desk-goal.ts"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Run the actual handler, including the old-runtime stopReason fallback and explicit resume.
+	script := `import extension from './pi-desk-goal.ts';
+import assert from 'node:assert/strict';
+for (const outcome of ['aborted-event', 'aborted-message', 'normal']) {
+ const hooks = {}, commands = {}, entries = [], prompts = [], tools = [];
+ const pi = {on: (n, fn) => hooks[n] = fn, registerCommand: (n, c) => commands[n] = c,
+ registerTool: t => tools.push({...t, sourceInfo: {path:'pi-desk-goal.ts'}}), getAllTools: () => tools,
+ appendEntry: (_, data) => entries.push(structuredClone(data)), sendUserMessage: text => prompts.push(text)};
+ const ctx = {ui:{setWidget(){}, notify(){}}, hasPendingMessages:()=>false, sessionManager:{getEntries:()=>[]}};
+ extension(pi);
+ commands.goal.handler('Finish the test objective', ctx);
+ await hooks.before_agent_start({prompt:prompts[0]}, ctx);
+ await hooks.message_end({message:{role:'assistant',usage:{totalTokens:12},stopReason:outcome==='aborted-message'?'aborted':'stop'}}, ctx);
+ await hooks.agent_settled({aborted:outcome==='aborted-event'}, ctx);
+ assert.equal(entries.at(-1).tokensUsed, 12);
+ if (outcome==='normal') { assert.equal(prompts.length,2); assert.equal(entries.at(-1).status,'active'); }
+ else { assert.equal(prompts.length,1); assert.equal(entries.at(-1).status,'paused'); commands.goal.handler('resume',ctx); assert.equal(prompts.length,2); }
+}
+console.log('goal cancellation and resume passed');`
+	if err := os.WriteFile(filepath.Join(directory, "test.mjs"), []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(node, "--experimental-strip-types", filepath.Join(directory, "test.mjs")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("goal behavior: %v\n%s", err, output)
 	}
 }

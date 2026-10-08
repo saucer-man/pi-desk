@@ -46,23 +46,24 @@ var supportedThinkingLevels = map[string]struct{}{
 }
 
 type ModelConfigService struct {
-	modelsPath string
-	pathErr    error
-	client     httpDoer
+	modelsPath   string
+	settingsPath string
+	pathErr      error
+	client       httpDoer
 
 	mu sync.Mutex
 }
 
 func NewModelConfigService() *ModelConfigService {
 	path, err := defaultModelsPath()
-	return &ModelConfigService{modelsPath: path, pathErr: err, client: defaultModelHTTPClient()}
+	return &ModelConfigService{modelsPath: path, settingsPath: filepath.Join(filepath.Dir(path), "settings.json"), pathErr: err, client: defaultModelHTTPClient()}
 }
 
 func newModelConfigService(path string, client httpDoer) *ModelConfigService {
 	if client == nil {
 		client = defaultModelHTTPClient()
 	}
-	return &ModelConfigService{modelsPath: path, client: client}
+	return &ModelConfigService{modelsPath: path, settingsPath: filepath.Join(filepath.Dir(path), "settings.json"), client: client}
 }
 
 func defaultModelsPath() (string, error) {
@@ -224,10 +225,21 @@ func (service *ModelConfigService) UpsertModel(request domain.UpsertModelConfigR
 	}
 	setOptionalObject(model, "thinkingLevelMap", thinkingLevelMap)
 	setOptionalObject(model, "compat", modelCompat)
+	if err := setImageResize(model, request); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
 	models[target] = model
 	provider["models"] = objectSlice(models)
 
 	if err := service.writeDocument(root); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	if err := service.updateCompactionOverride(
+		modelKey(request.OriginalProviderID, request.OriginalModelID),
+		modelKey(request.ProviderID, request.ModelID),
+		request.ReserveTokens,
+		request.KeepRecentTokens,
+	); err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
 	return service.snapshot(root)
@@ -397,6 +409,9 @@ func (service *ModelConfigService) DeleteModel(request domain.DeleteModelConfigR
 	if err := service.writeDocument(root); err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
+	if err := service.deleteCompactionOverrides([]string{modelKey(request.ProviderID, request.ModelID)}); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
 	return service.snapshot(root)
 }
 
@@ -415,11 +430,25 @@ func (service *ModelConfigService) DeleteProvider(request domain.DeleteProviderC
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
-	if _, exists := providers[request.ProviderID]; !exists {
+	provider, exists, err := objectValue(providers, request.ProviderID)
+	if err != nil || !exists {
 		return domain.ModelConfigSnapshot{}, fmt.Errorf("provider %s was not found", request.ProviderID)
+	}
+	models, err := modelObjects(provider)
+	if err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		if id := stringValue(model["id"]); id != "" {
+			keys = append(keys, modelKey(request.ProviderID, id))
+		}
 	}
 	delete(providers, request.ProviderID)
 	if err := service.writeDocument(root); err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
+	if err := service.deleteCompactionOverrides(keys); err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
 	return service.snapshot(root)
@@ -474,6 +503,24 @@ func validateModelRequest(request domain.UpsertModelConfigRequest) (map[string]a
 	if request.MaxTokens < 1 || request.MaxTokens > request.ContextWindow {
 		return nil, nil, nil, errors.New("max tokens must be positive and no larger than the context window")
 	}
+	if err := validateOptionalNonNegative("reserve tokens", request.ReserveTokens); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateOptionalNonNegative("recent tokens", request.KeepRecentTokens); err != nil {
+		return nil, nil, nil, err
+	}
+	for label, value := range map[string]*int{
+		"image max width":  request.ImageMaxWidth,
+		"image max height": request.ImageMaxHeight,
+		"image max bytes":  request.ImageMaxBytes,
+	} {
+		if value != nil && *value < 1 {
+			return nil, nil, nil, fmt.Errorf("%s must be positive", label)
+		}
+	}
+	if request.ImageJPEGQuality != nil && (*request.ImageJPEGQuality < 1 || *request.ImageJPEGQuality > 100) {
+		return nil, nil, nil, errors.New("image JPEG quality must be between 1 and 100")
+	}
 	if len(request.APIKey) > maxCredentialBytes || strings.ContainsAny(request.APIKey, "\r\n") {
 		return nil, nil, nil, errors.New("API key is invalid")
 	}
@@ -490,6 +537,13 @@ func validateModelRequest(request domain.UpsertModelConfigRequest) (map[string]a
 		return nil, nil, nil, err
 	}
 	return providerCompat, modelCompat, thinkingLevelMap, nil
+}
+
+func validateOptionalNonNegative(label string, value *int) error {
+	if value != nil && *value < 0 {
+		return fmt.Errorf("%s must be non-negative", label)
+	}
+	return nil
 }
 
 func validateIdentifier(label, value string) error {
@@ -666,6 +720,67 @@ func setOptionalObject(object map[string]any, key string, value map[string]any) 
 	object[key] = value
 }
 
+func setImageResize(model map[string]any, request domain.UpsertModelConfigRequest) error {
+	values := map[string]*int{
+		"maxWidth": request.ImageMaxWidth, "maxHeight": request.ImageMaxHeight,
+		"maxBytes": request.ImageMaxBytes, "jpegQuality": request.ImageJPEGQuality,
+	}
+	hasValue := false
+	for _, value := range values {
+		hasValue = hasValue || value != nil
+	}
+	inputLimits, exists, err := objectValue(model, "inputLimits")
+	if err != nil {
+		return fmt.Errorf("model inputLimits: %w", err)
+	}
+	if !exists {
+		if !hasValue {
+			return nil
+		}
+		inputLimits = map[string]any{}
+		model["inputLimits"] = inputLimits
+	}
+	images, exists, err := objectValue(inputLimits, "images")
+	if err != nil {
+		return fmt.Errorf("model inputLimits.images: %w", err)
+	}
+	if !exists {
+		if !hasValue {
+			return nil
+		}
+		images = map[string]any{}
+		inputLimits["images"] = images
+	}
+	resize, exists, err := objectValue(images, "resize")
+	if err != nil {
+		return fmt.Errorf("model inputLimits.images.resize: %w", err)
+	}
+	if !exists {
+		if !hasValue {
+			return nil
+		}
+		resize = map[string]any{}
+		images["resize"] = resize
+	}
+	for key, value := range values {
+		if value == nil {
+			delete(resize, key)
+		} else {
+			resize[key] = *value
+		}
+	}
+	if len(resize) == 0 {
+		delete(images, "resize")
+	}
+	if len(images) == 0 {
+		delete(inputLimits, "images")
+	}
+	if len(inputLimits) == 0 {
+		delete(model, "inputLimits")
+	}
+	return nil
+}
+
 func setOptionalStringMap(object map[string]any, key string, value map[string]string) {
 	if len(value) == 0 {
 		delete(object, key)
@@ -756,6 +871,10 @@ func (service *ModelConfigService) snapshot(root map[string]any) (domain.ModelCo
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
+	compactionOverrides, err := service.readCompactionOverrideEntries()
+	if err != nil {
+		return domain.ModelConfigSnapshot{}, err
+	}
 	ids := make([]string, 0, len(providers))
 	for id := range providers {
 		ids = append(ids, id)
@@ -789,6 +908,14 @@ func (service *ModelConfigService) snapshot(root map[string]any) (domain.ModelCo
 			if modelID == "" {
 				continue
 			}
+			reserveTokens, keepRecentTokens, err := compactionTokens(compactionOverrides[modelKey(id, modelID)])
+			if err != nil {
+				return domain.ModelConfigSnapshot{}, fmt.Errorf("model %s/%s compaction: %w", id, modelID, err)
+			}
+			imageMaxWidth, imageMaxHeight, imageMaxBytes, imageJPEGQuality, err := imageResize(model)
+			if err != nil {
+				return domain.ModelConfigSnapshot{}, fmt.Errorf("model %s/%s: %w", id, modelID, err)
+			}
 			managed.Models = append(managed.Models, domain.ManagedModel{
 				ID:                   modelID,
 				Name:                 stringValue(model["name"]),
@@ -796,6 +923,12 @@ func (service *ModelConfigService) snapshot(root map[string]any) (domain.ModelCo
 				MaxTokens:            integerValue(model["maxTokens"], defaultMaxTokens),
 				Reasoning:            boolValue(model["reasoning"]),
 				ImageInput:           includesString(model["input"], "image"),
+				ReserveTokens:        reserveTokens,
+				KeepRecentTokens:     keepRecentTokens,
+				ImageMaxWidth:        imageMaxWidth,
+				ImageMaxHeight:       imageMaxHeight,
+				ImageMaxBytes:        imageMaxBytes,
+				ImageJPEGQuality:     imageJPEGQuality,
 				ThinkingLevelMapJSON: objectJSON(model["thinkingLevelMap"]),
 				CompatJSON:           objectJSON(model["compat"]),
 			})
@@ -804,6 +937,204 @@ func (service *ModelConfigService) snapshot(root map[string]any) (domain.ModelCo
 		result.Providers = append(result.Providers, managed)
 	}
 	return result, nil
+}
+
+func modelKey(providerID, modelID string) string {
+	if providerID == "" || modelID == "" {
+		return ""
+	}
+	return providerID + "/" + modelID
+}
+
+func imageResize(model map[string]any) (maxWidth, maxHeight, maxBytes, jpegQuality *int, err error) {
+	inputLimits, exists, err := objectValue(model, "inputLimits")
+	if err != nil || !exists {
+		return nil, nil, nil, nil, err
+	}
+	images, exists, err := objectValue(inputLimits, "images")
+	if err != nil || !exists {
+		return nil, nil, nil, nil, err
+	}
+	resize, exists, err := objectValue(images, "resize")
+	if err != nil || !exists {
+		return nil, nil, nil, nil, err
+	}
+	if maxWidth, err = optionalInteger(resize, "maxWidth"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if maxHeight, err = optionalInteger(resize, "maxHeight"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if maxBytes, err = optionalInteger(resize, "maxBytes"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	jpegQuality, err = optionalInteger(resize, "jpegQuality")
+	return
+}
+
+func optionalInteger(object map[string]any, key string) (*int, error) {
+	value, exists := object[key]
+	if !exists {
+		return nil, nil
+	}
+	var result int
+	switch number := value.(type) {
+	case json.Number:
+		parsed, err := strconv.Atoi(number.String())
+		if err != nil {
+			return nil, fmt.Errorf("%s must be an integer", key)
+		}
+		result = parsed
+	case int:
+		result = number
+	default:
+		return nil, fmt.Errorf("%s must be an integer", key)
+	}
+	return &result, nil
+}
+
+func (service *ModelConfigService) readCompactionOverrideEntries() (map[string]json.RawMessage, error) {
+	settings, _, err := readPiPackageSettings(service.settingsPath)
+	if err != nil {
+		return nil, err
+	}
+	compaction, err := rawObject("Pi settings compaction", settings["compaction"])
+	if err != nil {
+		return nil, err
+	}
+	return rawObject("Pi settings compaction.modelOverrides", compaction["modelOverrides"])
+}
+
+func rawObject(label string, raw json.RawMessage) (map[string]json.RawMessage, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return map[string]json.RawMessage{}, nil
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &result); err != nil || result == nil {
+		return nil, fmt.Errorf("%s must be an object", label)
+	}
+	return result, nil
+}
+
+func compactionTokens(raw json.RawMessage) (*int, *int, error) {
+	if len(raw) == 0 {
+		return nil, nil, nil
+	}
+	entry, err := rawObject("override", raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	reserve, err := rawNonNegativeInteger(entry, "reserveTokens")
+	if err != nil {
+		return nil, nil, err
+	}
+	keepRecent, err := rawNonNegativeInteger(entry, "keepRecentTokens")
+	return reserve, keepRecent, err
+}
+
+func rawNonNegativeInteger(object map[string]json.RawMessage, key string) (*int, error) {
+	raw, exists := object[key]
+	if !exists {
+		return nil, nil
+	}
+	var value int
+	if string(raw) == "null" || json.Unmarshal(raw, &value) != nil || value < 0 {
+		return nil, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	return &value, nil
+}
+
+func (service *ModelConfigService) updateCompactionOverride(originalKey, newKey string, reserveTokens, keepRecentTokens *int) error {
+	settings, _, err := readPiPackageSettings(service.settingsPath)
+	if err != nil {
+		return err
+	}
+	compaction, err := rawObject("Pi settings compaction", settings["compaction"])
+	if err != nil {
+		return err
+	}
+	overrides, err := rawObject("Pi settings compaction.modelOverrides", compaction["modelOverrides"])
+	if err != nil {
+		return err
+	}
+	_, hasOriginal := overrides[originalKey]
+	_, hasTarget := overrides[newKey]
+	if !hasOriginal && !hasTarget && reserveTokens == nil && keepRecentTokens == nil {
+		return nil
+	}
+	entry, err := rawObject("Pi settings model compaction override", overrides[newKey])
+	if err != nil {
+		return err
+	}
+	if originalKey != "" && originalKey != newKey {
+		original, err := rawObject("Pi settings model compaction override", overrides[originalKey])
+		if err != nil {
+			return err
+		}
+		for key, value := range original {
+			entry[key] = value
+		}
+		delete(overrides, originalKey)
+	}
+	setRawInteger(entry, "reserveTokens", reserveTokens)
+	setRawInteger(entry, "keepRecentTokens", keepRecentTokens)
+	if len(entry) == 0 {
+		delete(overrides, newKey)
+	} else {
+		overrides[newKey], _ = json.Marshal(entry)
+	}
+	return service.writeCompactionOverrides(settings, compaction, overrides)
+}
+
+func setRawInteger(object map[string]json.RawMessage, key string, value *int) {
+	if value == nil {
+		delete(object, key)
+		return
+	}
+	object[key], _ = json.Marshal(*value)
+}
+
+func (service *ModelConfigService) deleteCompactionOverrides(keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	settings, _, err := readPiPackageSettings(service.settingsPath)
+	if err != nil {
+		return err
+	}
+	compaction, err := rawObject("Pi settings compaction", settings["compaction"])
+	if err != nil {
+		return err
+	}
+	overrides, err := rawObject("Pi settings compaction.modelOverrides", compaction["modelOverrides"])
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, key := range keys {
+		if _, exists := overrides[key]; exists {
+			delete(overrides, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return service.writeCompactionOverrides(settings, compaction, overrides)
+}
+
+func (service *ModelConfigService) writeCompactionOverrides(settings, compaction, overrides map[string]json.RawMessage) error {
+	if len(overrides) == 0 {
+		delete(compaction, "modelOverrides")
+	} else {
+		compaction["modelOverrides"], _ = json.Marshal(overrides)
+	}
+	if len(compaction) == 0 {
+		delete(settings, "compaction")
+	} else {
+		settings["compaction"], _ = json.Marshal(compaction)
+	}
+	return writePiPackageSettings(service.settingsPath, settings, domain.PiPackageScopeGlobal)
 }
 
 func providerHeaders(provider map[string]any) (map[string]string, error) {

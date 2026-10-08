@@ -1,6 +1,7 @@
 package sessionindex
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,7 +19,7 @@ func TestMutationRejectsAmbiguousOrBrokenTrees(t *testing.T) {
 		`{"type":"message","id":"a","parentId":"b"}` + "\n" + `{"type":"message","id":"b","parentId":"a"}`,
 		`null`, `[]`, `{"type":"message","parentId":null}`,
 	} {
-		for _, operation := range []string{"edit", "delete", "replay", "fork"} {
+		for _, operation := range []string{"edit", "delete", "exclude", "replay", "fork"} {
 			t.Run(operation+invalid, func(t *testing.T) {
 				root := t.TempDir()
 				path := filepath.Join(root, "session.jsonl")
@@ -31,6 +32,8 @@ func TestMutationRejectsAmbiguousOrBrokenTrees(t *testing.T) {
 					_, err = index.EditMessage(path, "root", "changed")
 				case "delete":
 					_, err = index.DeleteMessage(path, "root")
+				case "exclude":
+					_, err = index.ExcludeMessageFromContext(path, "root")
 				case "replay":
 					_, err = index.RewindBefore(path, "root")
 				case "fork":
@@ -46,6 +49,46 @@ func TestMutationRejectsAmbiguousOrBrokenTrees(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestExcludeMessageFromContextAppendsToActiveBranch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session.jsonl")
+	original := strings.Join([]string{
+		mutationHeader,
+		`{"type":"message","id":"root","parentId":null,"message":{"role":"user","content":"Root"}}`,
+		`{"type":"message","id":"side","parentId":"root","message":{"role":"assistant","content":"Side"}}`,
+		`{"type":"message","id":"active","parentId":"root","message":{"role":"assistant","content":"Active"}}`,
+	}, "\n") + "\n"
+	writeSession(t, path, original)
+	index := New(root)
+	if _, err := index.ExcludeMessageFromContext(path, "side"); err == nil || !strings.Contains(err.Error(), "active session branch") {
+		t.Fatalf("off-branch error = %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != original {
+		t.Fatal("off-branch exclusion changed the session")
+	}
+	if _, err := index.ExcludeMessageFromContext(path, "root"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var edit struct {
+		Type        string           `json:"type"`
+		ParentID    string           `json:"parentId"`
+		TargetID    string           `json:"targetId"`
+		Replacement *json.RawMessage `json:"replacement"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &edit); err != nil {
+		t.Fatal(err)
+	}
+	if edit.Type != "context_edit" || edit.ParentID != "active" || edit.TargetID != "root" || edit.Replacement != nil {
+		t.Fatalf("context edit = %#v", edit)
+	}
+	if _, err := index.ExcludeMessageFromContext(path, "root"); err == nil || !strings.Contains(err.Error(), "already excluded") {
+		t.Fatalf("duplicate error = %v", err)
 	}
 }
 

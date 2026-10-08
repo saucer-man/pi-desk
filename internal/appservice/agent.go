@@ -30,8 +30,8 @@ const (
 	sessionTimeout         = 30 * time.Second
 	maxPromptBytes         = 1 << 20
 	maxAttachedImages      = 10
-	maxImageBytes          = 4 << 20
-	maxImageBase64         = 6 << 20
+	maxImageBytes          = 10 << 20
+	maxImageBase64         = 16 << 20
 	maxSessionNameLen      = 200
 	maxEntryIDBytes        = 256
 	maxOutputPathBytes     = 32 << 10
@@ -603,6 +603,10 @@ func (service *AgentService) DeleteSessionMessage(request domain.SessionMessageR
 	return service.mutateSessionMessage(request, service.index.DeleteMessage)
 }
 
+func (service *AgentService) ExcludeSessionMessageFromContext(request domain.SessionMessageRequest) (domain.CommandResult, error) {
+	return service.mutateSessionMessage(request, service.index.ExcludeMessageFromContext)
+}
+
 func (service *AgentService) ForkSessionAt(request domain.SessionMessageRequest) (domain.CommandResult, error) {
 	if !service.mutationMu.TryLock() {
 		return domain.CommandResult{}, errors.New("wait for the current Pi command to finish")
@@ -861,7 +865,9 @@ func (service *AgentService) callWithContext(ctx context.Context, threadID strin
 	return service.callRuntime(ctx, threadID, command)
 }
 
-func (service *AgentService) callRuntime(ctx context.Context, threadID string, command map[string]any) (domain.CommandResult, error) {
+func (service *AgentService) callRuntime(ctx context.Context, threadID string, command map[string]any) (result domain.CommandResult, err error) {
+	finish := beginDiagnosticOperation("pi/" + fmt.Sprint(command["type"]))
+	defer func() { finish(err) }()
 	runtime, err := service.getRuntime()
 	if err != nil {
 		return domain.CommandResult{}, err

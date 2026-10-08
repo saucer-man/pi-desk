@@ -159,18 +159,22 @@ export interface ThreadSummary {
 }
 
 export interface ToolExecution {
+  children?: ToolExecution[];
+  nestedCallsIncomplete?: boolean;
   id: string;
+  entryId?: string;
   name: string;
   arguments?: unknown;
   output: string;
   truncated?: boolean;
   resultReceived?: boolean;
-  status: "running" | "complete" | "error";
+  status: "running" | "complete" | "error" | "unfinished";
   startedAt?: number;
   durationMs?: number;
   diff?: ToolDiff;
   images?: PreparedImage[];
   subagents?: SubagentTaskSummary;
+  contextExcluded?: boolean;
 }
 
 export interface ToolDiff {
@@ -223,6 +227,7 @@ export interface TimelineMessage {
   tools: ToolExecution[];
   compaction?: TimelineCompaction;
   runNotice?: TimelineRunNotice;
+  contextExcluded?: boolean;
 }
 
 export interface QueuedMessages {
@@ -255,6 +260,7 @@ export interface PiModel {
   provider: string;
   contextWindow?: number;
   reasoning?: boolean;
+  promptCache?: { short?: number; long?: number };
 }
 
 export interface PiSessionState {
@@ -277,6 +283,13 @@ export interface SessionStats {
   totalMessages?: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
   tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
+export interface PromptCacheStatus {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cacheObserved: boolean;
 }
 
 export interface SlashCommand {
@@ -395,6 +408,11 @@ let unsubscribePiEvents: (() => void) | undefined;
 let unsubscribeTerminalEvents: (() => void) | undefined;
 let localSequence = 0;
 let desktopSaveTimer: ReturnType<typeof setTimeout> | undefined;
+const scheduledTaskStoppingThreads = new Set<string>();
+let desktopSavePromise: Promise<void> | undefined;
+let desktopSavePending = false;
+let searchGeneration = 0;
+let searchRequest: ReturnType<typeof catalogService.searchSessionText> | undefined;
 let piStartQueue: Promise<void> = Promise.resolve();
 const piStartPromises = new Map<string, Promise<void>>();
 const modelApplicationPromises = new Map<string, Promise<void>>();
@@ -408,11 +426,17 @@ function isCurrentPiRequest(threads: ThreadSummary[], thread: ThreadSummary | un
   return Boolean(thread && threads.includes(thread) && thread.generation === generation && (!wasStarted || thread.started));
 }
 const settledReloadPromises = new Map<string, Promise<void>>();
-const pendingPromptDispatchThreads = new Set<string>();
 let scheduledTaskTimer: ReturnType<typeof setInterval> | undefined;
 let scheduledTaskTicking = false;
 const TOOL_OUTPUT_LIMIT = 256 << 10;
 const TOOL_OUTPUT_TRUNCATION_MARKER = "\n\n... output truncated by Pi Desk ...\n\n";
+
+function supportsContextEdits(version?: string): boolean {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version?.trim() ?? "");
+  if (!match) return false;
+  const current = match.slice(1).map(Number);
+  return current[0] > 0 || current[1] > 87 || (current[1] === 87 && current[2] >= 0);
+}
 
 function createID(prefix: string): string {
   localSequence += 1;
@@ -663,8 +687,57 @@ function tokenCount(value: unknown): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : undefined;
 }
 
+function promptCacheStatus(message: Record<string, unknown>, cacheObserved = false): PromptCacheStatus | undefined {
+  if (!message.usage || typeof message.usage !== "object" || Array.isArray(message.usage)) return undefined;
+  const usage = message.usage as Record<string, unknown>;
+  const input = tokenCount(usage.input) ?? 0;
+  const cacheRead = tokenCount(usage.cacheRead) ?? 0;
+  const cacheWrite = tokenCount(usage.cacheWrite) ?? 0;
+  if (input + cacheRead + cacheWrite === 0) return undefined;
+  return { input, cacheRead, cacheWrite, cacheObserved: cacheObserved || cacheRead + cacheWrite > 0 };
+}
+
+function latestPromptCacheStatus(source: Array<Record<string, unknown>>): PromptCacheStatus | undefined {
+  let latest: PromptCacheStatus | undefined;
+  for (const message of source) {
+    if (message.role !== "assistant") continue;
+    latest = promptCacheStatus(message, latest?.cacheObserved) ?? latest;
+  }
+  return latest;
+}
+
 function compactionEstimateKey(summary: string, tokensBefore: number | undefined): string {
   return `${tokensBefore ?? ""}\n${summary}`;
+}
+
+function findTool(tools: ToolExecution[], id: string): ToolExecution | undefined {
+  for (const tool of tools) {
+    if (tool.id === id) return tool;
+    const child = findTool(tool.children ?? [], id);
+    if (child) return child;
+  }
+}
+
+function nestedToolHistory(value: unknown): ToolExecution[] | undefined {
+  if (!value || typeof value !== "object") return;
+  const calls = (value as Record<string, unknown>).calls;
+  if (!Array.isArray(calls)) return;
+  const roots: ToolExecution[] = [];
+  const byId = new Map<string, ToolExecution>();
+  for (const call of calls) {
+    if (!call || typeof call !== "object") continue;
+    const tool: ToolExecution = {
+      id: String(call.id), name: String(call.name), arguments: call.arguments,
+      output: typeof call.error === "string" ? call.error : call.status === "unfinished" ? tr("tools.unfinished") : "",
+      status: call.status === "ok" ? "complete" : call.status === "unfinished" ? "unfinished" : "error",
+      resultReceived: call.status !== "unfinished", durationMs: tokenCount(call.durationMs),
+    };
+    // Pi assigns each nested call <callerId>/<n>; the durable record omits parentToolCallId.
+    const parent = byId.get(tool.id.slice(0, tool.id.lastIndexOf("/")));
+    (parent ? (parent.children ??= []) : roots).push(tool);
+    byId.set(tool.id, tool);
+  }
+  return roots;
 }
 
 function historicalMessages(source: Array<Record<string, unknown>>, compactionEstimates: Record<string, number> = {}): TimelineMessage[] {
@@ -693,6 +766,8 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
       const toolCallID = String(value.toolCallId ?? "");
       const tool = toolsByID.get(toolCallID);
       if (tool) {
+        tool.entryId = typeof value.piDeskEntryId === "string" ? value.piDeskEntryId : undefined;
+        tool.contextExcluded = value.piDeskContextExcluded === true || undefined;
         const output = boundedToolOutput(contentText(value.content));
         tool.output = output.text;
         tool.truncated = output.truncated || undefined;
@@ -701,7 +776,9 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         const images = contentImages(value.content);
         if (images.length) tool.images = images;
         const endedAt = messageTimestamp(value.timestamp);
-        if (endedAt !== undefined && tool.startedAt !== undefined) tool.durationMs = Math.max(0, endedAt - tool.startedAt);
+        tool.durationMs = tokenCount(value.durationMs) ?? (endedAt !== undefined && tool.startedAt !== undefined ? Math.max(0, endedAt - tool.startedAt) : undefined);
+        tool.children = nestedToolHistory(value.nestedCalls);
+        tool.nestedCallsIncomplete = !!value.nestedCalls && (value.nestedCalls as Record<string, unknown>).complete === false;
         tool.diff = buildToolDiff(tool.name, tool.arguments, value.details) ?? tool.diff;
       }
       continue;
@@ -713,6 +790,7 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         ...identity,
         role: "user", text: contentText(value.content), thinking: "",
         timestamp: messageTime(value.timestamp), timestampMs: messageTimestamp(value.timestamp), streaming: false, images, tools: [],
+        contextExcluded: value.piDeskContextExcluded === true || undefined,
       });
       continue;
     }
@@ -725,7 +803,7 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         if (part.type === "toolCall") {
           const tool: ToolExecution = {
             id: String(part.id ?? createID("history-tool")), name: String(part.name ?? "tool"),
-            arguments: part.arguments, output: "", status: "complete", startedAt: messageTimestamp(value.timestamp),
+            arguments: part.arguments, output: "", status: "unfinished", startedAt: messageTimestamp(value.timestamp),
           };
           tool.diff = buildToolDiff(tool.name, tool.arguments);
           tools.push(tool);
@@ -738,6 +816,7 @@ function historicalMessages(source: Array<Record<string, unknown>>, compactionEs
         role: "assistant", text: contentText(value.content), thinking: contentThinking(value.content),
         timestamp: messageTime(value.timestamp), timestampMs: messageTimestamp(value.timestamp), streaming: false,
         error: runtimeErrorText(value.errorMessage), tools,
+        contextExcluded: value.piDeskContextExcluded === true || undefined,
       });
       continue;
     }
@@ -772,14 +851,23 @@ function liveCompactionMessage(payload: Record<string, unknown>): TimelineMessag
   };
 }
 
+function finishTool(tool: ToolExecution) {
+  if (tool.status === "running") tool.status = "unfinished";
+  tool.children?.forEach(finishTool);
+}
+
+function copyTool(tool: ToolExecution): ToolExecution {
+  return { ...tool, diff: tool.diff ? { ...tool.diff } : undefined, children: tool.children?.map(copyTool) };
+}
+
 function copyMessages(messages: TimelineMessage[]): TimelineMessage[] {
   return messages.map((message) => ({
     ...message,
     images: message.images?.map((image) => ({ ...image })),
-    tools: message.tools.map((tool) => ({ ...tool, diff: tool.diff ? { ...tool.diff } : undefined })),
+    tools: message.tools.map(copyTool),
     executionSteps: message.executionSteps?.map((step) => ({
       ...step,
-      tools: step.tools?.map((tool) => ({ ...tool, diff: tool.diff ? { ...tool.diff } : undefined })),
+      tools: step.tools?.map(copyTool),
     })),
     compaction: message.compaction ? { ...message.compaction } : undefined,
     runNotice: message.runNotice ? { ...message.runNotice } : undefined,
@@ -853,6 +941,7 @@ export const useAppStore = defineStore("app", {
     waitingForOutputByThread: {} as Record<string, boolean | undefined>,
     sessionStateByThread: {} as Record<string, PiSessionState>,
     sessionStatsByThread: {} as Record<string, SessionStats>,
+    promptCacheByThread: {} as Record<string, PromptCacheStatus | undefined>,
     sessionStatsRefreshGenerationByThread: {} as Record<string, number>,
     compactionEstimatesByThread: {} as Record<string, Record<string, number>>,
     latestCompactionEstimateByThread: {} as Record<string, number | undefined>,
@@ -868,6 +957,8 @@ export const useAppStore = defineStore("app", {
     commandsByThread: {} as Record<string, SlashCommand[]>,
     queueByThread: {} as Record<string, QueuedMessages>,
     pendingPromptsByThread: {} as Record<string, PendingPrompt[]>,
+    pendingPromptsPausedByThread: {} as Record<string, boolean>,
+    pendingPromptDispatchByThread: {} as Record<string, string>,
     retryByThread: {} as Record<string, RetryInfo | undefined>,
     bashMessageByThread: {} as Record<string, string | undefined>,
     bashRunningByThread: {} as Record<string, boolean | undefined>,
@@ -896,6 +987,7 @@ export const useAppStore = defineStore("app", {
     extensionStatusesByThread: {} as Record<string, Record<string, string>>,
     extensionWidgetsByThread: {} as Record<string, Record<string, ExtensionWidget>>,
     extensionTitleByThread: {} as Record<string, string | undefined>,
+    sessionMutationErrorByThread: {} as Record<string, string>,
     transcriptStateByThread: {} as Record<string, "idle" | "loading" | "loaded" | "error">,
     sessionBranchesByThread: {} as Record<string, SessionBranches | undefined>,
     sessionBranchesErrorByThread: {} as Record<string, string>,
@@ -938,6 +1030,9 @@ export const useAppStore = defineStore("app", {
     },
     activeSessionStats(state): SessionStats | undefined {
       return state.sessionStatsByThread[state.activeThreadId];
+    },
+    activePromptCache(state): PromptCacheStatus | undefined {
+      return state.promptCacheByThread[state.activeThreadId];
     },
     activeModels(state): PiModel[] {
       const thread = state.threads.find((candidate) => candidate.id === state.activeThreadId);
@@ -1046,6 +1141,9 @@ export const useAppStore = defineStore("app", {
     },
     activeSessionOperation(state): string {
       return state.sessionOperationByThread[state.activeThreadId] ?? "";
+    },
+    contextEditsAvailable(state): boolean {
+      return supportsContextEdits(state.bootstrap?.runtime.version) && !state.sessionMutationErrorByThread[state.activeThreadId];
     },
     activeWorkspaceTrustUpdating(state): boolean {
       const thread = state.threads.find((item) => item.id === state.activeThreadId);
@@ -1263,17 +1361,13 @@ export const useAppStore = defineStore("app", {
         if (!tab) {
           tab = { id: event.tabId, kind: "browser", title: "浏览器", agent: event.status.temporary };
           panel.tabs.push(tab);
-          // Background Agent activity does not replace an active file or diff.
-          if (!panel.activeId) {
-            panel.activeId = tab.id; panel.open = true;
-            if (event.threadId === this.activeThreadId) this.inspectorOpen = true;
-          }
         }
         tab.url = event.status.url;
         tab.title = event.status.title || (event.status.url && event.status.url !== "about:blank" ? event.status.url : "浏览器");
         tab.browserTemporary = event.status.temporary;
         tab.loading = event.status.loading;
         tab.error = event.status.error;
+        if (event.type === "opened" || event.type === "selected" || !panel.activeId) this.openPanelTab(tab, event.threadId);
       }
       this.scheduleDesktopStateSave();
     },
@@ -1281,25 +1375,33 @@ export const useAppStore = defineStore("app", {
       this.searchOpen = !this.searchOpen;
       if (!this.searchOpen) this.searchQuery = "";
     },
+    cancelSessionSearch() {
+      searchGeneration++;
+      void searchRequest?.cancel().catch(() => undefined);
+      searchRequest = undefined;
+      this.searchBodyLoading = false;
+    },
     async loadSessionSearchBodies() {
       if (this.searchBodyLoading || !this.searchQuery.trim()) return;
+      const generation = ++searchGeneration;
       this.searchBodyLoading = true;
-      // ponytail: Move this cache to the host only if very large catalogs make first body search measurably slow.
       try {
-        for (const thread of this.threads) {
-          if (!thread.sessionFile || this.searchBodyVersionByThread[thread.id] === sessionSearchVersion(thread)) continue;
+        for (const thread of [...this.threads]) {
+          if (generation !== searchGeneration || !this.searchQuery.trim()) return;
+          const version = sessionSearchVersion(thread), path = thread.sessionFile;
+          if (!path || this.searchBodyVersionByThread[thread.id] === version) continue;
           try {
-            const snapshot = await catalogService.getSessionSnapshot(thread.sessionFile);
-            const messages = (snapshot.messages as Array<Record<string, unknown>> | null) ?? [];
-            this.searchBodyTextByThread[thread.id] = snapshotSearchText(messages);
-            if (Number.isInteger(snapshot.messageCount) && snapshot.messageCount >= 0) thread.messageCount = snapshot.messageCount;
+            searchRequest = catalogService.searchSessionText(path);
+            const result = await searchRequest;
+            if (generation !== searchGeneration) return;
+            if (!this.threads.includes(thread) || thread.sessionFile !== path || sessionSearchVersion(thread) !== version) continue;
+            this.searchBodyTextByThread[thread.id] = result.text;
+            if (Number.isInteger(result.messageCount) && result.messageCount >= 0) thread.messageCount = result.messageCount;
             this.searchBodyVersionByThread[thread.id] = sessionSearchVersion(thread);
-          } catch {
-            // One unreadable session must not prevent the remaining sessions from being searched.
-          }
+          } catch { /* One unreadable session must not stop the remaining search. */ }
         }
       } finally {
-        this.searchBodyLoading = false;
+        if (generation === searchGeneration) { searchRequest = undefined; this.searchBodyLoading = false; }
       }
     },
     activateThread(threadId: string) {
@@ -1583,7 +1685,9 @@ export const useAppStore = defineStore("app", {
     },
     applySessionSnapshot(thread: ThreadSummary, snapshot: SessionSnapshot) {
       const entries = (snapshot.messages as Array<Record<string, unknown>> | null) ?? [];
+      this.sessionMutationErrorByThread[thread.id] = snapshot.mutationError || "";
       this.transcriptEntriesByThread[thread.id] = entries;
+      this.promptCacheByThread[thread.id] = latestPromptCacheStatus(entries);
       const historical = historicalMessages(entries, this.compactionEstimatesByThread[thread.id]);
       for (const message of historical) {
         if (message.compaction?.estimatedTokensAfter !== undefined) {
@@ -1792,15 +1896,19 @@ export const useAppStore = defineStore("app", {
       if (!this.activeThreadId || images.length === 0) return;
       const current = this.attachmentsByThread[this.activeThreadId] ?? [];
       this.attachmentsByThread[this.activeThreadId] = [...current, ...images].slice(0, 10);
+      this.scheduleDesktopStateSave();
     },
     removeActiveAttachment(imageId: string) {
       if (!this.activeThreadId) return;
       this.attachmentsByThread[this.activeThreadId] = this.activeAttachments.filter((image) => image.id !== imageId);
+      this.scheduleDesktopStateSave();
     },
     clearActiveAttachments() {
       if (this.activeThreadId) this.attachmentsByThread[this.activeThreadId] = [];
+      this.scheduleDesktopStateSave();
     },
     movePendingPromptToDraft(promptId: string, text: string, images: PreparedImage[]) {
+      if (this.pendingPromptDispatchByThread[this.activeThreadId] === promptId) return;
       const threadId = this.activeThreadId;
       const promptIndex = this.activePendingPrompts.findIndex((prompt) => prompt.id === promptId);
       if (!threadId || promptIndex < 0 || (!text.trim() && images.length === 0)) return;
@@ -1821,27 +1929,38 @@ export const useAppStore = defineStore("app", {
       this.pendingPromptsByThread[threadId] = queue;
       this.draftsByThread[threadId] = text;
       this.attachmentsByThread[threadId] = images.map((image) => ({ ...image }));
+      this.scheduleDesktopStateSave();
     },
     removePendingPrompt(promptId: string) {
+      if (this.pendingPromptDispatchByThread[this.activeThreadId] === promptId) return;
       const threadId = this.activeThreadId;
       if (!threadId) return;
       this.pendingPromptsByThread[threadId] = this.activePendingPrompts.filter((prompt) => prompt.id !== promptId);
+      this.scheduleDesktopStateSave();
     },
     updatePendingPrompt(promptId: string, text: string, images?: PreparedImage[]) {
+      if (this.pendingPromptDispatchByThread[this.activeThreadId] === promptId) return;
       const prompt = this.activePendingPrompts.find((candidate) => candidate.id === promptId);
       const nextImages = images?.map((image) => ({ ...image })) ?? prompt?.images ?? [];
       if (!prompt || (!text.trim() && nextImages.length === 0)) return;
       prompt.text = text.trim();
       prompt.images = nextImages;
+      this.scheduleDesktopStateSave();
     },
     async steerPendingPrompt(promptId: string) {
       const thread = this.activeThread;
-      if (!thread || thread.status !== "running") return;
+      if (!thread || thread.status !== "running" || this.pendingPromptDispatchByThread[thread.id]) return;
       const prompt = this.activePendingPrompts.find((candidate) => candidate.id === promptId);
       if (!prompt) return;
-      this.pendingPromptsByThread[thread.id] = this.activePendingPrompts.filter((candidate) => candidate.id !== promptId);
-      const delivered = await this.deliverPrompt(thread, prompt.text, prompt.images, "steer", false);
-      if (!delivered) this.pendingPromptsByThread[thread.id].unshift(prompt);
+      this.pendingPromptDispatchByThread[thread.id] = prompt.id;
+      try {
+        const delivered = await this.deliverPrompt(thread, prompt.text, prompt.images, "steer", false);
+        if (delivered) this.pendingPromptsByThread[thread.id] = (this.pendingPromptsByThread[thread.id] ?? []).filter(candidate => candidate.id !== promptId);
+        this.scheduleDesktopStateSave();
+      } finally {
+        delete this.pendingPromptDispatchByThread[thread.id];
+        void this.dispatchNextPendingPrompt(thread.id);
+      }
     },
     setStreamingBehavior(behavior: StreamingBehavior) {
       this.streamingBehavior = behavior;
@@ -1962,6 +2081,7 @@ export const useAppStore = defineStore("app", {
         queue.push({ id: createID("pending"), text: message, images: attachments, createdAt: nowISO() });
         this.draftsByThread[thread.id] = "";
         this.attachmentsByThread[thread.id] = [];
+        this.scheduleDesktopStateSave();
         return;
       }
 
@@ -1975,6 +2095,7 @@ export const useAppStore = defineStore("app", {
         this.draftsByThread[thread.id] = originalDraft ?? message;
         this.attachmentsByThread[thread.id] = originalAttachments ?? [];
       }
+      this.scheduleDesktopStateSave();
     },
     async sendGoalCommand(command: string) {
       const thread = this.activeThread;
@@ -1987,6 +2108,7 @@ export const useAppStore = defineStore("app", {
       if (thread.status === "running") {
         const queue = this.pendingPromptsByThread[thread.id] ?? (this.pendingPromptsByThread[thread.id] = []);
         queue.push({ id: createID("pending"), text: command, images: [], createdAt: nowISO() });
+        this.scheduleDesktopStateSave();
         return;
       }
       await this.deliverPrompt(thread, command, [], undefined, false);
@@ -1999,6 +2121,7 @@ export const useAppStore = defineStore("app", {
       retainFailedMessage = true,
     ): Promise<boolean> {
       if (this.sessionOperationByThread[thread.id]) return false;
+      if (attachments.some(image => !image.data)) { this.settingsError = thread.error = tr("composer.missingCachedImage"); thread.status = "attention"; return false; }
       const wasRunning = thread.status === "running";
       if (!wasRunning) await this.waitForSettledReload(thread.id);
       if (this.sessionOperationByThread[thread.id]) return false;
@@ -2064,21 +2187,29 @@ export const useAppStore = defineStore("app", {
         return false;
       }
     },
+    async resumePendingPrompts(threadId?: string) {
+      threadId ||= this.activeThreadId;
+      this.pendingPromptsPausedByThread[threadId] = false;
+      this.scheduleDesktopStateSave();
+      await this.dispatchNextPendingPrompt(threadId);
+    },
     async dispatchNextPendingPrompt(threadId: string) {
-      if (pendingPromptDispatchThreads.has(threadId) || this.sessionOperationByThread[threadId]) return;
+      if (this.pendingPromptsPausedByThread[threadId]) return;
+      if (this.pendingPromptDispatchByThread[threadId] || this.sessionOperationByThread[threadId]) return;
       const thread = this.threads.find((candidate) => candidate.id === threadId);
       const queue = this.pendingPromptsByThread[threadId];
       if (!thread || thread.status !== "idle" || !queue?.length) return;
-      pendingPromptDispatchThreads.add(threadId);
+      this.pendingPromptDispatchByThread[threadId] = queue[0].id;
       try {
         await this.waitForSettledReload(threadId);
         if (thread.status !== "idle" || this.sessionOperationByThread[threadId]) return;
-        const prompt = this.pendingPromptsByThread[threadId]?.shift();
+        const prompt = this.pendingPromptsByThread[threadId]?.[0];
         if (!prompt) return;
         const delivered = await this.deliverPrompt(thread, prompt.text, prompt.images, undefined, false);
-        if (!delivered) this.pendingPromptsByThread[threadId].unshift(prompt);
+        if (delivered) this.pendingPromptsByThread[threadId] = (this.pendingPromptsByThread[threadId] ?? []).filter(candidate => candidate.id !== prompt.id);
+        this.scheduleDesktopStateSave();
       } finally {
-        pendingPromptDispatchThreads.delete(threadId);
+        delete this.pendingPromptDispatchByThread[threadId];
         if (thread.status === "idle" && !this.sessionOperationByThread[threadId] && this.pendingPromptsByThread[threadId]?.length) {
           void this.dispatchNextPendingPrompt(threadId);
         }
@@ -2183,7 +2314,9 @@ export const useAppStore = defineStore("app", {
       const thread = this.threads.find((candidate) => candidate.id === threadId);
       if (!thread?.started) return false;
       try {
+        scheduledTaskStoppingThreads.add(thread.id);
         await agentService.stopSession(thread.id);
+        this.finishScheduledRun(thread.id, "cancelled");
         thread.started = false;
         thread.status = "idle";
         this.piProcessOrder = this.piProcessOrder.filter((id) => id !== thread.id);
@@ -2195,6 +2328,8 @@ export const useAppStore = defineStore("app", {
         const failure = this.remoteFailureMessage(thread.id, error);
         this.appendSystem(thread.id, `Unable to close session: ${failure}`, failure);
         return false;
+      } finally {
+        scheduledTaskStoppingThreads.delete(thread.id);
       }
     },
     async stopActiveSession() {
@@ -2264,7 +2399,9 @@ export const useAppStore = defineStore("app", {
       try {
         await waitForPiStart(thread.id);
         if (thread.started) {
+          scheduledTaskStoppingThreads.add(thread.id);
           await agentService.stopSession(thread.id);
+          this.finishScheduledRun(thread.id, "cancelled");
           thread.started = false;
           thread.status = "idle";
           this.piProcessOrder = this.piProcessOrder.filter((id) => id !== thread.id);
@@ -2283,10 +2420,12 @@ export const useAppStore = defineStore("app", {
       } catch (error) {
         this.deleteSessionError = this.remoteFailureMessage(thread.id, error);
       } finally {
+        scheduledTaskStoppingThreads.delete(thread.id);
         delete this.sessionOperationByThread[thread.id];
       }
     },
     removeThreadState(threadId: string) {
+      this.finishScheduledRun(threadId, "cancelled");
       for (const tab of this.inspectorByThread[threadId]?.tabs ?? []) {
         if (tab.kind === "browser") { tab.closing = true; void browserService.closeTab(tab.id).catch(() => undefined); }
       }
@@ -2297,10 +2436,10 @@ export const useAppStore = defineStore("app", {
         this.transcriptEntriesByThread, this.transcriptReloadGenerationByThread,
         this.draftsByThread, this.attachmentsByThread, this.activeAssistantByThread,
         this.waitingForOutputByThread, this.sessionStateByThread,
-        this.sessionStatsByThread, this.sessionStatsRefreshGenerationByThread,
+        this.sessionStatsByThread, this.promptCacheByThread, this.sessionStatsRefreshGenerationByThread,
         this.compactionEstimatesByThread, this.latestCompactionEstimateByThread,
         this.modelsByThread, this.thinkingLevelsByThread, this.thinkingLevelsRefreshGenerationByThread, this.commandsByThread,
-        this.queueByThread, this.pendingPromptsByThread, this.retryByThread, this.extensionRequestByThread, this.extensionStatusesByThread,
+        this.queueByThread, this.pendingPromptsByThread, this.pendingPromptsPausedByThread, this.pendingPromptDispatchByThread, this.sessionMutationErrorByThread, this.retryByThread, this.extensionRequestByThread, this.extensionStatusesByThread,
         this.extensionWidgetsByThread, this.extensionTitleByThread, this.transcriptStateByThread,
         this.sessionBranchesByThread, this.sessionBranchesErrorByThread, this.sessionOperationByThread, this.pendingModelByThread,
         this.modelSelectionGenerationByThread,
@@ -2316,7 +2455,7 @@ export const useAppStore = defineStore("app", {
     },
     async cloneActiveSession() {
       const thread = this.activeThread;
-      if (!thread?.sessionFile || thread.status === "running" || this.sessionOperationByThread[thread.id]) return;
+      if (!thread?.sessionFile || thread.status === "running" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return;
       this.sessionOperationByThread[thread.id] = "Cloning";
       try {
         const previous = { ...thread };
@@ -2334,7 +2473,7 @@ export const useAppStore = defineStore("app", {
     async forkFromMessage(messageId: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
-      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
+      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Forking";
       try {
         const previous = { ...thread };
@@ -2444,9 +2583,18 @@ export const useAppStore = defineStore("app", {
       if (task.enabled && !task.nextRunAt) task.enabled = false;
       this.scheduleDesktopStateSave();
     },
+    finishScheduledRun(threadId: string, status: "completed" | "failed" | "cancelled", error = "") {
+      for (const task of this.scheduledTasks) {
+        if (task.lastThreadId !== threadId || task.lastStatus !== "started") continue;
+        task.lastStatus = status;
+        task.lastError = status === "failed" ? error || this.messagesByThread[threadId]?.findLast(message => message.role === "assistant")?.error || this.threads.find(thread => thread.id === threadId)?.error : undefined;
+        task.updatedAt = nowISO();
+      }
+      this.scheduleDesktopStateSave();
+    },
     async runScheduledTask(taskID: string, manual = true): Promise<string | undefined> {
       const task = this.scheduledTasks.find((item) => item.id === taskID);
-      if (!task || this.scheduledTaskRunningByID[taskID]) return undefined;
+      if (!task || this.scheduledTaskRunningByID[taskID] || task.lastStatus === "started") return undefined;
       this.scheduledTaskRunningByID[taskID] = true;
       const startedAt = nowISO();
       let threadID: string | undefined;
@@ -2494,11 +2642,12 @@ export const useAppStore = defineStore("app", {
         if (this.sessionStateByThread[threadID]?.thinkingLevel !== task.thinkingLevel) {
           throw new Error(tr("scheduledTasks.errors.thinkingLevelApply"));
         }
-        const delivered = await this.deliverPrompt(thread, task.prompt, []);
-        if (!delivered) throw new Error(thread.error || tr("scheduledTasks.errors.start"));
+        task.lastThreadId = threadID;
         task.lastStatus = "started";
         task.lastError = undefined;
-        task.lastThreadId = threadID;
+        this.scheduleDesktopStateSave();
+        const delivered = await this.deliverPrompt(thread, task.prompt, []);
+        if (!delivered) throw new Error(thread.error || tr("scheduledTasks.errors.start"));
         return threadID;
       } catch (error) {
         const failure = errorMessage(error);
@@ -2542,7 +2691,7 @@ export const useAppStore = defineStore("app", {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && item.role === "user");
       const latestUserMessage = this.activeMessages.findLast((item) => item.role === "user");
-      if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
+      if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
       const images = message.images?.map((image) => ({ ...image })) ?? [];
       const modelToRestore = this.pendingModelByThread[thread.id] ?? this.sessionStateByThread[thread.id]?.model;
       const modelSelectionGeneration = this.modelSelectionGenerationByThread[thread.id];
@@ -2578,7 +2727,7 @@ export const useAppStore = defineStore("app", {
     async editMessage(messageId: string, text: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
-      if (!thread?.sessionFile || !message?.entryId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
+      if (!thread?.sessionFile || !message?.entryId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Editing message";
       this.invalidateSessionReads(thread.id);
       try {
@@ -2598,12 +2747,31 @@ export const useAppStore = defineStore("app", {
     async deleteMessage(messageId: string): Promise<boolean> {
       const thread = this.activeThread;
       const message = this.activeMessages.find((item) => item.id === messageId && (item.role === "user" || item.role === "assistant"));
-      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id]) return false;
+      if (!thread?.sessionFile || !message?.entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
       this.sessionOperationByThread[thread.id] = "Deleting message";
       this.invalidateSessionReads(thread.id);
       try {
         await this.callWithSession(thread, () => agentService.deleteSessionMessage({
           threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
+        }));
+        await this.reloadSessionTranscript(thread, false);
+        return true;
+      } catch (error) {
+        thread.status = "attention";
+        thread.error = errorMessage(error);
+        return false;
+      } finally {
+        delete this.sessionOperationByThread[thread.id];
+      }
+    },
+    async excludeFromContext(entryId: string): Promise<boolean> {
+      const thread = this.activeThread;
+      if (!this.contextEditsAvailable || !thread?.sessionFile || !entryId || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
+      this.sessionOperationByThread[thread.id] = "Excluding from context";
+      this.invalidateSessionReads(thread.id);
+      try {
+        await this.callWithSession(thread, () => agentService.excludeSessionMessageFromContext({
+          threadId: thread.id, path: thread.sessionFile!, entryId,
         }));
         await this.reloadSessionTranscript(thread, false);
         return true;
@@ -2672,7 +2840,7 @@ export const useAppStore = defineStore("app", {
     },
     async forkActiveSession(entryId: string, fallbackText = "") {
       const thread = this.activeThread;
-      if (!thread?.sessionFile || thread.status === "running" || this.sessionOperationByThread[thread.id]) return;
+      if (!thread?.sessionFile || thread.status === "running" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return;
       this.sessionOperationByThread[thread.id] = "Forking";
       try {
         const previous = { ...thread };
@@ -2726,6 +2894,9 @@ export const useAppStore = defineStore("app", {
         sessionFile: previous.sessionFile,
         isStreaming: false,
       };
+      this.promptCacheByThread[sourceID] = this.promptCacheByThread[thread.id]
+        ? { ...this.promptCacheByThread[thread.id]! }
+        : undefined;
 
       const titleSuffix = kind === "fork" ? "fork" : "copy";
       const newTitle = `${previous.title} (${titleSuffix})`;
@@ -3249,6 +3420,7 @@ export const useAppStore = defineStore("app", {
             this.retryByThread[thread.id] = undefined;
           }
           this.finishAssistant(thread.id);
+          this.finishScheduledRun(thread.id, payload.aborted === true ? "cancelled" : messages.findLast(message => message.role === "assistant")?.error ? "failed" : "completed");
           if (thread.id !== this.activeThreadId || appIsInBackground()) thread.unread = true;
           {
             const reload = (async () => {
@@ -3262,7 +3434,9 @@ export const useAppStore = defineStore("app", {
             });
           }
           if (this.notificationsEnabled && !(this.pendingPromptsByThread[thread.id]?.length) && (thread.id !== this.activeThreadId || appIsInBackground())) {
-            void notifyDesktop(tr("notifications.taskCompleted"), taskNotificationSummary(thread.title));
+            const lastAssistant = messages.findLast((message) => message.role === "assistant");
+            const notification = payload.aborted === true ? "notifications.taskCancelled" : lastAssistant?.error ? "notifications.taskFailed" : "notifications.taskCompleted";
+            void notifyDesktop(tr(notification), taskNotificationSummary(thread.title));
           }
           void this.refreshState(thread.id);
           void this.refreshStats(thread.id).catch(() => undefined);
@@ -3335,14 +3509,30 @@ export const useAppStore = defineStore("app", {
             assistant.timestampMs = endedAt;
             assistant.timestamp = formatMessageTime(new Date(endedAt));
           }
+          if (message?.role === "toolResult") {
+            const parent = messages.map((item) => findTool(item.tools, String(message.toolCallId ?? ""))).find(Boolean);
+            if (parent) {
+              parent.children ??= nestedToolHistory(message.nestedCalls);
+              parent.nestedCallsIncomplete = !!message.nestedCalls && (message.nestedCalls as Record<string, unknown>).complete === false;
+            }
+          }
+          if (message?.role === "assistant") {
+            this.promptCacheByThread[thread.id] = promptCacheStatus(
+              message,
+              this.promptCacheByThread[thread.id]?.cacheObserved,
+            ) ?? this.promptCacheByThread[thread.id];
+          }
           void this.refreshStats(thread.id).catch(() => undefined);
           break;
         }
         case "tool_execution_start": {
           this.waitingForOutputByThread[thread.id] = false;
-          const assistant = this.currentAssistant(thread.id, true);
+          const assistant = messages.findLast((message) => findTool(message.tools, String(payload.parentToolCallId ?? "")))
+            ?? this.currentAssistant(thread.id, true);
           if (!assistant) break;
-          assistant.tools.push({
+          const parent = typeof payload.parentToolCallId === "string" ? findTool(assistant.tools, payload.parentToolCallId) : undefined;
+          const tools = parent ? (parent.children ??= []) : assistant.tools;
+          tools.push({
             id: String(payload.toolCallId ?? createID("tool")),
             name: String(payload.toolName ?? "tool"),
             arguments: payload.args,
@@ -3357,15 +3547,17 @@ export const useAppStore = defineStore("app", {
         }
         case "tool_execution_update":
         case "tool_execution_end": {
-          const assistant = this.currentAssistant(thread.id, true);
+          const assistant = messages.findLast((message) => findTool(message.tools, String(payload.parentToolCallId ?? payload.toolCallId ?? "")))
+            ?? this.currentAssistant(thread.id, true);
           if (!assistant) break;
           const toolID = String(payload.toolCallId ?? "");
-          let tool = assistant.tools.find((item) => item.id === toolID);
+          let tool = findTool(assistant.tools, toolID);
           if (!tool) {
             tool = { id: toolID || createID("tool"), name: String(payload.toolName ?? "tool"), output: "", status: "running" };
-            assistant.tools.push(tool);
+            const parent = typeof payload.parentToolCallId === "string" ? findTool(assistant.tools, payload.parentToolCallId) : undefined;
+            (parent ? (parent.children ??= []) : assistant.tools).push(tool);
           }
-          assistant.activeExecution = sessionEvent.event.type === "tool_execution_end" ? undefined : "tool";
+          assistant.activeExecution = sessionEvent.event.type === "tool_execution_end" && !payload.parentToolCallId ? undefined : "tool";
           const rawResult = payload.partialResult ?? payload.result;
           const output = resultText(rawResult);
           if (output) {
@@ -3378,8 +3570,8 @@ export const useAppStore = defineStore("app", {
           if (sessionEvent.event.type === "tool_execution_end") {
             tool.resultReceived = true;
             tool.status = payload.isError ? "error" : "complete";
-            this.waitingForOutputByThread[thread.id] = true;
-            if (tool.startedAt !== undefined) tool.durationMs = Math.max(0, Date.now() - tool.startedAt);
+            if (!payload.parentToolCallId) this.waitingForOutputByThread[thread.id] = true;
+            tool.durationMs = tokenCount(payload.durationMs) ?? (tool.startedAt !== undefined ? Math.max(0, Date.now() - tool.startedAt) : undefined);
             const result = payload.result && typeof payload.result === "object" ? payload.result as Record<string, unknown> : undefined;
             tool.diff = buildToolDiff(tool.name, tool.arguments, result?.details) ?? tool.diff;
             const images = contentImages(result?.content);
@@ -3533,6 +3725,7 @@ export const useAppStore = defineStore("app", {
           this.piProcessOrder = this.piProcessOrder.filter((id) => id !== thread.id);
           thread.status = "attention";
           thread.error = sessionEvent.event.error || "Pi process exited";
+          this.finishScheduledRun(thread.id, scheduledTaskStoppingThreads.has(thread.id) ? "cancelled" : "failed", thread.error);
           this.finishAssistant(thread.id);
           if (thread.id !== this.activeThreadId || appIsInBackground()) thread.unread = true;
           this.queueByThread[thread.id] = { steering: [], followUp: [] };
@@ -3566,6 +3759,7 @@ export const useAppStore = defineStore("app", {
         if (message.role !== "assistant") break;
         message.streaming = false;
         message.activeExecution = undefined;
+        message.tools.forEach(finishTool);
       }
       delete this.activeAssistantByThread[threadId];
     },
@@ -3714,7 +3908,9 @@ export const useAppStore = defineStore("app", {
         }
 
         const drafts = new Map<string, string>();
+        const composers = new Map<string, string>();
         for (const saved of desktop.threads ?? []) {
+          if (saved.composerJson) composers.set(saved.id, saved.composerJson);
           const existing = saved.sessionPath
             ? historicalThreads.find((thread) => thread.sessionFile && pathKey(thread.sessionFile) === pathKey(saved.sessionPath!)
               && (saved.workspaceId ? thread.workspaceId === saved.workspaceId : pathKey(thread.workspacePath) === pathKey(saved.workspacePath)))
@@ -3764,13 +3960,14 @@ export const useAppStore = defineStore("app", {
             enabled: Boolean(task.enabled && hasExecutionSettings),
             nextRunAt: hasExecutionSettings ? task.nextRunAt : undefined,
             frequency: task.frequency as ScheduledTask["frequency"],
-            lastStatus: task.lastStatus as ScheduledTask["lastStatus"],
+            lastStatus: task.lastStatus === "started" ? "cancelled" : task.lastStatus as ScheduledTask["lastStatus"],
           };
         });
         for (const thread of this.threads) {
           this.messagesByThread[thread.id] ??= [];
           this.transcriptEntriesByThread[thread.id] ??= [];
           this.draftsByThread[thread.id] = drafts.get(thread.id) ?? "";
+          if (composers.has(thread.id)) await this.restoreComposer(thread.id, composers.get(thread.id)!);
           this.transcriptStateByThread[thread.id] ??= "idle";
         }
         this.activateThread(this.threads.some((thread) => thread.id === desktop.activeThreadId)
@@ -3869,6 +4066,22 @@ export const useAppStore = defineStore("app", {
         this.sessionSyncLoading = false;
       }
     },
+    async restoreComposer(threadId: string, json: string) {
+      try {
+        const composer = JSON.parse(json) as { attachments: PreparedImage[]; pending: PendingPrompt[] };
+        const hydrate = async (image: PreparedImage) => {
+          let data = "";
+          try { data = await catalogService.readComposerImage(image.cacheKey!); }
+          catch { this.settingsError = tr("composer.missingCachedImage"); }
+          return { ...image, data, previewUrl: data ? `data:${image.mimeType};base64,${data}` : "" };
+        };
+        this.attachmentsByThread[threadId] = await Promise.all((composer.attachments ?? []).map(hydrate));
+        this.pendingPromptsByThread[threadId] = await Promise.all((composer.pending ?? []).map(async prompt => ({
+          ...prompt, images: await Promise.all((prompt.images ?? []).map(hydrate)),
+        })));
+        this.pendingPromptsPausedByThread[threadId] = Boolean(this.pendingPromptsByThread[threadId].length);
+      } catch { this.settingsError = tr("composer.restoreFailed"); }
+    },
     scheduleDesktopStateSave() {
       if (!this.catalogReady) return;
       if (desktopSaveTimer) clearTimeout(desktopSaveTimer);
@@ -3879,56 +4092,77 @@ export const useAppStore = defineStore("app", {
     },
     async persistDesktopState() {
       if (!this.catalogReady) return;
-      const state: DesktopState = {
-        activeThreadId: this.activeThreadId || undefined,
-        scheduledTasks: this.scheduledTasks,
-        preferences: {
-          appearance: this.appearance,
-          language: this.language,
-          fontFamily: this.interfaceFont,
-          fontSize: this.interfaceFontSize,
-          lightCodeTheme: this.lightCodeTheme,
-          darkCodeTheme: this.darkCodeTheme,
-          showCodeLineNumbers: this.showCodeLineNumbers,
-          wrapCodeLines: this.wrapCodeLines,
-          codeFontSize: this.codeFontSize,
-          offlineMode: this.offlineMode,
-          proxyEnabled: this.proxyEnabled,
-          proxyUrl: this.proxyURL.trim(),
-          streamingBehavior: this.streamingBehavior,
-          sidebarCollapsed: this.sidebarCollapsed,
-          sidebarWidth: this.sidebarWidth,
-          inspectorOpen: this.inspectorOpen,
-          inspectorWidth: this.inspectorWidth,
-          inspectorTab: this.inspectorTab,
-          panelState: JSON.stringify(Object.fromEntries(Object.entries(this.inspectorByThread).map(([id, panel]) => [
-            id, { ...panel, tabs: panel.tabs.filter(tab => !tab.browserTemporary).map(({ preview, diff, loading, closing, error, generation, ...tab }) => tab) },
-          ]))),
-          notificationsEnabled: this.notificationsEnabled,
-          updateChecksEnabled: this.updateChecksEnabled,
-          closeToTray: true,
-          workspaceApplication: this.workspaceApplication || undefined,
-        },
-        threads: this.threads.map((thread) => ({
-          id: thread.id,
-          title: thread.title,
-          workspaceId: thread.workspaceId,
-          workspacePath: thread.workspacePath,
-          trust: thread.trust,
-          status: thread.status,
-          sessionPath: thread.sessionFile,
-          draft: this.draftsByThread[thread.id] || undefined,
-          createdAt: thread.createdAt,
-          updatedAt: thread.modifiedAt,
-          unread: thread.unread || undefined,
-        })),
+      if (desktopSaveTimer) { clearTimeout(desktopSaveTimer); desktopSaveTimer = undefined; }
+      if (desktopSavePromise) { desktopSavePending = true; return desktopSavePromise; }
+      const save = async () => {
+        do {
+          desktopSavePending = false;
+          const state: DesktopState = {
+            activeThreadId: this.activeThreadId || undefined,
+            scheduledTasks: this.scheduledTasks.map(task => ({ ...task })),
+            preferences: {
+              appearance: this.appearance,
+              language: this.language,
+              fontFamily: this.interfaceFont,
+              fontSize: this.interfaceFontSize,
+              lightCodeTheme: this.lightCodeTheme,
+              darkCodeTheme: this.darkCodeTheme,
+              showCodeLineNumbers: this.showCodeLineNumbers,
+              wrapCodeLines: this.wrapCodeLines,
+              codeFontSize: this.codeFontSize,
+              offlineMode: this.offlineMode,
+              proxyEnabled: this.proxyEnabled,
+              proxyUrl: this.proxyURL.trim(),
+              streamingBehavior: this.streamingBehavior,
+              sidebarCollapsed: this.sidebarCollapsed,
+              sidebarWidth: this.sidebarWidth,
+              inspectorOpen: this.inspectorOpen,
+              inspectorWidth: this.inspectorWidth,
+              inspectorTab: this.inspectorTab,
+              panelState: JSON.stringify(Object.fromEntries(Object.entries(this.inspectorByThread).map(([id, panel]) => [
+                id, { ...panel, tabs: panel.tabs.filter(tab => !tab.browserTemporary).map(({ preview, diff, loading, closing, error, generation, ...tab }) => tab) },
+              ]))),
+              notificationsEnabled: this.notificationsEnabled,
+              updateChecksEnabled: this.updateChecksEnabled,
+              closeToTray: true,
+              workspaceApplication: this.workspaceApplication || undefined,
+            },
+            threads: this.threads.map((thread) => ({
+              id: thread.id,
+              title: thread.title,
+              workspaceId: thread.workspaceId,
+              workspacePath: thread.workspacePath,
+              trust: thread.trust,
+              status: thread.status,
+              sessionPath: thread.sessionFile,
+              draft: this.draftsByThread[thread.id] || undefined,
+              createdAt: thread.createdAt,
+              updatedAt: thread.modifiedAt,
+              unread: thread.unread || undefined,
+            })),
+          };
+          try {
+            for (const thread of state.threads ?? []) {
+              const cache = async (image: PreparedImage) => {
+                if (!image.cacheKey) image.cacheKey = await catalogService.cacheComposerImage(image.data, image.mimeType);
+                return { id: image.id, name: image.name, mimeType: image.mimeType, cacheKey: image.cacheKey };
+              };
+              const attachments = [...(this.attachmentsByThread[thread.id] ?? [])];
+              const pending = (this.pendingPromptsByThread[thread.id] ?? []).map(prompt => ({ ...prompt, images: [...prompt.images] }));
+              if (attachments.length || pending.length) thread.composerJson = JSON.stringify({
+                attachments: await Promise.all(attachments.map(cache)),
+                pending: await Promise.all(pending.map(async prompt => ({ ...prompt, images: await Promise.all(prompt.images.map(cache)) }))),
+              });
+            }
+            await catalogService.saveDesktopState(state);
+            this.settingsError = "";
+          } catch (error) {
+            this.settingsError = errorMessage(error);
+          }
+        } while (desktopSavePending && this.catalogReady);
       };
-      try {
-        await catalogService.saveDesktopState(state);
-        this.settingsError = "";
-      } catch (error) {
-        this.settingsError = errorMessage(error);
-      }
+      desktopSavePromise = save().finally(() => { desktopSavePromise = undefined; });
+      return desktopSavePromise;
     },
   },
 });

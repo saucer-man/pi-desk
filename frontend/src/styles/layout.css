@@ -1316,6 +1316,12 @@
   cursor: pointer;
 }
 
+.message-delete-confirm button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .message-edit-button--primary {
   background: var(--text);
   color: var(--text-inverse);
@@ -1453,6 +1459,13 @@
 .message-row:hover .message-meta span,
 .message-meta:focus-within span,
 .message-meta .delivery-label {
+  opacity: 1;
+}
+
+.message-meta .context-excluded-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   opacity: 1;
 }
 
@@ -2111,6 +2124,28 @@
   flex: 1;
   align-items: center;
   gap: 8px;
+}
+
+.tool-context-action {
+  flex: 0 0 auto;
+}
+
+.tool-context-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: calc(10.5px + var(--font-size-delta));
+  white-space: nowrap;
+}
+
+.tool-context-confirm {
+  margin: 5px 0 0 18px;
+}
+
+.tool-context-error {
+  margin: 5px 0 0 18px;
 }
 
 .tool-call[data-state="complete"] .tool-status svg {
@@ -6879,6 +6914,19 @@ article.mcp-server-row {
   color: var(--text-muted);
   font-size: calc(10.5px + var(--font-size-delta));
   line-height: 1.5;
+}
+
+.model-advanced > .model-form-grid {
+  margin-top: 12px;
+}
+
+.model-advanced > .model-form-grid .model-field + .model-field {
+  margin-top: 0;
+}
+
+.model-advanced + .model-advanced {
+  margin-top: 0;
+  border-top: 0;
 }
 
 .model-advanced .model-field + .model-field {

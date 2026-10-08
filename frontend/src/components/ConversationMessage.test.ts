@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConversationMessage from "./ConversationMessage.vue";
 import { useAppStore } from "../stores/app";
 import { groupConversationTurns } from "../utils/conversationGrouping";
+import { RuntimeState } from "../../bindings/pi-desk/internal/domain";
 
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
@@ -484,6 +485,30 @@ describe("ConversationMessage", () => {
 
     await wrapper.get('button[title="Fork from this message"]').trigger("click");
     expect(store.forkFromMessage).toHaveBeenCalledWith("assistant-1");
+  });
+
+  it("excludes a persisted message from future context and keeps a visible marker", async () => {
+    const store = useAppStore();
+    store.bootstrap = {
+      productName: "Pi Desk", appVersion: "test", wailsVersion: "test", workingDirectory: "D:\\repo",
+      runtime: { state: RuntimeState.RuntimeReady, version: "0.87.0" },
+      window: { x: 0, y: 0, width: 1200, height: 800, maximized: false, valid: true },
+    };
+    store.excludeFromContext = vi.fn().mockResolvedValue(true);
+    const message = {
+      id: "assistant-context", entryId: "entry-context", role: "assistant" as const,
+      text: "Keep this in the transcript", thinking: "", timestamp: "10:00", streaming: false, tools: [],
+    };
+    const wrapper = mount(ConversationMessage, { props: { message } });
+
+    await wrapper.get('button[title="Exclude from future context"]').trigger("click");
+    expect(wrapper.get(".message-delete-confirm").text()).toContain("remain visible");
+    await wrapper.get(".message-delete-confirm button:last-child").trigger("click");
+    expect(store.excludeFromContext).toHaveBeenCalledWith("entry-context");
+
+    await wrapper.setProps({ message: { ...message, contextExcluded: true } });
+    expect(wrapper.get(".context-excluded-label").text()).toBe("Excluded from context");
+    expect(wrapper.find('button[title="Exclude from future context"]').exists()).toBe(false);
   });
 
   it("sends an edited latest user message instead of only saving it", async () => {

@@ -46,6 +46,7 @@ type ThreadRecord struct {
 	Status        string `json:"status"`
 	SessionPath   string `json:"sessionPath,omitempty"`
 	Draft         string `json:"draft,omitempty"`
+	ComposerJSON  string `json:"composerJson,omitempty"`
 	CreatedAt     string `json:"createdAt,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 	Unread        bool   `json:"unread,omitempty"`
@@ -133,6 +134,10 @@ type Catalog struct {
 	records []Record
 	targets []TargetRecord
 	desktop DesktopRecord
+}
+
+func (catalog *Catalog) AttachmentDirectory() string {
+	return filepath.Join(filepath.Dir(catalog.path), "composer-images")
 }
 
 func DefaultStatePath() (string, error) {
@@ -649,6 +654,9 @@ func validateDesktop(desktop DesktopRecord) error {
 		if strings.TrimSpace(thread.Title) == "" || len([]rune(thread.Title)) > maxThreadTitleLen {
 			return fmt.Errorf("thread %s has an invalid title", thread.ID)
 		}
+		if len(thread.ComposerJSON) > maxDraftBytes || (thread.ComposerJSON != "" && !json.Valid([]byte(thread.ComposerJSON))) {
+			return errors.New("composer metadata must be valid JSON of at most 1 MiB")
+		}
 		if len(thread.Draft) > maxDraftBytes {
 			return fmt.Errorf("thread %s draft exceeds 1 MiB", thread.ID)
 		}
@@ -715,7 +723,7 @@ func validateDesktop(desktop DesktopRecord) error {
 			return fmt.Errorf("scheduled task %s requires a next run time while enabled", task.ID)
 		}
 		switch task.LastStatus {
-		case "", "started", "failed":
+		case "", "started", "completed", "failed", "cancelled":
 		default:
 			return fmt.Errorf("scheduled task %s has an invalid last status", task.ID)
 		}

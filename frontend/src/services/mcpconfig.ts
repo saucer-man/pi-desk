@@ -2,8 +2,6 @@ import { McpConfigService } from "../../bindings/pi-desk/internal/appservice";
 import type {
   ListMcpServersRequest,
   McpConfigSnapshot,
-  McpEngineStatus,
-  McpEngineStatusRequest,
   McpImportCandidate,
   McpServer,
   McpServerRequest,
@@ -28,9 +26,6 @@ export const mcpConfigService = {
   test(request: TestMcpServerRequest): Promise<McpServerTestResult> {
     return McpConfigService.TestMcpServer(request);
   },
-  engineStatus(request: McpEngineStatusRequest): Promise<McpEngineStatus> {
-    return McpConfigService.GetMcpEngineStatus(request);
-  },
   async importCandidates(): Promise<McpImportCandidate[]> {
     return (await McpConfigService.ListImportableMcpServers()) ?? [];
   },
@@ -38,8 +33,6 @@ export const mcpConfigService = {
 
 export type {
   McpConfigSnapshot,
-  McpEngineStatus,
-  McpEngineStatusRequest,
   McpImportCandidate,
   McpServer,
   McpServerRequest,

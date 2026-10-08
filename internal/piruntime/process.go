@@ -72,13 +72,12 @@ func (starter *ExecStarter) Start(ctx context.Context, config StartConfig) (pirp
 		return nil, fmt.Errorf("locate Pi CLI: %w", err)
 	}
 
-	command := exec.CommandContext(ctx, invocation.Executable, invocation.Args...)
+	command := invocation.CommandContext(ctx)
 	command.Dir = workspace
 	command.Env, err = processEnvironment(config)
 	if err != nil {
 		return nil, err
 	}
-	configureProcess(command)
 
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -157,7 +156,7 @@ func buildPiArgs(config StartConfig) ([]string, error) {
 		}
 		args = append(args, "--no-builtin-tools", "--no-extensions", "--no-context-files", "--extension", adapter)
 	} else if config.DisablePlugins {
-		args = append(args, "--no-extensions")
+		args = append(args, "--no-extensions", "--extension", "builtin:mcp", "--extension", "builtin:codemode", "--extension", "builtin:tool-search", "--extension", "builtin:llama.cpp")
 	}
 	if config.NoSession {
 		args = append(args, "--no-session")

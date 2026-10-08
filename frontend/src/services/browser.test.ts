@@ -145,6 +145,12 @@ describe("bundled embedded browser tools", () => {
     const response=await fetch(process.env.PI_DESK_BROWSER_URL!,{method:"POST",headers:{Authorization:`Bearer ${process.env.PI_DESK_BROWSER_TOKEN}`},body:JSON.stringify({threadId:"native-test",tabId,action:"call",method:"Runtime.evaluate",params:{expression:"document.querySelector('#field').value",returnByValue:true}})});
     expect((await response.json()).result.value).toContain(" extension 输入");
     const original=read.page.url;
+    const started=Date.now();
+    await h.execute("browser_navigate",{tabId,url:new URL("/slowheaders",original).href});
+    expect(Date.now()-started).toBeLessThan(1000);
+    await h.execute("browser_wait",{tabId,condition:"text",text:"Path: /slowheaders",timeoutMs:10000});
+    await h.execute("browser_navigate",{tabId,url:original});
+    await h.execute("browser_wait",{tabId,condition:"text",text:"Path: / "});
     await h.execute("browser_navigate",{tabId,url:new URL("/second",original).href});
     await h.execute("browser_wait",{tabId,condition:"text",text:"Path: /second"});
     await expect(h.execute("browser_click",{tabId,ref})).rejects.toThrow("Stale");
@@ -267,6 +273,9 @@ describe("bundled embedded browser tools", () => {
     const h=harness();
     await h.execute("browser_tabs",{action:"create",url:"https://example.test"});
     expect(h.calls[0]).toMatchObject({action:"create",params:{url:"https://example.test"}});
+    await h.execute("browser_navigate",{tabId:"b",url:"https://example.test/slow"});
+    expect(h.calls.slice(-2)).toMatchObject([{action:"select",tabId:"b"},{action:"navigate",tabId:"b",params:{url:"https://example.test/slow"}}]);
+    expect(h.calls.some(c=>c.method==="Page.navigate")).toBe(false);
     await h.execute("browser_navigate",{tabId:"b",action:"back"});
     expect(h.calls.at(-1)).toMatchObject({tabId:"b",method:"Page.navigateToHistoryEntry",params:{entryId:10}});
     await h.execute("browser_navigate",{tabId:"a",action:"forward"});

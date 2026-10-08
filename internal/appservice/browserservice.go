@@ -86,7 +86,9 @@ func (s *BrowserService) StartTab(request domain.BrowserStartRequest) (domain.Br
 	s.mu.Unlock()
 	return status, nil
 }
-func (s *BrowserService) start(ctx context.Context, request domain.BrowserStartRequest, temporary bool) (*browserTab, error) {
+func (s *BrowserService) start(ctx context.Context, request domain.BrowserStartRequest, temporary bool) (result *browserTab, err error) {
+	finish := beginDiagnosticOperation("browser/start")
+	defer func() { finish(err) }()
 	if strings.TrimSpace(request.TabID) == "" || strings.TrimSpace(request.ThreadID) == "" || len(request.TabID) > 256 || len(request.ThreadID) > 256 {
 		return nil, errors.New("invalid browser identity")
 	}
@@ -273,7 +275,15 @@ func (s *BrowserService) KeepTab(id string) error {
 	s.publish(tab, "state")
 	return nil
 }
-func (s *BrowserService) agentCommand(ctx context.Context, command browser.AgentCommand) (any, error) {
+func (s *BrowserService) agentCommand(ctx context.Context, command browser.AgentCommand) (result any, err error) {
+	action := command.Action
+	switch action {
+	case "list", "create", "ensure", "select", "navigate", "call", "inspect", "cdp":
+	default:
+		action = "unknown"
+	}
+	finish := beginDiagnosticOperation("browser/" + action)
+	defer func() { finish(err) }()
 	if command.Action == "list" {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -364,7 +374,20 @@ func (s *BrowserService) agentCommand(ctx context.Context, command browser.Agent
 		s.mu.Lock()
 		s.selected[command.ThreadID] = command.TabID
 		s.mu.Unlock()
+		if command.Action == "select" {
+			s.publish(tab, "selected")
+		}
 		return status, nil
+	case "navigate":
+		var params struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(command.Params, &params) != nil || !browser.ValidPageURL(params.URL) {
+			return nil, errors.New("invalid browser parameters")
+		}
+		// Start navigation without waiting for CDP's network response. Page
+		// readiness is checked separately by browser_wait.
+		return true, tab.page.Navigate(ctx, params.URL)
 	case "keep":
 		_ = s.KeepTab(command.TabID)
 		return true, nil

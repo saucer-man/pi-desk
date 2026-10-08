@@ -8,17 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"pi-desk/internal/domain"
-	"pi-desk/internal/processutil"
 	"pi-desk/internal/workspace"
 
 	"github.com/natefinch/atomic"
@@ -27,187 +24,11 @@ import (
 const (
 	maxMcpConfigBytes = 4 << 20
 	maxMcpServerName  = 120
-	// pi-mcp-adapter is Pi's de facto MCP connection engine; Pi Desk edits its
-	// configuration and manages the package installation from the frontend.
-	mcpAdapterPackageFragment = "pi-mcp-adapter"
-	mcpTestTimeout            = 20 * time.Second
+	mcpTestTimeout    = 30 * time.Second
 )
 
-const mcpTestClientScript = `
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import { createConnection } from "node:net";
-import { pathToFileURL } from "node:url";
-
-let source = "";
-for await (const chunk of process.stdin) source += chunk;
-const definition = JSON.parse(source);
-const sdkRoot = process.argv[1];
-const sdk = await import(pathToFileURL(join(sdkRoot, "dist", "index.mjs")).href);
-const stdio = await import(pathToFileURL(join(sdkRoot, "dist", "stdio.mjs")).href);
-const interpolate = value => String(value).replace(/\$\{([^}]+)\}/g, (_, name) => process.env[name] ?? "");
-const expandPath = value => value === "~" ? homedir() : value.startsWith("~/") || value.startsWith("~\\") ? join(homedir(), value.slice(2)) : isAbsolute(value) ? value : resolve(value);
-const names = values => values.map(value => String(value).slice(0, 240)).sort().slice(0, 200);
-const toolDetails = tools => tools.map(item => ({
-  name: String(item.name).slice(0, 240),
-  description: String(item.description ?? "").slice(0, 2000),
-  inputSchema: item.inputSchema ? JSON.stringify(item.inputSchema, null, 2).slice(0, 12000) : "",
-})).sort((left, right) => left.name.localeCompare(right.name)).slice(0, 200);
-let client;
-let transport;
-let stderrTail = "";
-
-class SocketTransport {
-  socket;
-  buffer = new sdk.ReadBuffer();
-  constructor(path) { this.path = path; }
-  async start() {
-    await new Promise((accept, reject) => {
-      const socket = createConnection(this.path);
-      this.socket = socket;
-      let connected = false;
-      socket.once("connect", () => { connected = true; accept(); });
-      socket.on("data", chunk => {
-        try {
-          this.buffer.append(chunk);
-          for (let message; (message = this.buffer.readMessage()) !== null;) this.onmessage?.(message);
-        } catch (error) { this.onerror?.(error instanceof Error ? error : new Error(String(error))); }
-      });
-      socket.on("error", error => { if (!connected) reject(error); this.onerror?.(error); });
-      socket.on("close", () => { this.buffer.clear(); this.onclose?.(); });
-    });
-  }
-  async send(message) {
-    if (!this.socket || this.socket.destroyed) throw new Error("MCP socket is not connected");
-    await new Promise((accept, reject) => this.socket.write(sdk.serializeMessage(message), error => error ? reject(error) : accept()));
-  }
-  async close() { this.buffer.clear(); this.socket?.destroy(); }
-}
-
-const makeClient = () => new sdk.Client({ name: "pi-desk-mcp-debugger", version: "1.0.0" });
-const requestOptions = { timeout: 15_000 };
-const connectHttp = async () => {
-  const headers = {};
-  for (const [name, value] of Object.entries(definition.headers ?? {})) headers[name] = interpolate(value);
-  if (definition.auth === "bearer") {
-    const token = definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : definition.bearerToken;
-    if (token) headers.Authorization = "Bearer " + interpolate(token);
-  }
-  const options = Object.keys(headers).length ? { requestInit: { headers } } : {};
-  const url = new URL(interpolate(definition.url));
-  const choices = definition.httpTransport === "sse"
-    ? [sdk.SSEClientTransport]
-    : definition.httpTransport === "streamable-http"
-      ? [sdk.StreamableHTTPClientTransport]
-      : [sdk.StreamableHTTPClientTransport, sdk.SSEClientTransport];
-  const errors = [];
-  for (const Transport of choices) {
-    const nextClient = makeClient();
-    const nextTransport = new Transport(url, options);
-    try {
-      await nextClient.connect(nextTransport, requestOptions);
-      return [nextClient, nextTransport];
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-      await nextClient.close().catch(() => {});
-    }
-  }
-  throw new Error(errors.join("; "));
-};
-
-try {
-  if (definition.command) {
-    const env = { ...process.env };
-    for (const [name, value] of Object.entries(definition.env ?? {})) env[name] = interpolate(value);
-    transport = new stdio.StdioClientTransport({
-      command: definition.command,
-      args: (definition.args ?? []).map(interpolate),
-      env,
-      cwd: definition.cwd ? expandPath(interpolate(definition.cwd)) : process.cwd(),
-      stderr: "pipe",
-    });
-    transport.stderr?.on("data", chunk => { stderrTail = (stderrTail + String(chunk)).slice(-4000); });
-    client = makeClient();
-    await client.connect(transport, requestOptions);
-  } else if (definition.url) {
-    [client, transport] = await connectHttp();
-  } else {
-    transport = new SocketTransport(expandPath(interpolate(definition.socket)));
-    client = makeClient();
-    await client.connect(transport, requestOptions);
-  }
-
-  const capabilities = client.getServerCapabilities() ?? {};
-  const [toolResult, resourceResult, promptResult] = await Promise.all([
-    capabilities.tools ? client.listTools(undefined, requestOptions) : { tools: [] },
-    capabilities.resources ? client.listResources(undefined, requestOptions) : { resources: [] },
-    capabilities.prompts ? client.listPrompts(undefined, requestOptions) : { prompts: [] },
-  ]);
-  const server = client.getServerVersion() ?? {};
-  const tools = toolResult.tools ?? [];
-  const resources = resourceResult.resources ?? [];
-  const prompts = promptResult.prompts ?? [];
-  process.stdout.write(JSON.stringify({
-    transport: definition.command ? "stdio" : definition.url ? "http" : "socket",
-    protocolVersion: client.getNegotiatedProtocolVersion?.() ?? "",
-    serverName: server.name ?? "",
-    serverVersion: server.version ?? "",
-    capabilities: Object.keys(capabilities).sort(),
-    tools: toolDetails(tools),
-    resources: names(resources.map(item => item.name || item.uri)),
-    prompts: names(prompts.map(item => item.name)),
-    toolCount: tools.length,
-    resourceCount: resources.length,
-    promptCount: prompts.length,
-  }));
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(message + (stderrTail.trim() ? "\n\nServer stderr:\n" + stderrTail.trim() : ""));
-  process.exitCode = 1;
-} finally {
-  await client?.close().catch(() => {});
-}
-`
-
-const mcpConfigSnapshotScript = `
-import { pathToFileURL } from "node:url";
-const adapter = await import(pathToFileURL(process.argv[1]).href);
-const overridePath = process.argv[2];
-const cwd = process.argv[3];
-const config = adapter.loadMcpConfig(overridePath, cwd);
-const discovery = adapter.getMcpDiscoverySummary(overridePath, cwd);
-const provenance = typeof adapter.getServerProvenance === "function"
-  ? Object.fromEntries(adapter.getServerProvenance(overridePath, cwd))
-  : {};
-const sources = [
-  ...discovery.sources,
-  ...(discovery.imports || [])
-    .filter(source => discovery.hostConfigDiscovery === "on" || (config.imports || []).includes(source.kind))
-    .map(source => ({ ...source, id: "host-" + source.kind, label: source.kind, exists: true, scope: "global", kind: "host" })),
-  ...discovery.agentPlugins.map((plugin, index) => ({
-    id: "agent-plugin-" + index,
-    label: plugin.name || "Agent Plugin",
-    path: plugin.path,
-    exists: true,
-    scope: "global",
-    kind: "plugin",
-    serverCount: plugin.serverCount,
-  })),
-  ...(config.claudePlugins || []).filter(plugin => plugin.mcp).map((plugin, index) => ({
-    id: "claude-plugin-" + index,
-    label: "Claude Plugin",
-    path: plugin.path,
-    exists: true,
-    scope: "project",
-    kind: "plugin",
-    serverCount: 0,
-  })),
-];
-process.stdout.write(JSON.stringify({ servers: config.mcpServers || {}, provenance, sources }));
-`
-
 // McpConfigService edits Pi's global and trusted-workspace MCP configuration.
-// Imported host configurations remain outside Pi Desk's writable surface.
+// Connection handling is delegated to the native Pi CLI.
 type McpConfigService struct {
 	agentDirectory    string
 	agentDirectoryErr error
@@ -249,98 +70,7 @@ func (service *McpConfigService) ListMcpServers(request domain.ListMcpServersReq
 		snapshot.Servers = append(snapshot.Servers, projectServers...)
 	}
 	sortMcpServers(snapshot.Servers)
-	projectRoot := ""
-	if enabled {
-		projectRoot = filepath.Dir(filepath.Dir(projectPath))
-	}
-	effective, sources, err := service.loadAdapterMcpConfig(globalPath, projectRoot)
-	if err != nil {
-		snapshot.AdapterNotice = err.Error()
-	} else {
-		snapshot.EffectiveServers = effective
-		snapshot.Sources = sources
-	}
 	return snapshot, nil
-}
-
-type adapterMcpSnapshot struct {
-	Servers    map[string]any                     `json:"servers"`
-	Provenance map[string]adapterServerProvenance `json:"provenance"`
-	Sources    []domain.McpConfigSource           `json:"sources"`
-}
-
-type adapterServerProvenance struct {
-	Kind string `json:"kind"`
-}
-
-func (service *McpConfigService) loadAdapterMcpConfig(globalPath string, projectRoot string) ([]domain.McpEffectiveServer, []domain.McpConfigSource, error) {
-	modulePath := filepath.Join(service.agentDirectory, "npm", "node_modules", "pi-mcp-adapter", "dist", "config.js")
-	if info, err := os.Stat(modulePath); err != nil || !info.Mode().IsRegular() {
-		return nil, nil, nil
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		return nil, nil, errors.New("Node.js is required to read pi-mcp-adapter configuration")
-	}
-	cwd := projectRoot
-	if cwd == "" {
-		cwd = service.agentDirectory
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, node, "--input-type=module", "--eval", mcpConfigSnapshotScript, modulePath, globalPath, cwd)
-	processutil.ConfigureBackground(command)
-	command.Dir = cwd
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, nil, errors.New("reading pi-mcp-adapter configuration timed out")
-		}
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
-		}
-		return nil, nil, fmt.Errorf("read pi-mcp-adapter configuration: %s", message)
-	}
-	if stdout.Len() > maxMcpConfigBytes {
-		return nil, nil, fmt.Errorf("pi-mcp-adapter configuration exceeds the %d MiB safety limit", maxMcpConfigBytes>>20)
-	}
-	loaded := adapterMcpSnapshot{}
-	if err := json.Unmarshal(stdout.Bytes(), &loaded); err != nil {
-		return nil, nil, fmt.Errorf("parse pi-mcp-adapter configuration: %w", err)
-	}
-	effective := make([]domain.McpEffectiveServer, 0, len(loaded.Servers))
-	for name, definition := range loaded.Servers {
-		if _, err := validMcpServerName(name); err != nil {
-			continue
-		}
-		if _, ok := definition.(map[string]any); !ok {
-			continue
-		}
-		formatted, err := formatMcpDefinition(definition)
-		if err != nil {
-			continue
-		}
-		scope := domain.McpConfigScopeGlobal
-		if loaded.Provenance[name].Kind == "project" {
-			scope = domain.McpConfigScopeProject
-		}
-		effective = append(effective, domain.McpEffectiveServer{McpServerSummary: summarizeMcpServer(scope, name, definition), Definition: formatted})
-	}
-	sort.Slice(effective, func(left, right int) bool {
-		return strings.ToLower(effective[left].Name) < strings.ToLower(effective[right].Name)
-	})
-	if projectRoot == "" {
-		globalSources := loaded.Sources[:0]
-		for _, source := range loaded.Sources {
-			if source.Scope != domain.McpConfigScopeProject {
-				globalSources = append(globalSources, source)
-			}
-		}
-		loaded.Sources = globalSources
-	}
-	return effective, loaded.Sources, nil
 }
 
 func (service *McpConfigService) GetMcpServer(request domain.McpServerRequest) (domain.McpServer, error) {
@@ -351,10 +81,7 @@ func (service *McpConfigService) GetMcpServer(request domain.McpServerRequest) (
 	if err != nil {
 		return domain.McpServer{}, err
 	}
-	name, err := validMcpServerName(request.Name)
-	if err != nil {
-		return domain.McpServer{}, err
-	}
+	name := strings.TrimSpace(request.Name)
 	_, servers, err := readMcpConfig(path)
 	if err != nil {
 		return domain.McpServer{}, err
@@ -386,16 +113,24 @@ func (service *McpConfigService) UpsertMcpServer(request domain.UpsertMcpServerR
 	if err != nil {
 		return domain.McpServer{}, err
 	}
+	if transportCount(definition) == 0 {
+		if request.Scope != domain.McpConfigScopeProject {
+			return domain.McpServer{}, errors.New("global MCP server needs command or url")
+		}
+		_, global, readErr := readMcpConfig(filepath.Join(service.agentDirectory, "mcp.json"))
+		if readErr != nil {
+			return domain.McpServer{}, readErr
+		}
+		if _, exists := global[name]; !exists {
+			return domain.McpServer{}, errors.New("project MCP override needs a global server with the same name")
+		}
+	}
 	raw, servers, err := readMcpConfig(path)
 	if err != nil {
 		return domain.McpServer{}, err
 	}
 	originalName := strings.TrimSpace(request.OriginalName)
 	if originalName != "" {
-		originalName, err = validMcpServerName(originalName)
-		if err != nil {
-			return domain.McpServer{}, err
-		}
 		if _, ok := servers[originalName]; !ok {
 			return domain.McpServer{}, fmt.Errorf("MCP server %q was not found", originalName)
 		}
@@ -425,10 +160,7 @@ func (service *McpConfigService) DeleteMcpServer(request domain.McpServerRequest
 	if err != nil {
 		return err
 	}
-	name, err := validMcpServerName(request.Name)
-	if err != nil {
-		return err
-	}
+	name := strings.TrimSpace(request.Name)
 	raw, servers, err := readMcpConfig(path)
 	if err != nil {
 		return err
@@ -442,121 +174,80 @@ func (service *McpConfigService) DeleteMcpServer(request domain.McpServerRequest
 	return writeMcpConfig(path, raw)
 }
 
-// TestMcpServer starts the current editor definition without saving it, then
-// asks the same MCP client library used by pi-mcp-adapter for server metadata.
+// TestMcpServer checks an unsaved definition using Pi's native MCP client.
 func (service *McpConfigService) TestMcpServer(request domain.TestMcpServerRequest) (domain.McpServerTestResult, error) {
-	_, definition, err := parseMcpDefinition(request.Definition)
+	definition, _, err := parseMcpDefinition(request.Definition)
 	if err != nil {
 		return domain.McpServerTestResult{}, err
 	}
-	clientPackage, err := service.mcpClientPackageDirectory()
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		name = "pi-desk-test"
+	}
+	if _, err := validMcpServerName(name); err != nil {
+		return domain.McpServerTestResult{}, err
+	}
+	if transportCount(definition) == 0 {
+		if request.Scope != domain.McpConfigScopeProject || request.WorkspacePath == "" {
+			return domain.McpServerTestResult{}, errors.New("MCP override needs a trusted project")
+		}
+		_, global, readErr := readMcpConfig(filepath.Join(service.agentDirectory, "mcp.json"))
+		if readErr != nil {
+			return domain.McpServerTestResult{}, readErr
+		}
+		base, exists := global[name].(map[string]any)
+		if !exists {
+			return domain.McpServerTestResult{}, errors.New("MCP override has no global server")
+		}
+		for key, value := range definition {
+			base[key] = value
+		}
+		definition = base
+	}
+	cwd := service.agentDirectory
+	if request.WorkspacePath != "" {
+		path, notice, enabled := service.projectDirectory(request.WorkspacePath)
+		if !enabled && request.Scope == domain.McpConfigScopeProject {
+			return domain.McpServerTestResult{}, errors.New(notice)
+		}
+		if enabled {
+			cwd = filepath.Dir(filepath.Dir(path))
+		}
+	}
+	if _, ok := definition["command"]; ok {
+		serverCwd, _ := definition["cwd"].(string)
+		if serverCwd == "" {
+			definition["cwd"] = cwd
+		} else if !filepath.IsAbs(serverCwd) && !strings.HasPrefix(serverCwd, "~") && !strings.Contains(serverCwd, "${") {
+			definition["cwd"] = filepath.Join(cwd, serverCwd)
+		}
+	}
+	definition["enabled"] = true
+	directory, err := os.MkdirTemp("", "pi-desk-mcp-test-")
 	if err != nil {
 		return domain.McpServerTestResult{}, err
 	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		return domain.McpServerTestResult{}, errors.New("Node.js is required to test MCP servers")
+	defer os.RemoveAll(directory)
+	if err := writeMcpConfig(filepath.Join(directory, "mcp.json"), map[string]any{"mcpServers": map[string]any{name: definition}}); err != nil {
+		return domain.McpServerTestResult{}, err
 	}
-
+	// Use existing OAuth credentials without modifying the user's credential file.
+	auth, err := os.ReadFile(filepath.Join(service.agentDirectory, "mcp-auth.json"))
+	if err == nil {
+		if err := os.WriteFile(filepath.Join(directory, "mcp-auth.json"), auth, 0o600); err != nil {
+			return domain.McpServerTestResult{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.McpServerTestResult{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), mcpTestTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, node, "--input-type=module", "--eval", mcpTestClientScript, clientPackage)
-	processutil.ConfigureBackground(command)
-	command.Stdin = strings.NewReader(definition)
-	if root := service.workspaceRoot(request.WorkspacePath); root != "" {
-		command.Dir = root
-	}
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
 	started := time.Now()
-	if err := command.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return domain.McpServerTestResult{}, fmt.Errorf("MCP connection test timed out after %s", mcpTestTimeout)
-		}
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
-		}
-		return domain.McpServerTestResult{}, fmt.Errorf("MCP connection test failed: %s", message)
-	}
-
-	result := domain.McpServerTestResult{}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return domain.McpServerTestResult{}, fmt.Errorf("read MCP test result: %w", err)
-	}
-	result.DurationMillis = time.Since(started).Milliseconds()
-	return result, nil
-}
-
-func (service *McpConfigService) mcpClientPackageDirectory() (string, error) {
-	if service.agentDirectoryErr != nil {
-		return "", service.agentDirectoryErr
-	}
-	for _, candidate := range []string{
-		filepath.Join(service.agentDirectory, "npm", "node_modules", "@modelcontextprotocol", "client"),
-		filepath.Join(service.agentDirectory, "npm", "node_modules", "pi-mcp-adapter", "node_modules", "@modelcontextprotocol", "client"),
-	} {
-		if info, err := os.Stat(filepath.Join(candidate, "dist", "index.mjs")); err == nil && info.Mode().IsRegular() {
-			return candidate, nil
-		}
-	}
-	return "", errors.New("pi-mcp-adapter is not installed or is incomplete; install or update the MCP connection engine first")
-}
-
-// GetMcpEngineStatus reports whether pi-mcp-adapter is installed as a global
-// Pi package and which shared config files pi-mcp-adapter also reads alongside
-// the Pi-owned global and project override files this service edits.
-func (service *McpConfigService) GetMcpEngineStatus(request domain.McpEngineStatusRequest) (domain.McpEngineStatus, error) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-
-	status := domain.McpEngineStatus{Enabled: true}
-	if service.agentDirectoryErr != nil || strings.TrimSpace(service.agentDirectory) == "" {
-		return status, nil
-	}
-	packages, err := listPiPackages(filepath.Join(filepath.Clean(service.agentDirectory), "settings.json"), domain.PiPackageScopeGlobal)
+	output, err := runPiProbe(ctx, directory, directory, "", "mcp", "list")
 	if err != nil {
-		return domain.McpEngineStatus{}, err
+		return domain.McpServerTestResult{}, fmt.Errorf("MCP connection test failed: %w", err)
 	}
-	for _, pkg := range packages {
-		if strings.Contains(strings.ToLower(pkg.Source), mcpAdapterPackageFragment) {
-			status.Source, status.Installed, status.Enabled = pkg.Source, true, pkg.Enabled
-			break
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		status.ShadowedPaths = appendExistingFiles(status.ShadowedPaths,
-			filepath.Join(home, ".config", "mcp", "mcp.json"),
-			filepath.Join(home, ".agents", "mcp.json"),
-			filepath.Join(home, ".agents", "mcp", "mcp.json"),
-		)
-	}
-	if root := service.workspaceRoot(request.WorkspacePath); root != "" {
-		status.ShadowedPaths = appendExistingFiles(status.ShadowedPaths,
-			filepath.Join(root, ".mcp.json"),
-		)
-	}
-	return status, nil
-}
-
-func (service *McpConfigService) workspaceRoot(workspacePath string) string {
-	if strings.TrimSpace(workspacePath) == "" || service.workspaces == nil {
-		return ""
-	}
-	record, err := service.workspaces.ResolvePath(strings.TrimSpace(workspacePath))
-	if err != nil || record.Location.Kind != workspace.KindLocal {
-		return ""
-	}
-	return record.Path
-}
-
-func appendExistingFiles(paths []string, candidates ...string) []string {
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			paths = append(paths, candidate)
-		}
-	}
-	return paths
+	return domain.McpServerTestResult{Output: output, DurationMillis: time.Since(started).Milliseconds()}, nil
 }
 
 // ListImportableMcpServers scans other hosts' MCP configuration files (JSON
@@ -726,6 +417,9 @@ func (service *McpConfigService) projectDirectory(workspacePath string) (string,
 	if err != nil {
 		return "", err.Error(), false
 	}
+	if record.Location.Kind == workspace.KindSSH {
+		return "", "MCP configuration requires a local workspace", false
+	}
 	if record.Trust != "approve" {
 		return "", "approve this workspace before managing project MCP", false
 	}
@@ -776,9 +470,6 @@ func listMcpServers(path string, scope domain.McpConfigScope) ([]domain.McpServe
 	}
 	result := make([]domain.McpServerSummary, 0, len(servers))
 	for name, definition := range servers {
-		if _, err := validMcpServerName(name); err != nil {
-			continue
-		}
 		if _, ok := definition.(map[string]any); !ok {
 			continue
 		}
@@ -799,7 +490,7 @@ func summarizeMcpServer(scope domain.McpConfigScope, name string, definition any
 	} else if value, ok := entry["socket"].(string); ok && strings.TrimSpace(value) != "" {
 		transport, endpoint = "socket", value
 	}
-	disabled, _ := entry["disabled"].(bool)
+	disabled := entry["enabled"] == false || entry["disabled"] == true
 	return domain.McpServerSummary{Scope: scope, Name: name, Transport: transport, Endpoint: endpoint, Disabled: disabled}
 }
 
@@ -831,8 +522,21 @@ func parseMcpDefinition(content string) (map[string]any, string, error) {
 	if len(definition) == 0 {
 		return nil, "", errors.New("MCP server definition cannot be empty")
 	}
-	if transportCount(definition) != 1 {
-		return nil, "", errors.New("MCP server definition needs exactly one of command, url, or socket")
+	if transportCount(definition) > 1 || definition["socket"] != nil || definition["type"] == "sse" || definition["httpTransport"] == "sse" {
+		return nil, "", errors.New("native Pi MCP needs exactly one of command or url; socket and SSE are unsupported")
+	}
+	if disabled, exists := definition["disabled"]; exists {
+		if _, configured := definition["enabled"]; !configured {
+			definition["enabled"] = disabled != true
+		}
+		delete(definition, "disabled")
+	}
+	if transportCount(definition) == 0 {
+		for key := range definition {
+			if key != "enabled" && key != "exposure" && key != "toolExposure" {
+				return nil, "", errors.New("MCP server needs command or url; project overrides can only set enabled, exposure, and toolExposure")
+			}
+		}
 	}
 	formatted, err := formatMcpDefinition(definition)
 	return definition, formatted, err
@@ -891,10 +595,10 @@ func validMcpServerName(value string) (string, error) {
 		return "", fmt.Errorf("MCP server name must contain 1 to %d characters", maxMcpServerName)
 	}
 	for _, character := range name {
-		if unicode.IsLetter(character) || unicode.IsDigit(character) || character == '-' || character == '_' || character == '.' {
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' || character == '_' {
 			continue
 		}
-		return "", errors.New("MCP server name may contain only letters, numbers, dots, hyphens, and underscores")
+		return "", errors.New("MCP server name may contain only letters, numbers, hyphens, and underscores")
 	}
 	return name, nil
 }

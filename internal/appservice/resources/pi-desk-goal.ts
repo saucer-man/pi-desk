@@ -41,7 +41,9 @@ const RESUMABLE: readonly GoalStatus[] = ["paused", "blocked", "usage_limited", 
 const WIDGET_KEY = "pi-desk-goal";
 const ENTRY_TYPE = "pi-desk-goal";
 const SELF_MARKER = "pi-desk-goal";
+const TODO_SELF_MARKER = "pi-desk-todo";
 const CONTINUATION_MARKER_PREFIX = "<!-- pi-desk-goal:";
+const KEEP_TODO_MARKER = "<!-- pi-desk-keep-todo -->";
 
 const GOAL_COMPLETE_TOOL = "goal_complete";
 const GOAL_BLOCKED_TOOL = "goal_blocked";
@@ -83,13 +85,14 @@ function goalModeRules(): string {
 		"- If a tool fails, try reasonable alternatives instead of yielding early.",
 		"- Before completion, audit requirement by requirement against authoritative evidence; weak, indirect, or missing evidence is not completion.",
 		`- Call ${GOAL_COMPLETE_TOOL} only when evidence proves every requirement is satisfied, passing the exact current goal_id.`,
+		"- Finish every Todo item before marking the goal complete; unfinished items are evidence that work remains.",
 		`- Call ${GOAL_BLOCKED_TOOL} only at a true impasse: the same blocker recurred for at least three consecutive goal turns and only user or external action can resolve it. Never use it merely because the work is hard, slow, or needs ordinary clarification.`,
 		"- Expect automatic continuation when the goal is still incomplete at the end of a turn; finish the current step cleanly instead of stopping mid-work.",
 	].join("\n");
 }
 
-function buildGoalPrompt(goal: GoalState, lead: string): string {
-	return `${lead}\n\n${goalContextBlock(goal)}\n\n${goalModeRules()}\n\n${continuationMarker(goal)}`;
+function buildGoalPrompt(goal: GoalState, lead: string, keepTodo = false): string {
+	return `${lead}\n\n${goalContextBlock(goal)}\n\n${goalModeRules()}\n\n${continuationMarker(goal)}${keepTodo ? `\n${KEEP_TODO_MARKER}` : ""}`;
 }
 
 function continuationMarker(goal: GoalState): string {
@@ -149,10 +152,10 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
-	function sendGoalPrompt(ctx: ExtensionContext, lead: string): void {
+	function sendGoalPrompt(ctx: ExtensionContext, lead: string, keepTodo = false): void {
 		if (!goal) return;
 		try {
-			pi.sendUserMessage(buildGoalPrompt(goal, lead), { deliverAs: "followUp" });
+			pi.sendUserMessage(buildGoalPrompt(goal, lead, keepTodo), { deliverAs: "followUp" });
 		} catch (error) {
 			notify(ctx, `Goal continuation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
@@ -170,6 +173,17 @@ export default function (pi: ExtensionAPI) {
 		runTokensUsed = 0;
 		runUsedTools = false;
 		runFinalStop = {};
+	}
+
+	function unfinishedTodoCount(ctx: ExtensionContext): number {
+		const tool = pi.getAllTools().find((candidate) => candidate.name === "todo");
+		const source = tool?.sourceInfo as { path?: string; source?: string } | undefined;
+		if (!source?.path?.includes(TODO_SELF_MARKER) && !source?.source?.includes(TODO_SELF_MARKER)) return 0;
+		const last = ctx.sessionManager
+			.getEntries()
+			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === "pi-desk-todo")
+			.pop() as { data?: { todos?: Array<{ done?: boolean }> } } | undefined;
+		return last?.data?.todos?.filter((todo) => !todo.done).length ?? 0;
 	}
 
 	function reconstructState(ctx: ExtensionContext): void {
@@ -227,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 				goal.updatedAt = Date.now();
 				persistState();
 				updateWidget(ctx);
-				sendGoalPrompt(ctx, "The user explicitly resumed the paused /goal. Recheck current state and continue working toward this goal:");
+				sendGoalPrompt(ctx, "The user explicitly resumed the paused /goal. Recheck current state and continue working toward this goal:", true);
 				return;
 			}
 			if (command === "clear") {
@@ -280,6 +294,11 @@ export default function (pi: ExtensionAPI) {
 			if (requestedID !== goal.id) {
 				notify(ctx, "Goal completion rejected: goal_id does not match the current goal (stale turn).", "warning");
 				return { content: [{ type: "text" as const, text: "Goal completion rejected: the goal_id does not match the current goal. Re-read the active goal context and retry only if the goal is fully complete." }] };
+			}
+			const unfinishedTodos = unfinishedTodoCount(ctx);
+			if (unfinishedTodos > 0) {
+				notify(ctx, `Goal completion rejected: ${unfinishedTodos} Todo item(s) remain unfinished.`, "warning");
+				return { content: [{ type: "text" as const, text: `Goal completion rejected: finish the remaining ${unfinishedTodos} Todo item(s) before completing the goal.` }] };
 			}
 			goal.status = "complete";
 			goal.iteration += 1;
@@ -353,7 +372,7 @@ export default function (pi: ExtensionAPI) {
 		runFinalStop = { stopReason: message.stopReason, errorMessage: message.errorMessage };
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		// Capture the finished run's totals before resetting the tracker.
 		const goalID = ownedRunGoalID;
 		const runTokens = runTokensUsed;
@@ -366,6 +385,10 @@ export default function (pi: ExtensionAPI) {
 		goal.iteration += 1;
 		goal.updatedAt = Date.now();
 
+		if (event.aborted || finalStop.stopReason === "aborted") {
+			transition(ctx, "paused", "stopped by user");
+			return;
+		}
 		if (finalStop.stopReason === "error") {
 			const message = finalStop.errorMessage ?? "";
 			if (/usage.{0,12}limit|rate.{0,12}limit|quota|429|credit/i.test(message)) {
@@ -391,6 +414,6 @@ export default function (pi: ExtensionAPI) {
 		persistState();
 		updateWidget(ctx);
 		if (ctx.hasPendingMessages()) return;
-		sendGoalPrompt(ctx, `Continue the active /goal until it is complete. This is automatic continuation #${goal.iteration + 1}; the full objective persists across turns, so continue from the authoritative current state:`);
+		sendGoalPrompt(ctx, `Continue the active /goal until it is complete. This is automatic continuation #${goal.iteration + 1}; the full objective persists across turns, so continue from the authoritative current state:`, true);
 	});
 }

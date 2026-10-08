@@ -22,7 +22,7 @@ const progressLabel = computed(() => tr("composer.todoProgress", {
 
 <template>
   <section
-    class="pi-desk-todo-panel composer-stack-panel"
+    class="pi-desk-todo-panel composer-stack-panel !bg-[var(--bg-composer)]"
     :class="[ui.panel, { 'is-collapsed': collapsed, 'is-complete': complete }]"
     :aria-label="progressLabel"
   >

@@ -1,19 +1,31 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { Bot, Check, ChevronRight, CircleCheck, CircleX, Copy, LoaderCircle, SquareTerminal, Wrench } from "lucide-vue-next";
+import { Bot, Check, ChevronRight, CircleCheck, CirclePause, CircleX, Copy, LoaderCircle, MessageSquareOff, SquareTerminal, Wrench } from "lucide-vue-next";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolExecution } from "../stores/app";
 import type { SubagentTaskState } from "../utils/subagentTasks";
 import { tr } from "../i18n";
 import ImagePreviewDialog from "./ImagePreviewDialog.vue";
 
-const props = defineProps<{ tool: ToolExecution }>();
+const props = defineProps<{
+  tool: ToolExecution;
+  contextBusy?: boolean;
+  excludeFromContext?: (entryId: string) => Promise<boolean>;
+}>();
 const copied = ref<"input" | "output" | "">("");
 const open = ref(props.tool.status === "running");
+const confirmingContextExclusion = ref(false);
+const excludingContext = ref(false);
+const contextError = ref("");
 const previewImage = ref<{ name: string; previewUrl: string }>();
 let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
 
 const resultImages = computed(() => props.tool.images ?? []);
+const canExcludeFromContext = computed(() => (
+  Boolean(props.tool.entryId)
+  && !props.tool.contextExcluded
+  && Boolean(props.excludeFromContext)
+));
 
 const inputText = computed(() => {
   if (props.tool.arguments === undefined) return "";
@@ -36,7 +48,7 @@ const summary = computed(() => {
   return `${props.tool.name} ${compact.length > 96 ? `${compact.slice(0, 93)}...` : compact}`;
 });
 
-const statusLabel = computed(() => tr(({ running: "tools.running", complete: "tools.complete", error: "tools.failed" })[props.tool.status]));
+const statusLabel = computed(() => tr(({ running: "tools.running", complete: "tools.complete", error: "tools.failed", unfinished: "tools.incomplete" })[props.tool.status]));
 
 // Subagent calls follow the pi-desktop delegate row language: a bot icon, an
 // agent name chip, and a muted task summary; the expanded body lists each
@@ -103,6 +115,9 @@ watch(() => props.tool.status, (status, previous) => {
   if (status === "running") open.value = true;
   else if (previous === "running") open.value = false;
 });
+watch(() => props.tool.contextExcluded, (excluded) => {
+  if (excluded) confirmingContextExclusion.value = false;
+});
 
 function syncOpen(event: Event) {
   open.value = (event.currentTarget as HTMLDetailsElement).open;
@@ -127,6 +142,26 @@ async function copyText(kind: "input" | "output", text: string) {
   }
 }
 
+function requestContextExclusion() {
+  open.value = true;
+  contextError.value = "";
+  confirmingContextExclusion.value = !confirmingContextExclusion.value;
+}
+
+async function excludeContext() {
+  if (!props.tool.entryId || !props.excludeFromContext || excludingContext.value || props.contextBusy) return;
+  excludingContext.value = true;
+  contextError.value = "";
+  try {
+    if (await props.excludeFromContext(props.tool.entryId)) confirmingContextExclusion.value = false;
+    else contextError.value = tr("conversation.excludeFailed");
+  } catch (error) {
+    contextError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    excludingContext.value = false;
+  }
+}
+
 onBeforeUnmount(() => {
   if (copyResetTimer) clearTimeout(copyResetTimer);
 });
@@ -148,11 +183,40 @@ onBeforeUnmount(() => {
         <span class="tool-status">
           <LoaderCircle v-if="tool.status === 'running'" :size="12" class="is-spinning" aria-hidden="true" />
           <CircleCheck v-else-if="tool.status === 'complete'" :size="12" aria-hidden="true" />
+          <CirclePause v-else-if="tool.status === 'unfinished'" :size="12" aria-hidden="true" />
           <CircleX v-else :size="12" aria-hidden="true" />
           {{ statusLabel }}
         </span>
       </span>
+      <span v-if="tool.contextExcluded" class="tool-context-badge" :title="tr('conversation.excludedFromContext')">
+        <MessageSquareOff :size="12" aria-hidden="true" />
+        {{ tr('conversation.excludedFromContext') }}
+      </span>
+      <button
+        v-else-if="canExcludeFromContext"
+        class="message-action tool-context-action"
+        type="button"
+        :title="tr('conversation.excludeFromContext')"
+        :aria-label="tr('conversation.excludeFromContext')"
+        :disabled="contextBusy || excludingContext"
+        @click.stop.prevent="requestContextExclusion"
+      >
+        <MessageSquareOff :size="13" />
+      </button>
     </summary>
+    <div v-if="confirmingContextExclusion" class="message-delete-confirm tool-context-confirm" role="alert">
+      <span>{{ tr('conversation.excludeToolConfirm') }}</span>
+      <button type="button" @click="confirmingContextExclusion = false; contextError = ''">{{ tr('common.cancel') }}</button>
+      <button type="button" :disabled="contextBusy || excludingContext" :aria-busy="excludingContext" @click="void excludeContext()">
+        <LoaderCircle v-if="excludingContext" :size="12" class="is-spinning" aria-hidden="true" />
+        {{ tr('conversation.exclude') }}
+      </button>
+    </div>
+    <p v-if="contextError" class="error-text tool-context-error" role="alert">{{ contextError }}</p>
+    <div v-if="tool.children?.length || tool.nestedCallsIncomplete" class="tool-section">
+      <p v-if="tool.nestedCallsIncomplete" class="muted">{{ tr("tools.nestedCallsIncomplete") }}</p>
+      <ToolCallPanel v-for="child in tool.children" :key="child.id" :tool="child" />
+    </div>
     <div v-if="tool.diff" class="tool-section tool-diff-section">
       <div class="tool-section-header"><span>{{ tool.diff.path }}</span></div>
       <pre class="tool-diff"><code><span v-for="(line, index) in tool.diff.text.split('\n')" :key="index" class="diff-line" :class="diffLineClass(line)">{{ `${line}\n` }}</span></code></pre>

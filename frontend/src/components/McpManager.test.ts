@@ -5,7 +5,7 @@ import { McpConfigScope } from "../../bindings/pi-desk/internal/domain";
 import { useAppStore, type WorkspaceSummary } from "../stores/app";
 import McpManager from "./McpManager.vue";
 
-const mcpMocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), test: vi.fn(), engineStatus: vi.fn(), importCandidates: vi.fn() }));
+const mcpMocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), test: vi.fn(), importCandidates: vi.fn() }));
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
 vi.mock("../services/modelconfig", () => ({ modelConfigService: { selectable: vi.fn().mockResolvedValue([]) } }));
@@ -70,56 +70,17 @@ describe("McpManager", () => {
     expect(wrapper.get(".mcp-editor-scope").text()).not.toContain("~/.pi/agent/mcp.json");
   });
 
-  it("shows every effective server and config source reported by pi-mcp-adapter", async () => {
-    mcpMocks.list.mockResolvedValue({
-      globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json",
-      projectEnabled: true,
-      projectPath: "D:\\repo\\.pi\\mcp.json",
-      servers: [],
-      effectiveServers: [{
-        scope: McpConfigScope.McpConfigScopeProject, name: "shared", transport: "http", endpoint: "https://example.test/mcp", disabled: false,
-        definition: '{\n  "url": "https://example.test/mcp"\n}\n',
-      }],
-      sources: [
-        { id: "shared-global", label: "user-global standard MCP", path: "C:\\Users\\dev\\.config\\mcp\\mcp.json", exists: true, scope: McpConfigScope.McpConfigScopeGlobal, kind: "shared", serverCount: 1 },
-        { id: "shared-project", label: "project standard MCP", path: "D:\\repo\\.mcp.json", exists: true, scope: McpConfigScope.McpConfigScopeProject, kind: "shared", serverCount: 1 },
-      ],
-    });
-    const wrapper = mountManager([{ id: "repo", name: "repo", path: "D:\\repo", trust: "approve" }]);
-    await flushPromises();
-
-    await wrapper.get('[data-testid="mcp-scope-target"]').setValue("D:\\repo");
-    await flushPromises();
-    expect(wrapper.text()).toContain("Loaded by adapter");
-    expect(wrapper.text()).toContain("shared");
-    await wrapper.get(".mcp-source-group summary").trigger("click");
-    expect(wrapper.text()).toContain("D:\\repo\\.mcp.json");
-    await wrapper.get(".mcp-effective-row").trigger("click");
-    expect(wrapper.get(".mcp-complete-json textarea").attributes("readonly")).toBeDefined();
-    expect(wrapper.find("button[type='submit']").exists()).toBe(false);
-  });
-
   it("does not render connection-engine management on the MCP page", async () => {
     mcpMocks.list.mockResolvedValue({ globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json", servers: [] });
     const wrapper = mountManager();
     await flushPromises();
 
     expect(wrapper.find("[data-testid='mcp-engine']").exists()).toBe(false);
-    expect(mcpMocks.engineStatus).not.toHaveBeenCalled();
   });
 
   it("tests the unsaved definition and shows discovered MCP interfaces", async () => {
     mcpMocks.list.mockResolvedValue({ globalPath: "C:\\Users\\dev\\.pi\\agent\\mcp.json", servers: [] });
-    mcpMocks.test.mockResolvedValue({
-      transport: "http", protocolVersion: "2026-07-28", serverName: "docs", serverVersion: "1.2.0",
-      capabilities: ["tools", "resources"],
-      tools: [
-        { name: "search", description: "Search documentation", inputSchema: '{\n  "type": "object"\n}' },
-        { name: "read", description: "Read a document", inputSchema: "" },
-      ],
-      resources: ["docs://index"], prompts: [],
-      toolCount: 2, resourceCount: 1, promptCount: 0, durationMillis: 38,
-    });
+    mcpMocks.test.mockResolvedValue({ output: "docs: connected\nsearch: Search documentation", durationMillis: 38 });
     const wrapper = mountManager();
     await flushPromises();
 
@@ -133,10 +94,8 @@ describe("McpManager", () => {
     expect(mcpMocks.test).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: "" }));
     expect(JSON.parse(mcpMocks.test.mock.calls[0][0].definition)).toEqual({ url: "https://example.test/mcp", headers: { "X-Test": "draft" } });
     const result = wrapper.get("[data-testid='mcp-test-result']");
-    expect(result.text()).toContain("Connection successful · docs 1.2.0");
+    expect(result.text()).toContain("Connection successful");
     expect(result.text()).toContain("Search documentation");
-    expect(result.text()).toContain("Input schema");
-    expect(result.get("details pre").text()).toContain('"type": "object"');
     expect(wrapper.find(".mcp-editor-footer").exists()).toBe(true);
     expect(mcpMocks.upsert).not.toHaveBeenCalled();
   });

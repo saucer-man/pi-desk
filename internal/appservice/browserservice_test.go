@@ -59,7 +59,7 @@ func TestBrowserConversationIsolationAndConnectionLifetime(t *testing.T) {
 	s.tabs["a"] = a
 	s.tabs["b"] = b
 	s.selected["one"] = "a"
-	for _, action := range []string{"ensure", "call", "inspect", "select", "keep", "close", "cdp", "connect"} {
+	for _, action := range []string{"ensure", "navigate", "call", "inspect", "select", "keep", "close", "cdp", "connect"} {
 		if _, err := s.agentCommand(context.Background(), browser.AgentCommand{ThreadID: "one", Action: action}); err == nil {
 			t.Fatalf("%s fell back to the selected page without tabId", action)
 		}
@@ -67,6 +67,16 @@ func TestBrowserConversationIsolationAndConnectionLifetime(t *testing.T) {
 	_, err := s.agentCommand(context.Background(), browser.AgentCommand{ThreadID: "one", TabID: "b", Action: "select"})
 	if err == nil {
 		t.Fatal("another conversation's tab was accepted")
+	}
+	for _, params := range []string{`{}`, `{"url":"file:///C:/private"}`, `{"url":"javascript:alert(1)"}`, `invalid`} {
+		if _, err := s.agentCommand(context.Background(), browser.AgentCommand{ThreadID: "one", TabID: "a", Action: "navigate", Params: []byte(params)}); err == nil {
+			t.Fatalf("invalid navigation was accepted: %s", params)
+		}
+	}
+	var events []domain.BrowserEvent
+	s.emit = func(event domain.BrowserEvent) { events = append(events, event) }
+	if _, err := s.agentCommand(context.Background(), browser.AgentCommand{ThreadID: "one", TabID: "a", Action: "select"}); err != nil || len(events) != 1 || events[0].Type != "selected" || events[0].TabID != "a" {
+		t.Fatalf("select did not reveal its exact tab: %v %v", events, err)
 	}
 	if err = s.KeepTab("a"); err != nil {
 		t.Fatal(err)

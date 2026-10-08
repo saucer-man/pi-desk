@@ -3,6 +3,7 @@ package sessionindex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -256,7 +257,7 @@ func TestIndexHonorsCancellationAndMissingRoot(t *testing.T) {
 	}
 }
 
-func TestIndexAggregatesPersistedUsageFromActiveBranches(t *testing.T) {
+func TestIndexAggregatesPersistedUsageFromAllBranches(t *testing.T) {
 	root := t.TempDir()
 	workspaceA := filepath.Join(root, "workspace-a")
 	workspaceB := filepath.Join(root, "workspace-b")
@@ -283,13 +284,13 @@ func TestIndexAggregatesPersistedUsageFromActiveBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.Sessions != 2 || all.Messages != 4 || all.UserMessages != 1 || all.AssistantMessages != 2 || all.ToolResults != 1 {
+	if all.Sessions != 2 || all.Messages != 5 || all.UserMessages != 1 || all.AssistantMessages != 3 || all.ToolResults != 1 {
 		t.Fatalf("unexpected message usage: %#v", all)
 	}
-	if all.Tokens != (TokenUsage{Input: 140, Output: 30, CacheRead: 30, CacheWrite: 4, Reasoning: 13, Total: 204}) || math.Abs(all.Cost-0.3) > 1e-9 {
+	if all.Tokens != (TokenUsage{Input: 1040, Output: 120, CacheRead: 30, CacheWrite: 4, Reasoning: 33, Total: 1194}) || math.Abs(all.Cost-10.2) > 1e-9 {
 		t.Fatalf("unexpected token usage: %#v", all)
 	}
-	if len(all.Models) != 2 || all.Models[0].Provider != "openai" || all.Models[0].Model != "gpt-5" || all.Models[0].Tokens.Total != 154 {
+	if len(all.Models) != 3 || all.Models[0].Provider != "openai" || all.Models[0].Model != "old-branch" || all.Models[0].Tokens.Total != 990 {
 		t.Fatalf("unexpected model usage: %#v", all.Models)
 	}
 
@@ -297,7 +298,7 @@ func TestIndexAggregatesPersistedUsageFromActiveBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Sessions != 1 || filtered.Tokens.Total != 154 || len(filtered.Models) != 1 || filtered.Models[0].Model != "gpt-5" {
+	if filtered.Sessions != 1 || filtered.Tokens.Total != 1144 || len(filtered.Models) != 2 || filtered.Models[0].Model != "old-branch" {
 		t.Fatalf("unexpected filtered usage: %#v", filtered)
 	}
 }
@@ -582,6 +583,35 @@ func TestSnapshotIncludesStableEntryIDs(t *testing.T) {
 	}
 	if len(snapshot.Messages) != 1 || json.Unmarshal(snapshot.Messages[0], &message) != nil || message.EntryID != "user-1" || message.Timestamp != "2026-08-10T08:01:00Z" {
 		t.Fatalf("snapshot message = %s", snapshot.Messages)
+	}
+}
+
+func TestSnapshotMarksContextExcludedMessagesAndToolResults(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "context-edits.jsonl")
+	writeSession(t, path, strings.Join([]string{
+		`{"type":"session","version":3,"id":"context-edits","timestamp":"2026-08-10T08:00:00Z","cwd":"D:\\repo"}`,
+		`{"type":"message","id":"user","parentId":null,"message":{"role":"user","content":"Inspect"}}`,
+		`{"type":"message","id":"assistant","parentId":"user","message":{"role":"assistant","content":[{"type":"toolCall","id":"call","name":"read"}]}}`,
+		`{"type":"message","id":"result","parentId":"assistant","message":{"role":"toolResult","toolCallId":"call","content":"Output"}}`,
+		`{"type":"context_edit","id":"exclude-user","parentId":"result","targetId":"user","replacement":null}`,
+		`{"type":"context_edit","id":"exclude-result","parentId":"exclude-user","targetId":"result","replacement":null}`,
+	}, "\n")+"\n")
+
+	snapshot, err := New(root).Snapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Messages) != 3 {
+		t.Fatalf("messages = %s", snapshot.Messages)
+	}
+	for _, position := range []int{0, 2} {
+		var message struct {
+			ContextExcluded bool `json:"piDeskContextExcluded"`
+		}
+		if json.Unmarshal(snapshot.Messages[position], &message) != nil || !message.ContextExcluded {
+			t.Fatalf("message %d = %s", position, snapshot.Messages[position])
+		}
 	}
 }
 
@@ -948,5 +978,84 @@ func TestIndexFileOperationsFollowsActiveBranchAndKeepsEmptyWrites(t *testing.T)
 	}
 	if len(operations) != 1 || operations[0].Path != "kept.md" || !operations[0].Write {
 		t.Fatalf("expected only the active-branch empty write: %#v", operations)
+	}
+}
+
+func TestUsageIncludesToolCacheWarmAndSummaryCosts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	writeSession(t, path, strings.Join([]string{
+		`{"type":"session","version":3,"id":"usage","timestamp":"2026-10-08T08:00:00Z"}`,
+		`{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","provider":"p","model":"m","usage":{"totalTokens":10,"cost":{"total":0.1}}}}`,
+		`{"type":"message","id":"t","parentId":"a","message":{"role":"toolResult","usage":{"totalTokens":20,"cost":{"total":0.2}}}}`,
+		`{"type":"usage","id":"u","parentId":"t","kind":"cache_warm","provider":"p","model":"m","usage":{"totalTokens":30,"cost":{"total":0.3}}}`,
+		`{"type":"compaction","id":"c","parentId":"u","summary":"Summary","usage":{"totalTokens":40,"cost":{"total":0.4}}}`,
+		`{"type":"branch_summary","id":"b","parentId":"c","summary":"Branch","usage":{"totalTokens":50,"cost":{"total":0.5}}}`,
+	}, "\n")+"\n")
+	usage, _, ok := readUsage(path)
+	if !ok || usage.Tokens.Total != 150 || math.Abs(usage.Cost-1.5) > 1e-9 || usage.AssistantMessages != 1 || usage.Messages != 2 || usage.ToolResults != 1 {
+		t.Fatalf("unexpected native usage: %#v", usage)
+	}
+	if len(usage.Models) != 1 || usage.Models[0].Tokens.Total != 40 || usage.Models[0].AssistantMessages != 1 {
+		t.Fatalf("incorrect model attribution: %#v", usage.Models)
+	}
+}
+
+func TestLargeOriginalImageCanBeLoadedAndCounted(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "image.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	image := strings.Repeat("A", 16<<20)
+	writeSession(t, path, `{"type":"session","version":3,"id":"image","timestamp":"2026-10-08T08:00:00Z"}`+"\n"+
+		`{"type":"message","id":"image","parentId":null,"message":{"role":"user","content":[{"type":"image","mimeType":"image/png","data":"`+image+`"}]}}`+"\n"+
+		`{"type":"message","id":"answer","parentId":"image","message":{"role":"assistant","usage":{"totalTokens":17,"cost":{"total":0.1}}}}`+"\n")
+	snapshot, err := New(root).Snapshot(path)
+	if err != nil || len(snapshot.Messages) != 2 {
+		t.Fatalf("large image snapshot: %v, messages=%d", err, len(snapshot.Messages))
+	}
+	usage, _, ok := readUsage(path)
+	if !ok || usage.Tokens.Total != 17 || usage.UserMessages != 1 {
+		t.Fatalf("large image usage: %#v", usage)
+	}
+}
+
+func TestSearchTextOmitsImagesAndInactiveBranches(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "search.jsonl")
+	writeSession(t, path, strings.Join([]string{
+		`{"type":"session","version":3,"id":"search","cwd":` + quote(root) + `}`,
+		`{"type":"message","id":"user","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"visible question"},{"type":"image","data":"SECRET_IMAGE","mimeType":"image/png"}]}}`,
+		`{"type":"message","id":"old","parentId":"user","message":{"role":"assistant","content":"inactive answer"}}`,
+		`{"type":"message","id":"new","parentId":"user","message":{"role":"assistant","content":[{"type":"thinking","thinking":"visible thought"},{"type":"text","text":"visible answer"}]}}`,
+	}, "\n")+"\n")
+	text, count, err := New(root).SearchText(context.Background(), path)
+	if err != nil || count != 2 || !strings.Contains(text, "visible answer") || !strings.Contains(text, "visible thought") || strings.Contains(text, "SECRET_IMAGE") || strings.Contains(text, "inactive") {
+		t.Fatalf("search: %q, %d, %v", text, count, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := New(root).SearchText(ctx, path); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled search: %v", err)
+	}
+}
+func TestMutationPreflightSizeBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := file.Truncate(maxSessionBytes); err != nil {
+		t.Fatal(err)
+	}
+	if reason := MutationError(path); reason != "" {
+		t.Fatal(reason)
+	}
+	if err := file.Truncate(maxSessionBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if reason := MutationError(path); !strings.Contains(reason, "64 MiB") {
+		t.Fatalf("reason: %q", reason)
 	}
 }

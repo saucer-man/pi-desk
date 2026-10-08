@@ -115,6 +115,9 @@ export const agentService = {
   deleteSessionMessage<T>(request: SessionMessageRequest): Promise<T> {
     return AgentService.DeleteSessionMessage(request).then(parseResult<T>);
   },
+  excludeSessionMessageFromContext<T>(request: SessionMessageRequest): Promise<T> {
+    return AgentService.ExcludeSessionMessageFromContext(request).then(parseResult<T>);
+  },
   async exportSession<T>(threadId: string, title: string, directory: string): Promise<T | undefined> {
     const filename = `${title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").trim() || "pi-session"}.html`;
     const outputPath = await Dialogs.SaveFile({

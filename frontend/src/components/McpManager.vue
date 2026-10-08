@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
-import { ArrowLeft, Cable, CheckCircle2, ChevronDown, ChevronRight, Folder, Import, Monitor, Plus, RefreshCw, Save, Search, Trash2, XCircle } from "lucide-vue-next";
+import { ArrowLeft, Cable, ChevronDown, ChevronRight, Folder, Import, Monitor, Plus, RefreshCw, Save, Search, Trash2, XCircle } from "lucide-vue-next";
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { McpConfigScope, type McpEffectiveServer, type McpImportCandidate, type McpServerSummary, type McpServerTestResult } from "../../bindings/pi-desk/internal/domain";
+import { McpConfigScope, type McpImportCandidate, type McpServerSummary, type McpServerTestResult } from "../../bindings/pi-desk/internal/domain";
 import { tr } from "../i18n";
 import { mcpConfigService, type McpConfigSnapshot } from "../services/mcpconfig";
 import { useAppStore } from "../stores/app";
 
-type TransportChoice = "stdio" | "http" | "socket";
+type TransportChoice = "stdio" | "http" | "override";
 type EditorMode = "form" | "json";
 
 const mcpPresets = [
@@ -30,7 +30,6 @@ const notice = ref("");
 const testError = ref("");
 const testResult = ref<McpServerTestResult>();
 const selectedKey = ref("");
-const effectiveSelection = ref(false);
 const deleteArmed = ref(false);
 const savedFingerprint = ref("");
 const savedJsonDocument = ref("");
@@ -54,7 +53,6 @@ const editor = reactive({
   command: "",
   args: "[]",
   url: "",
-  socket: "",
   disabled: false,
   definition: "",
 });
@@ -67,16 +65,9 @@ const allServers = computed(() => snapshot.value?.servers ?? []);
 const globalServers = computed(() => allServers.value.filter((server) => server.scope === McpConfigScope.McpConfigScopeGlobal));
 const projectServers = computed(() => allServers.value.filter((server) => server.scope === McpConfigScope.McpConfigScopeProject));
 const scopeServers = computed(() => activeScope.value === McpConfigScope.McpConfigScopeGlobal ? globalServers.value : projectServers.value);
-const inheritedServers = computed(() => {
-  const ownedNames = new Set(allServers.value.map((server) => server.name));
-  return (snapshot.value?.effectiveServers ?? []).filter((server) => !ownedNames.has(server.name));
-});
-const scopeInheritedServers = computed(() => inheritedServers.value.filter((server) => server.scope === activeScope.value));
-const scopeSources = computed(() => (snapshot.value?.sources ?? []).filter((source) => source.scope === activeScope.value));
 const normalizedQuery = computed(() => searchQuery.value.trim().toLocaleLowerCase());
 const filteredServers = computed(() => scopeServers.value.filter((server) => !normalizedQuery.value || `${server.name} ${server.transport} ${server.endpoint || ""}`.toLocaleLowerCase().includes(normalizedQuery.value)));
-const filteredInheritedServers = computed(() => scopeInheritedServers.value.filter((server) => !normalizedQuery.value || `${server.name} ${server.transport} ${server.endpoint || ""}`.toLocaleLowerCase().includes(normalizedQuery.value)));
-const visibleServerCount = computed(() => scopeServers.value.length + scopeInheritedServers.value.length);
+const visibleServerCount = computed(() => scopeServers.value.length);
 const isExisting = computed(() => Boolean(editor.originalName));
 const dirty = computed(() => fingerprint() !== savedFingerprint.value || (editorMode.value === "json" && jsonDocument.value !== savedJsonDocument.value));
 const importTargetScope = computed(() => activeScope.value === McpConfigScope.McpConfigScopeProject && !snapshot.value?.projectEnabled ? McpConfigScope.McpConfigScopeGlobal : activeScope.value);
@@ -92,10 +83,6 @@ function fingerprint() {
 
 function keyOf(server: Pick<McpServerSummary, "scope" | "name">) {
   return `${server.scope}:${server.name}`;
-}
-
-function effectiveKey(server: Pick<McpEffectiveServer, "name">) {
-  return `effective:${server.name}`;
 }
 
 function candidateKey(candidate: McpImportCandidate) {
@@ -124,8 +111,7 @@ async function changeEditorScope(event: Event) {
 }
 
 function defaultDefinition(transport: TransportChoice) {
-  if (transport === "http") return '{\n  "url": "https://example.com/mcp",\n  "auth": false\n}\n';
-  if (transport === "socket") return '{\n  "socket": "/path/to/mcp.sock"\n}\n';
+  if (transport === "http") return '{\n  "url": "https://example.com/mcp"\n}\n';
   return '{\n  "command": "npx",\n  "args": [\n    "-y",\n    "@example/mcp-server"\n  ]\n}\n';
 }
 
@@ -176,7 +162,6 @@ function resetEditor(scope = activeScope.value) {
   deleteArmed.value = false;
   formError.value = "";
   notice.value = "";
-  effectiveSelection.value = false;
   editor.scope = scope;
   editor.originalName = "";
   editor.name = "";
@@ -184,7 +169,6 @@ function resetEditor(scope = activeScope.value) {
   editor.command = "npx";
   editor.args = '["-y", "@example/mcp-server"]';
   editor.url = "";
-  editor.socket = "";
   editor.disabled = false;
   editor.definition = defaultDefinition("stdio");
   editorMode.value = "form";
@@ -207,10 +191,9 @@ function parseDefinition() {
     if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error();
     editor.command = typeof parsed.command === "string" ? parsed.command : "";
     editor.url = typeof parsed.url === "string" ? parsed.url : "";
-    editor.socket = typeof parsed.socket === "string" ? parsed.socket : "";
     editor.args = JSON.stringify(Array.isArray(parsed.args) ? parsed.args : [], null, 2);
-    editor.disabled = parsed.disabled === true;
-    editor.transport = editor.command ? "stdio" : editor.url ? "http" : editor.socket ? "socket" : "stdio";
+    editor.disabled = parsed.enabled === false || parsed.disabled === true;
+    editor.transport = editor.command ? "stdio" : editor.url ? "http" : "override";
     formError.value = "";
   } catch {
     formError.value = tr("settings.mcpDefinitionInvalid");
@@ -241,9 +224,10 @@ function updateDefinitionFromFields() {
       return;
     }
   } else if (editor.transport === "http") parsed.url = editor.url.trim();
-  else parsed.socket = editor.socket.trim();
-  if (editor.disabled) parsed.disabled = true;
-  else delete parsed.disabled;
+  delete parsed.disabled;
+  if (editor.disabled) parsed.enabled = false;
+  else if (editor.transport === "override") parsed.enabled = true;
+  else delete parsed.enabled;
   editor.definition = `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
@@ -310,7 +294,6 @@ async function selectServer(server: McpServerSummary) {
   formError.value = "";
   notice.value = "";
   deleteArmed.value = false;
-  effectiveSelection.value = false;
   selectedKey.value = keyOf(server);
   try {
     const loaded = await mcpConfigService.get({
@@ -332,38 +315,15 @@ async function selectServer(server: McpServerSummary) {
   }
 }
 
-function selectEffectiveServer(server: McpEffectiveServer) {
-  if (saving.value) return;
-  formError.value = "";
-  notice.value = "";
-  deleteArmed.value = false;
-  effectiveSelection.value = true;
-  selectedKey.value = effectiveKey(server);
-  editor.scope = server.scope;
-  editor.originalName = server.name;
-  editor.name = server.name;
-  editor.definition = server.definition;
-  parseDefinition();
-  editorMode.value = "json";
-  syncJsonDocument();
-  rememberSaved();
-  view.value = "editor";
-}
-
-function selectTransport(event: Event) {
-  editor.transport = (event.target as HTMLSelectElement).value as TransportChoice;
-  updateDefinitionFromFields();
-}
-
 function validForm(includeName = true) {
   formError.value = "";
   if (includeName && !editor.name.trim()) formError.value = tr("settings.mcpNameRequired");
-  else if (includeName && !/^[\p{L}\p{N}_.-]+$/u.test(editor.name.trim())) formError.value = tr("settings.mcpNameInvalid");
+  else if (includeName && !/^[A-Za-z0-9_-]+$/.test(editor.name.trim())) formError.value = tr("settings.mcpNameInvalid");
   else {
     try {
       const definition = JSON.parse(editor.definition) as Record<string, unknown>;
       if (!definition || Array.isArray(definition) || typeof definition !== "object") throw new Error();
-      if (![definition.command, definition.url, definition.socket].some((value) => typeof value === "string" && value.trim())) formError.value = tr("settings.mcpTransportRequired");
+      if (editor.transport !== "override" && ![definition.command, definition.url].some((value) => typeof value === "string" && value.trim())) formError.value = tr("settings.mcpTransportRequired");
     } catch {
       formError.value = tr("settings.mcpDefinitionInvalid");
     }
@@ -379,7 +339,7 @@ async function testServer() {
   testError.value = "";
   testResult.value = undefined;
   try {
-    testResult.value = await mcpConfigService.test({ workspacePath: workspacePath.value, definition: editor.definition });
+    testResult.value = await mcpConfigService.test({ scope: editor.scope, workspacePath: workspacePath.value, name: editor.name || undefined, definition: editor.definition });
   } catch (cause) {
     testError.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -450,8 +410,9 @@ async function toggleServer(server: McpServerSummary) {
   try {
     const loaded = await mcpConfigService.get({ scope: server.scope, workspacePath: workspacePath.value, name: server.name });
     const definition = JSON.parse(loaded.definition) as Record<string, unknown>;
-    if (server.disabled) delete definition.disabled;
-    else definition.disabled = true;
+    delete definition.disabled;
+    if (server.disabled) delete definition.enabled;
+    else definition.enabled = false;
     await mcpConfigService.upsert({ scope: server.scope, workspacePath: workspacePath.value, originalName: server.name, name: server.name, definition: `${JSON.stringify(definition, null, 2)}\n` });
     await loadServers();
   } catch (cause) {
@@ -518,7 +479,7 @@ onMounted(() => {
             <p>{{ tr("settings.mcpImportHint") }}</p>
             <label v-for="candidate in importCandidates" :key="candidateKey(candidate)" class="mcp-import-row">
               <input v-model="picked[candidateKey(candidate)]" type="checkbox" :disabled="isConflicting(candidate)" />
-              <span><strong>{{ candidate.name }}</strong><small>{{ candidate.host }}{{ isConflicting(candidate) ? ` · ${tr("settings.mcpImportConflict")}` : "" }}</small></span>
+              <span><strong>{{ candidate.name }}</strong><small>{{ candidate.host }}{{ isConflicting(candidate) ? ` 路 ${tr("settings.mcpImportConflict")}` : "" }}</small></span>
             </label>
             <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="importBusy || !pickedCount" @click="void importSelected()">{{ importBusy ? tr("settings.mcpImporting") : tr("settings.mcpImportAction", { count: pickedCount }) }}</button>
           </template>
@@ -533,7 +494,7 @@ onMounted(() => {
             <button class="text-button" :class="ui.button" type="button" @click="void toggleImport()"><Import :size="15" />{{ tr("settings.mcpImport") }}</button>
           </div>
         </div>
-        <div v-else-if="!filteredServers.length && !filteredInheritedServers.length" class="settings-empty compact" :class="ui.empty"><Search :size="17" /><span>{{ tr("settings.noResources") }}</span></div>
+        <div v-else-if="!filteredServers.length" class="settings-empty compact" :class="ui.empty"><Search :size="17" /><span>{{ tr("settings.noResources") }}</span></div>
 
         <section v-if="filteredServers.length" class="mcp-server-group" aria-labelledby="mcp-installed-heading">
           <header><h2 id="mcp-installed-heading">{{ tr("settings.mcpInstalled") }}</h2><span>{{ scopeServers.length }}</span></header>
@@ -541,35 +502,13 @@ onMounted(() => {
             <article v-for="server in filteredServers" :key="keyOf(server)" class="mcp-server-row">
               <button class="mcp-server-main" type="button" :disabled="saving" @click="void selectServer(server)">
                 <span class="mcp-server-icon"><Cable :size="17" aria-hidden="true" /><i :class="{ 'is-offline': server.disabled }" aria-hidden="true"></i></span>
-                <span><strong>{{ server.name }}</strong><small>{{ server.transport }}{{ server.endpoint ? ` · ${server.endpoint}` : "" }}</small></span>
+                <span><strong>{{ server.name }}</strong><small>{{ server.transport }}{{ server.endpoint ? ` 路 ${server.endpoint}` : "" }}</small></span>
               </button>
               <button class="mcp-switch" type="button" role="switch" :aria-checked="!server.disabled" :aria-label="server.disabled ? tr('settings.enableMcp') : tr('settings.disableMcp')" :disabled="saving" @click="void toggleServer(server)"><span></span></button>
             </article>
           </div>
         </section>
 
-        <section v-if="filteredInheritedServers.length" class="mcp-server-group" aria-labelledby="mcp-effective-heading">
-          <header><h2 id="mcp-effective-heading">{{ tr("settings.mcpEffective") }}</h2><span>{{ scopeInheritedServers.length }}</span></header>
-          <div class="mcp-server-list">
-            <button v-for="server in filteredInheritedServers" :key="effectiveKey(server)" class="mcp-server-row mcp-effective-row" type="button" @click="selectEffectiveServer(server)">
-              <span class="mcp-server-icon"><Cable :size="17" aria-hidden="true" /><i :class="{ 'is-offline': server.disabled }" aria-hidden="true"></i></span>
-              <span><strong>{{ server.name }}</strong><small>{{ server.transport }}{{ server.endpoint ? ` · ${server.endpoint}` : "" }} · {{ tr("settings.mcpReadOnly") }}</small></span>
-              <ChevronRight :size="16" aria-hidden="true" />
-            </button>
-          </div>
-        </section>
-
-        <details v-if="scopeSources.length" class="mcp-source-group">
-          <summary><span>{{ tr("settings.mcpConfigSources") }} <small>{{ scopeSources.length }}</small></span><ChevronDown :size="16" aria-hidden="true" /></summary>
-          <ul>
-            <li v-for="source in scopeSources" :key="`${source.id}:${source.path}`">
-              <Folder :size="16" aria-hidden="true" />
-              <span><strong>{{ source.label }}</strong><small :title="source.path">{{ source.exists ? tr("settings.mcpSourceServers", { count: source.serverCount }) : tr("settings.mcpSourceMissing") }} · {{ source.path }}</small></span>
-            </li>
-          </ul>
-        </details>
-
-        <p v-if="snapshot?.adapterNotice" class="form-error" role="alert">{{ snapshot.adapterNotice }}</p>
         <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
         <p v-if="notice" class="setting-status" aria-live="polite">{{ notice }}</p>
       </section>
@@ -583,9 +522,9 @@ onMounted(() => {
 
         <section class="mcp-editor-page">
           <header class="mcp-editor-heading">
-            <div><h1>{{ isExisting ? editor.name : tr("settings.newMcpServer") }}</h1><p>{{ effectiveSelection ? tr("settings.mcpEffectiveReadOnly") : tr("settings.mcpEditorHelp") }}</p></div>
+            <div><h1>{{ isExisting ? editor.name : tr("settings.newMcpServer") }}</h1><p>{{ tr("settings.mcpEditorHelp") }}</p></div>
             <div class="mcp-editor-tabs" role="tablist" :aria-label="tr('settings.mcpEditorMode')">
-              <button type="button" role="tab" :aria-selected="editorMode === 'form'" :class="{ 'is-active': editorMode === 'form' }" :disabled="effectiveSelection" @click="setEditorMode('form')">{{ tr("settings.mcpFormView") }}</button>
+              <button type="button" role="tab" :aria-selected="editorMode === 'form'" :class="{ 'is-active': editorMode === 'form' }" @click="setEditorMode('form')">{{ tr("settings.mcpFormView") }}</button>
               <button type="button" role="tab" :aria-selected="editorMode === 'json'" :class="{ 'is-active': editorMode === 'json' }" @click="setEditorMode('json')">JSON</button>
             </div>
           </header>
@@ -596,7 +535,7 @@ onMounted(() => {
               <label class="mcp-scope-picker">
                 <Monitor v-if="editor.scope === McpConfigScope.McpConfigScopeGlobal" :size="15" aria-hidden="true" />
                 <Folder v-else :size="15" aria-hidden="true" />
-                <select :value="editor.scope === McpConfigScope.McpConfigScopeGlobal ? 'global' : workspacePath" :disabled="isExisting || effectiveSelection" @change="void changeEditorScope($event)">
+                <select :value="editor.scope === McpConfigScope.McpConfigScopeGlobal ? 'global' : workspacePath" :disabled="isExisting" @change="void changeEditorScope($event)">
                   <option value="global">{{ tr("settings.mcpUserScope") }}</option>
                   <option v-for="workspace in availableWorkspaces" :key="workspace.id" :value="workspace.path">{{ workspace.name }}</option>
                 </select>
@@ -605,18 +544,16 @@ onMounted(() => {
               <small>{{ scopeHint }}</small>
             </div>
 
-            <fieldset v-if="editorMode === 'form'" class="mcp-form-fields" :disabled="effectiveSelection">
+            <fieldset v-if="editorMode === 'form'" class="mcp-form-fields">
               <div v-if="!isExisting" class="mcp-preset-field">
                 <span>{{ tr("settings.mcpPresets") }}</span>
                 <div><button v-for="preset in mcpPresets" :key="preset.id" :class="ui.button" class="text-button" type="button" :disabled="saving" @click="applyPreset(preset)">{{ preset.id }}</button></div>
               </div>
               <label class="model-field" :class="ui.field"><span>{{ tr("settings.mcpName") }}</span><input :class="ui.input" v-model="editor.name" spellcheck="false" placeholder="my-mcp-server" /></label>
-              <label class="model-field" :class="ui.field"><span>{{ tr("settings.mcpTransport") }}</span><select :class="ui.select" :value="editor.transport" @change="selectTransport"><option value="stdio">stdio</option><option value="http">HTTP</option><option value="socket">socket</option></select></label>
               <label class="mcp-editor-switch"><span><strong>{{ tr("settings.mcpStatus") }}</strong><small>{{ editor.disabled ? tr("settings.mcpDisabled") : tr("settings.mcpEnabled") }}</small></span><input v-model="editor.disabled" type="checkbox" @change="updateDefinitionFromFields" /></label>
               <label v-if="editor.transport === 'stdio'" class="model-field mcp-field-wide" :class="ui.field"><span>{{ tr("settings.mcpCommand") }}</span><input :class="ui.input" v-model="editor.command" spellcheck="false" placeholder="npx" /></label>
               <label v-if="editor.transport === 'stdio'" class="model-field mcp-field-wide" :class="ui.field"><span>{{ tr("settings.mcpArgs") }}</span><input :class="ui.input" v-model="editor.args" spellcheck="false" placeholder='["-y", "package"]' /></label>
               <label v-if="editor.transport === 'http'" class="model-field mcp-field-wide" :class="ui.field"><span>URL</span><input :class="ui.input" v-model="editor.url" spellcheck="false" placeholder="https://example.com/mcp" /></label>
-              <label v-if="editor.transport === 'socket'" class="model-field mcp-field-wide" :class="ui.field"><span>Socket</span><input :class="ui.input" v-model="editor.socket" spellcheck="false" placeholder="/path/to/mcp.sock" /></label>
               <details class="mcp-advanced-field mcp-field-wide">
                 <summary>{{ tr("settings.mcpAdvancedJson") }} <small>{{ tr("settings.optional") }}</small></summary>
                 <label class="model-field" :class="ui.field"><textarea :class="ui.textarea" v-model="editor.definition" :aria-label="tr('settings.mcpAdvancedJson')" spellcheck="false" @blur="parseDefinition" /><small>{{ tr("settings.mcpAdvancedHelp") }}</small></label>
@@ -625,7 +562,7 @@ onMounted(() => {
 
             <label v-else class="mcp-complete-json">
               <span>{{ tr("settings.mcpCompleteConfig") }}</span>
-              <textarea :class="ui.textarea" v-model="jsonDocument" :readonly="effectiveSelection" spellcheck="false" @blur="parseJsonDocument" />
+              <textarea :class="ui.textarea" v-model="jsonDocument" spellcheck="false" @blur="parseJsonDocument" />
               <small>{{ tr("settings.mcpCompleteJsonHelp") }}</small>
             </label>
 
@@ -635,48 +572,19 @@ onMounted(() => {
               <div class="min-w-0"><strong>{{ tr("settings.mcpTestFailed") }}</strong><p class="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed">{{ testError }}</p></div>
             </div>
             <template v-else-if="testResult">
-              <header class="flex min-w-0 items-start gap-2">
-                <CheckCircle2 :size="16" class="mt-0.5 shrink-0 text-[var(--green)]" aria-hidden="true" />
-                <div class="min-w-0 flex-1">
-                  <strong class="block truncate">{{ tr("settings.mcpTestPassed") }}<template v-if="testResult.serverName"> · {{ testResult.serverName }}<template v-if="testResult.serverVersion">{{ ` ${testResult.serverVersion}` }}</template></template></strong>
-                  <small class="text-[var(--text-muted)]">{{ testResult.transport }}<template v-if="testResult.protocolVersion"> · MCP {{ testResult.protocolVersion }}</template> · {{ testResult.durationMillis }} ms</small>
-                </div>
-              </header>
-              <section class="grid min-w-0 gap-2 rounded-md border border-[var(--border)] px-2.5 py-2">
-                <strong class="text-xs font-medium text-[var(--text-secondary)]">{{ tr("settings.mcpTestTools") }} · {{ testResult.toolCount }}</strong>
-                <ul v-if="testResult.tools?.length" class="grid list-none gap-2">
-                  <li v-for="tool in testResult.tools" :key="tool.name" class="min-w-0 rounded-md bg-[var(--bg-workspace)] px-2.5 py-2">
-                    <strong class="block break-words text-sm font-medium">{{ tool.name }}</strong>
-                    <p v-if="tool.description" class="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--text-muted)]">{{ tool.description }}</p>
-                    <details v-if="tool.inputSchema" class="mt-2 text-xs text-[var(--text-secondary)]">
-                      <summary class="cursor-pointer select-none">{{ tr("settings.mcpTestToolInput") }}</summary>
-                      <pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--border)] bg-[var(--bg-code)] p-2 font-mono text-xs leading-relaxed text-[var(--text-code)]">{{ tool.inputSchema }}</pre>
-                    </details>
-                  </li>
-                </ul>
-                <p v-else class="text-xs text-[var(--text-muted)]">{{ tr("settings.mcpTestNone") }}</p>
-              </section>
-              <div class="grid gap-2 sm:grid-cols-2">
-                <div v-for="group in [
-                  { label: tr('settings.mcpTestResources'), count: testResult.resourceCount, values: testResult.resources ?? [] },
-                  { label: tr('settings.mcpTestPrompts'), count: testResult.promptCount, values: testResult.prompts ?? [] },
-                ]" :key="group.label" class="min-w-0 rounded-md border border-[var(--border)] px-2.5 py-2">
-                  <strong class="text-xs font-medium text-[var(--text-secondary)]">{{ group.label }} · {{ group.count }}</strong>
-                  <p class="mt-1 break-words text-xs leading-relaxed text-[var(--text-muted)]">{{ group.values.length ? group.values.join(" · ") : tr("settings.mcpTestNone") }}</p>
-                </div>
-              </div>
-              <p v-if="testResult.capabilities?.length" class="break-words text-xs text-[var(--text-muted)]">{{ tr("settings.mcpTestCapabilities") }}: {{ testResult.capabilities.join(" · ") }}</p>
+              <strong>{{ tr("settings.mcpTestPassed") }} 路 {{ testResult.durationMillis }} ms</strong>
+              <pre class="whitespace-pre-wrap break-words">{{ testResult.output }}</pre>
             </template>
           </section>
           <p class="prompt-reload-note">{{ appStore.activeThread?.started ? tr("settings.mcpRestartNeeded") : tr("settings.mcpReadyOnStart") }}</p>
           <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
           <p v-if="notice" class="setting-status" aria-live="polite">{{ notice }}</p>
           <footer class="mcp-editor-footer">
-            <button v-if="isExisting && !effectiveSelection" class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteServer()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteMcp") : tr("settings.deleteMcp") }}</button>
+            <button v-if="isExisting" class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteServer()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteMcp") : tr("settings.deleteMcp") }}</button>
             <div>
               <button class="text-button" :class="ui.button" type="button" :disabled="saving" @click="closeEditor">{{ tr("common.cancel") }}</button>
               <button class="text-button" :class="ui.button" type="button" :disabled="saving || testing" @click="void testServer()"><RefreshCw v-if="testing" :size="14" class="is-spinning" /><Cable v-else :size="14" />{{ testing ? tr("settings.mcpTesting") : tr("settings.mcpTest") }}</button>
-              <button v-if="!effectiveSelection" class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || testing || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingMcp") : tr("settings.saveMcp") }}</button>
+              <button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || testing || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingMcp") : tr("settings.saveMcp") }}</button>
             </div>
           </footer>
         </form>

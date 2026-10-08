@@ -80,6 +80,14 @@ type Invocation struct {
 	Directory  string
 }
 
+// CommandContext applies the same platform quoting and background flags used by Pi sessions.
+func (invocation Invocation) CommandContext(ctx context.Context) *exec.Cmd {
+	command := exec.CommandContext(ctx, invocation.Executable, invocation.Args...)
+	configureProcess(command)
+	command.Dir = invocation.Directory
+	return command
+}
+
 func NewLocator() *Locator {
 	return &Locator{runner: osCommandRunner{}}
 }

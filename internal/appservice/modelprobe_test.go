@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -341,4 +344,143 @@ func TestDirectModelTestRedactsProviderError(t *testing.T) {
 	if result.OK || !strings.Contains(result.Error, "HTTP 401") || strings.Contains(result.Error, "direct-secret-value") {
 		t.Fatalf("provider error was not safely returned: %#v", result)
 	}
+}
+
+// Opt in with PI_DESK_TEST_NATIVE_PI pointing at the target version's executable directory.
+func TestSavedModelUsesNativePiAuthAndLiteralStdin(t *testing.T) {
+	bin := os.Getenv("PI_DESK_TEST_NATIVE_PI")
+	if bin == "" {
+		t.Skip("set PI_DESK_TEST_NATIVE_PI for native Pi integration")
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PI_DESK_TEST_SECRET", "EXPANDED")
+	prompt := "Return %PI_DESK_TEST_SECRET% literally 中文"
+	var calls atomic.Int32
+	var fail atomic.Bool
+	cancelStarted, cancelStopped := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if fail.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"message":"Authorization: Bearer native-test-key"}}`)
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer native-test-key" || r.Header.Get("X-Pi-Desk-Test") != "native-config" {
+			t.Errorf("wrong native request: %s %#v", r.URL.Path, r.Header)
+		}
+		var payload struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content any    `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		for _, message := range payload.Messages {
+			encoded, _ := json.Marshal(message.Content)
+			if strings.Contains(string(encoded), "CANCEL_NATIVE") {
+				close(cancelStarted)
+				<-r.Context().Done()
+				close(cancelStopped)
+				return
+			}
+		}
+		found := false
+		for _, message := range payload.Messages {
+			encoded, _ := json.Marshal(message.Content)
+			if strings.Contains(string(encoded), prompt) {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("literal stdin prompt was changed")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"test\",\"object\":\"chat.completion.chunk\",\"model\":\"native-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"NATIVE_OK\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"test\",\"object\":\"chat.completion.chunk\",\"model\":\"native-test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	models := map[string]any{"providers": map[string]any{"native-test": map[string]any{
+		"baseUrl": server.URL + "/v1", "api": "openai-completions", "headers": map[string]string{"X-Pi-Desk-Test": "native-config"},
+		"models": []any{map[string]any{"id": "native-test", "name": "Native test", "reasoning": false, "input": []string{"text"}, "contextWindow": 128000, "maxTokens": 100}},
+	}}}
+	data, _ := json.Marshal(models)
+	path := filepath.Join(directory, "models.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "auth.json"), []byte(`{"native-test":{"type":"api_key","key":"native-test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := newModelConfigService(path, nil).TestModel(context.Background(), domain.TestModelConfigRequest{ProviderID: "native-test", ModelID: "native-test", Prompt: prompt})
+	if err != nil || !result.OK || result.Response != "NATIVE_OK" || calls.Load() != 1 {
+		t.Fatalf("native model probe: %#v, calls=%d, err=%v", result, calls.Load(), err)
+	}
+	fail.Store(true)
+	failed, err := newModelConfigService(path, nil).TestModel(context.Background(), domain.TestModelConfigRequest{ProviderID: "native-test", ModelID: "native-test", Prompt: prompt})
+	if err != nil || failed.OK || failed.Error == "" || strings.Contains(failed.Error, "native-test-key") {
+		t.Fatalf("native failure was not safely returned: %#v, %v", failed, err)
+	}
+	fail.Store(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan domain.ModelTestResult, 1)
+	go func() {
+		result, _ := newModelConfigService(path, nil).TestModel(ctx, domain.TestModelConfigRequest{ProviderID: "native-test", ModelID: "native-test", Prompt: "CANCEL_NATIVE"})
+		done <- result
+	}()
+	select {
+	case <-cancelStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel test never reached the provider")
+	}
+	cancel()
+	select {
+	case result := <-done:
+		if result.OK || result.Error == "" {
+			t.Fatalf("cancelled test succeeded: %#v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("native Pi process did not stop after cancellation")
+	}
+	select {
+	case <-cancelStopped:
+	case <-time.After(time.Second):
+		t.Fatal("native provider request was left running")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "sessions")); !os.IsNotExist(err) {
+		t.Fatal("model test persisted a session")
+	}
+}
+
+func TestPiProbeHandlesWindowsShimPathWithSpaces(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows npm shim quoting")
+	}
+	directory := filepath.Join(t.TempDir(), "pi shim with spaces")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "pi.cmd"), []byte("@echo off\r\necho shim-ready\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := runPiProbe(ctx, directory, directory, "literal %stdin%", "--version")
+	if err != nil || strings.TrimSpace(output) != "shim-ready" {
+		t.Fatalf("quoted shim invocation: %q, %v", output, err)
+	}
+	if _, err := runPiProbe(ctx, directory, directory, "", "bad\"argument"); err == nil {
+		t.Fatal("unsafe argument was accepted")
+	}
+	if err := os.WriteFile(filepath.Join(directory, "pi.cmd"), []byte("@echo off\r\nnode -e \"process.stdout.write('x'.repeat(5*1024*1024))\"\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runPiProbe(ctx, directory, directory, "", "--version"); err == nil || !strings.Contains(err.Error(), "4 MiB limit") {
+		t.Fatalf("large native output was not bounded: %v", err)
+	}
+
 }

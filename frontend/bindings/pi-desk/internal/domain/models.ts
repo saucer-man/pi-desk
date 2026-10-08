@@ -157,6 +157,7 @@ export interface DesktopThreadState {
     "status": string;
     "sessionPath"?: string;
     "draft"?: string;
+    "composerJson"?: string;
     "createdAt"?: string;
     "updatedAt"?: string;
     "unread"?: boolean;
@@ -265,6 +266,12 @@ export interface ManagedModel {
     "maxTokens": number;
     "reasoning": boolean;
     "imageInput": boolean;
+    "reserveTokens"?: number | null;
+    "keepRecentTokens"?: number | null;
+    "imageMaxWidth"?: number | null;
+    "imageMaxHeight"?: number | null;
+    "imageMaxBytes"?: number | null;
+    "imageJpegQuality"?: number | null;
     "thinkingLevelMapJson"?: string;
     "compatJson"?: string;
 }
@@ -337,52 +344,14 @@ export enum McpConfigScope {
 };
 
 /**
- * McpConfigSnapshot exposes Pi-owned writable layers plus the effective,
- * read-only configuration resolved by pi-mcp-adapter.
+ * McpConfigSnapshot exposes the native Pi user and trusted-project configuration.
  */
 export interface McpConfigSnapshot {
     "globalPath": string;
     "projectPath"?: string;
     "projectEnabled": boolean;
     "projectNotice"?: string;
-    "adapterNotice"?: string;
     "servers": McpServerSummary[] | null;
-    "effectiveServers": McpEffectiveServer[] | null;
-    "sources": McpConfigSource[] | null;
-}
-
-export interface McpConfigSource {
-    "id": string;
-    "label": string;
-    "path": string;
-    "scope": McpConfigScope;
-    "kind": string;
-    "exists": boolean;
-    "serverCount": number;
-}
-
-export interface McpEffectiveServer {
-    "scope": McpConfigScope;
-    "name": string;
-    "transport": string;
-    "endpoint"?: string;
-    "disabled": boolean;
-    "definition": string;
-}
-
-export interface McpEngineStatus {
-    "source"?: string;
-    "installed": boolean;
-    "enabled": boolean;
-    "shadowedPaths"?: string[] | null;
-}
-
-/**
- * McpEngineStatus describes the pi-mcp-adapter package that connects Pi to MCP
- * servers, plus shared config files the adapter also reads.
- */
-export interface McpEngineStatusRequest {
-    "workspacePath"?: string;
 }
 
 /**
@@ -420,24 +389,8 @@ export interface McpServerSummary {
 }
 
 export interface McpServerTestResult {
-    "transport": string;
-    "protocolVersion"?: string;
-    "serverName"?: string;
-    "serverVersion"?: string;
-    "capabilities": string[] | null;
-    "tools": McpToolDetail[] | null;
-    "resources": string[] | null;
-    "prompts": string[] | null;
-    "toolCount": number;
-    "resourceCount": number;
-    "promptCount": number;
+    "output": string;
     "durationMillis": number;
-}
-
-export interface McpToolDetail {
-    "name": string;
-    "description"?: string;
-    "inputSchema"?: string;
 }
 
 export interface ModelConfigSnapshot {
@@ -906,10 +859,16 @@ export interface SessionNameRequest {
     "name": string;
 }
 
+export interface SessionSearchText {
+    "text": string;
+    "messageCount": number;
+}
+
 export interface SessionSnapshot {
     "messages": json$0.RawMessage[] | null;
     "model"?: SessionModel | null;
     "messageCount": number;
+    "mutationError"?: string;
 }
 
 export interface SessionSnapshotRequest {
@@ -1017,11 +976,14 @@ export interface TerminalWriteRequest {
 }
 
 export interface TestMcpServerRequest {
+    "scope": McpConfigScope;
+    "name"?: string;
     "workspacePath"?: string;
     "definition": string;
 }
 
 export interface TestModelConfigRequest {
+    "providerId"?: string;
     "baseUrl": string;
     "api": string;
     "apiKey"?: string;
@@ -1085,6 +1047,12 @@ export interface UpsertModelConfigRequest {
     "maxTokens": number;
     "reasoning": boolean;
     "imageInput": boolean;
+    "reserveTokens"?: number | null;
+    "keepRecentTokens"?: number | null;
+    "imageMaxWidth"?: number | null;
+    "imageMaxHeight"?: number | null;
+    "imageMaxBytes"?: number | null;
+    "imageJpegQuality"?: number | null;
     "thinkingLevelMapJson"?: string;
     "modelCompatJson"?: string;
 }

@@ -230,7 +230,8 @@ onBeforeUnmount(() => {
           <div class="scheduled-task-title-row">
             <h2>{{ task.name }}</h2>
             <span v-if="task.lastStatus" class="scheduled-task-run-status" :class="task.lastStatus">
-              <CheckCircle2 v-if="task.lastStatus === 'started'" :size="13" />
+              <CheckCircle2 v-if="task.lastStatus === 'completed'" :size="13" />
+              <Clock3 v-else-if="task.lastStatus === 'started'" :size="13" />
               <XCircle v-else :size="13" />
               {{ tr(`scheduledTasks.${task.lastStatus}`) }}
             </span>
@@ -269,7 +270,7 @@ onBeforeUnmount(() => {
             <input type="checkbox" :checked="task.enabled" :disabled="!task.modelProvider || !task.modelId || !task.thinkingLevel" :aria-label="tr('scheduledTasks.enable', { name: task.name })" @change="appStore.toggleScheduledTask(task.id)" />
             <span aria-hidden="true" />
           </label>
-          <button :class="ui.iconButton" type="button" :title="tr('scheduledTasks.runNow')" :aria-label="tr('scheduledTasks.runNow')" :disabled="appStore.scheduledTaskRunningByID[task.id] || !task.modelProvider || !task.modelId || !task.thinkingLevel" @click="void appStore.runScheduledTask(task.id)">
+          <button :class="ui.iconButton" type="button" :title="tr('scheduledTasks.runNow')" :aria-label="tr('scheduledTasks.runNow')" :disabled="appStore.scheduledTaskRunningByID[task.id] || task.lastStatus === 'started' || !task.modelProvider || !task.modelId || !task.thinkingLevel" @click="void appStore.runScheduledTask(task.id)">
             <RotateCcw v-if="appStore.scheduledTaskRunningByID[task.id]" class="is-spinning" :size="16" />
             <Play v-else :size="16" />
           </button>
@@ -497,6 +498,11 @@ onBeforeUnmount(() => {
   gap: var(--space-1);
   color: var(--diff-add-text);
   font-size: calc(11px + var(--font-size-delta));
+}
+
+.scheduled-task-run-status.started,
+.scheduled-task-run-status.cancelled {
+  color: var(--text-secondary);
 }
 
 .scheduled-task-run-status.failed,

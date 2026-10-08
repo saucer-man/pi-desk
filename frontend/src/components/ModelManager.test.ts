@@ -37,6 +37,12 @@ const configured = {
       maxTokens: 16384,
       reasoning: true,
       imageInput: true,
+      reserveTokens: 12000,
+      keepRecentTokens: 24000,
+      imageMaxWidth: 1568,
+      imageMaxHeight: 1568,
+      imageMaxBytes: 524288,
+      imageJpegQuality: 75,
       thinkingLevelMapJson: `{
   "xhigh": "xhigh"
 }`,
@@ -121,6 +127,53 @@ describe("ModelManager", () => {
 
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Thinking level map must be a JSON object");
+  });
+
+  it("edits model compaction and image resize limits", async () => {
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="model-runtime-limits"] summary').trigger("click");
+    expect(wrapper.get('[data-testid="reserve-tokens"]').element).toHaveProperty("value", "12000");
+    expect(wrapper.get('[data-testid="image-jpeg-quality"]').element).toHaveProperty("value", "75");
+    await wrapper.get('[data-testid="reserve-tokens"]').setValue("8192");
+    await wrapper.get('[data-testid="image-max-width"]').setValue("");
+    await wrapper.get('[data-testid="image-jpeg-quality"]').setValue("70");
+    await wrapper.get(".primary-button").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      reserveTokens: 8192,
+      keepRecentTokens: 24000,
+      imageMaxWidth: undefined,
+      imageMaxHeight: 1568,
+      imageMaxBytes: 524288,
+      imageJpegQuality: 70,
+    }));
+  });
+
+  it("rejects invalid model runtime limits before saving", async () => {
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="reserve-tokens"]').setValue("-1");
+    await wrapper.get(".primary-button").trigger("submit");
+    await flushPromises();
+
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("Compaction token limits must be non-negative whole numbers");
+  });
+
+  it("tests an unchanged saved model through its native provider id", async () => {
+    const wrapper = mount(ModelManager, { attachTo: document.body, global: { plugins: [pinia] } });
+    await flushPromises();
+    const button = wrapper.findAll("button").find((item) => item.text() === "Test")!;
+    await button.trigger("click");
+    await flushPromises();
+    document.body.querySelector<HTMLButtonElement>(".model-test-submit")!.click();
+    await flushPromises();
+    expect(mocks.test).toHaveBeenCalledWith(expect.objectContaining({ providerId: "custom-openai", modelId: "gpt-test" }));
+    wrapper.unmount();
   });
 
   it("opens an editable model test dialog and shows the provider response without saving", async () => {

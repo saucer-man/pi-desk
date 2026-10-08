@@ -269,7 +269,7 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session", "--no-extensions"];
+	const args: string[] = ["--mode", "json", "-p", "--no-session", "--no-extensions", "-e", "builtin:mcp", "-e", "builtin:codemode", "-e", "builtin:tool-search", "-e", "builtin:llama.cpp"];
 	const model = agent.model ?? dispatchModel;
 	if (model) args.push("--model", model);
 	if (!agent.model && dispatchThinkingLevel) args.push("--thinking", dispatchThinkingLevel);

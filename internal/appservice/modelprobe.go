@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+
 	"regexp"
 	"sort"
 	"strconv"
@@ -17,6 +19,8 @@ import (
 	"time"
 
 	"pi-desk/internal/domain"
+	"pi-desk/internal/piruntime"
+	"pi-desk/internal/processutil"
 )
 
 const (
@@ -119,6 +123,9 @@ func (service *ModelConfigService) TestModel(parent context.Context, request dom
 	request.APIKey = strings.TrimSpace(request.APIKey)
 	request.ModelID = strings.TrimSpace(request.ModelID)
 	request.Prompt = strings.TrimSpace(request.Prompt)
+	if request.ProviderID != "" {
+		return service.testSavedModel(parent, request)
+	}
 	headers, err := normalizeProviderHeaders(request.Headers)
 	if err != nil {
 		return domain.ModelTestResult{}, err
@@ -183,6 +190,71 @@ func (service *ModelConfigService) TestModel(parent context.Context, request dom
 	result.Response = extractProbeText(decoded, request.API)
 	if result.Response == "" {
 		result.Response = "OK"
+	}
+	return result, nil
+}
+
+// Saved models run through Pi so registry overrides and native credentials match real sessions.
+func (service *ModelConfigService) testSavedModel(parent context.Context, request domain.TestModelConfigRequest) (domain.ModelTestResult, error) {
+	if service.pathErr != nil {
+		return domain.ModelTestResult{}, service.pathErr
+	}
+	if err := validateIdentifier("provider id", request.ProviderID); err != nil {
+		return domain.ModelTestResult{}, err
+	}
+	if err := validateIdentifier("model id", request.ModelID); err != nil {
+		return domain.ModelTestResult{}, err
+	}
+	if request.Prompt == "" || len(request.Prompt) > maxModelTestPromptSize {
+		return domain.ModelTestResult{}, errors.New("model test prompt is empty or too large")
+	}
+	directory, err := os.MkdirTemp("", "pi-desk-model-test-")
+	if err != nil {
+		return domain.ModelTestResult{}, err
+	}
+	defer os.RemoveAll(directory)
+	ctx, cancel := context.WithTimeout(parent, modelProbeTimeout)
+	defer cancel()
+	started := time.Now()
+	output, runErr := runPiProbe(ctx, directory, filepath.Dir(service.modelsPath), request.Prompt,
+		"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-tools", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-approve", "--offline", "--model", request.ProviderID+"/"+request.ModelID)
+	result := domain.ModelTestResult{LatencyMS: time.Since(started).Milliseconds()}
+	if runErr != nil {
+		result.Error = redactProbeText(runErr.Error(), request.APIKey)
+		return result, nil
+	}
+	for _, line := range strings.Split(output, "\n") {
+		var event struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role       string `json:"role"`
+				StopReason string `json:"stopReason"`
+				Error      string `json:"errorMessage"`
+				Content    []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &event) != nil || event.Type != "message_end" || event.Message.Role != "assistant" {
+			continue
+		}
+		if event.Message.StopReason == "error" || event.Message.StopReason == "aborted" {
+			result.Error = redactProbeText(event.Message.Error, request.APIKey)
+			if result.Error == "" {
+				result.Error = "Pi model test ended without a response"
+			}
+			return result, nil
+		}
+		for _, part := range event.Message.Content {
+			if part.Type == "text" {
+				result.Response += part.Text
+			}
+		}
+		result.OK = true
+	}
+	if !result.OK {
+		result.Error = "Pi did not return an assistant response"
 	}
 	return result, nil
 }
@@ -746,4 +818,52 @@ func joinURLPath(base string, parts ...string) string {
 		return "/"
 	}
 	return strings.ReplaceAll(path, "//", "/")
+}
+
+// runPiProbe uses Pi's runtime and credentials, with an isolated working directory.
+func runPiProbe(ctx context.Context, directory, agentDirectory, input string, args ...string) (string, error) {
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "%\"\r\n\x00") {
+			return "", errors.New("Pi test argument contains unsupported characters")
+		}
+	}
+	invocation, err := piruntime.NewLocator().Invocation(args...)
+	if err != nil {
+		return "", err
+	}
+	command := invocation.CommandContext(ctx)
+	command.Cancel = func() error { return processutil.TerminateTree(command) }
+	command.WaitDelay = time.Second
+	command.Dir = directory
+	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+agentDirectory)
+	command.Stdin = strings.NewReader(input)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	defer stdout.Close()
+	command.Stderr = command.Stdout
+	if err := command.Start(); err != nil {
+		return "", err
+	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxProbeBodyBytes+1))
+	tooLarge := len(output) > maxProbeBodyBytes
+	if tooLarge || readErr != nil {
+		_ = processutil.TerminateTree(command)
+	}
+	err = command.Wait()
+	text := strings.TrimSpace(strings.ToValidUTF8(string(output), "?"))
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if tooLarge {
+		return "", errors.New("Pi test output exceeds the 4 MiB limit")
+	}
+	if readErr != nil {
+		return "", readErr
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", boundedText(text, 4000), err)
+	}
+	return text, nil
 }

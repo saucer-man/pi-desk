@@ -37,6 +37,13 @@ func TestNativeWebViewIntegration(t *testing.T) {
 	}
 	defer windows.CoUninitialize()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slowheaders" {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if r.URL.Path == "/frame" {
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprint(w, `<input id="nested"><button onclick="fetch('/api')">Frame fetch</button>`)
@@ -93,7 +100,7 @@ func TestNativeWebViewIntegration(t *testing.T) {
 			return
 		}
 		t.Logf("native CDP target resolved without remote port: %s", targetID)
-		if _, _, err := ReadPortFile(filepath.Join(host.profile, "EBWebView")); err == nil {
+		if _, err := os.Stat(filepath.Join(host.profile, "EBWebView", "DevToolsActivePort")); !os.IsNotExist(err) {
 			results <- fmt.Errorf("embedded WebView exposed a raw debugging port")
 			return
 		}
@@ -242,6 +249,18 @@ func TestNativeWebViewIntegration(t *testing.T) {
 				}
 				if c.Action == "ensure" {
 					return map[string]string{"tabId": c.TabID}, nil
+				}
+				if c.Action == "select" {
+					return true, nil
+				}
+				if c.Action == "navigate" {
+					var params struct {
+						URL string `json:"url"`
+					}
+					if json.Unmarshal(c.Params, &params) != nil {
+						return nil, fmt.Errorf("invalid navigation")
+					}
+					return true, page.Navigate(ctx, params.URL)
 				}
 				if c.Action == "inspect" {
 					if c.Method == "stop" {

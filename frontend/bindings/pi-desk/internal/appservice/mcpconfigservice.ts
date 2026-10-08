@@ -3,7 +3,7 @@
 
 /**
  * McpConfigService edits Pi's global and trusted-workspace MCP configuration.
- * Imported host configurations remain outside Pi Desk's writable surface.
+ * Connection handling is delegated to the native Pi CLI.
  * @module
  */
 
@@ -17,15 +17,6 @@ import * as domain$0 from "../domain/models.js";
 
 export function DeleteMcpServer(request: domain$0.McpServerRequest): $CancellablePromise<void> {
     return $Call.ByID(1555823142, request);
-}
-
-/**
- * GetMcpEngineStatus reports whether pi-mcp-adapter is installed as a global
- * Pi package and which shared config files pi-mcp-adapter also reads alongside
- * the Pi-owned global and project override files this service edits.
- */
-export function GetMcpEngineStatus(request: domain$0.McpEngineStatusRequest): $CancellablePromise<domain$0.McpEngineStatus> {
-    return $Call.ByID(2796697444, request);
 }
 
 export function GetMcpServer(request: domain$0.McpServerRequest): $CancellablePromise<domain$0.McpServer> {
@@ -45,8 +36,7 @@ export function ListMcpServers(request: domain$0.ListMcpServersRequest): $Cancel
 }
 
 /**
- * TestMcpServer starts the current editor definition without saving it, then
- * asks the same MCP client library used by pi-mcp-adapter for server metadata.
+ * TestMcpServer checks an unsaved definition using Pi's native MCP client.
  */
 export function TestMcpServer(request: domain$0.TestMcpServerRequest): $CancellablePromise<domain$0.McpServerTestResult> {
     return $Call.ByID(3051223387, request);

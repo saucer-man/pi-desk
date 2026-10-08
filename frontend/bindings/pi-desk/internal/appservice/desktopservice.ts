@@ -21,6 +21,10 @@ export function CheckRuntime(): $CancellablePromise<domain$0.PiRuntimeStatus> {
     return $Call.ByID(4290148594);
 }
 
+export function ExportDiagnostics(outputPath: string): $CancellablePromise<void> {
+    return $Call.ByID(853807372, outputPath);
+}
+
 export function GetBootstrapState(): $CancellablePromise<domain$0.BootstrapState> {
     return $Call.ByID(3493914889);
 }

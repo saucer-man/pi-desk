@@ -1,9 +1,16 @@
 package appservice
 
 import (
+	"archive/zip"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -84,18 +91,18 @@ func TestCheckRuntimeAllowsColdWindowsNPMShim(t *testing.T) {
 func TestCheckForUpdates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"tag_name":"1.1.0","html_url":"https://example.com/releases/1.1.0","body":"Bug fixes"}`))
+		_, _ = response.Write([]byte(`{"tag_name":"1.3.0","html_url":"https://example.com/releases/1.3.0","body":"Bug fixes"}`))
 	}))
 	defer server.Close()
 	service := NewDesktopService(fakeProber{}, nil)
 	service.updateURL = server.URL
 	result := service.CheckForUpdates()
-	if result.Status != "available" || result.LatestVersion != "1.1.0" || result.URL == "" {
+	if result.Status != "available" || result.LatestVersion != "1.3.0" || result.URL == "" {
 		t.Fatalf("unexpected available update: %#v", result)
 	}
 
 	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		_, _ = response.Write([]byte(`{"version":"1.0.3"}`))
+		_, _ = response.Write([]byte(`{"version":"1.2.0"}`))
 	})
 	result = service.CheckForUpdates()
 	if result.Status != "current" {
@@ -113,7 +120,7 @@ func TestCheckForUpdatesRejectsRemoteHTTP(t *testing.T) {
 }
 
 func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
-	manifest := `{"version":"1.0.3-beta.1"}`
+	manifest := `{"version":"1.2.0-beta.1"}`
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write([]byte(manifest))
 	}))
@@ -124,12 +131,106 @@ func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
 	if result := service.CheckForUpdates(); result.Status != "current" {
 		t.Fatalf("expected an older prerelease to be current, got %#v", result)
 	}
-	manifest = `{"version":"1.0.4-beta.1"}`
+	manifest = `{"version":"1.2.1-beta.1"}`
 	if result := service.CheckForUpdates(); result.Status != "available" {
 		t.Fatalf("expected a newer prerelease to be available, got %#v", result)
 	}
 	manifest = `{"version":"release-next"}`
 	if result := service.CheckForUpdates(); result.Status != "error" {
 		t.Fatalf("expected an invalid semantic version error, got %#v", result)
+	}
+}
+
+func TestExportDiagnosticsRedactsCredentials(t *testing.T) {
+	agentDirectory := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", agentDirectory)
+	settings := `{"defaultModel":"gpt-test","httpProxy":"https://user:proxy-secret@example.com","packages":[{"source":"https://token:secret@example.com/pkg"}]}`
+	models := `{"providers":{"custom":{"baseUrl":"https://user:pass@gateway.example.com/v1?token=query-secret","apiKey":"sk-secret","headers":{"Authorization":"Bearer header-secret"},"future":"provider-future-secret","models":[{"id":"gpt-test","maxTokens":16000,"future":"model-future-secret"}]}}}`
+	if err := os.WriteFile(filepath.Join(agentDirectory, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDirectory, "models.json"), []byte(models), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDirectory, "mcp.json"), []byte(`{"mcpServers":{"private":{"env":{"TOKEN":"mcp-secret"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewDesktopService(fakeProber{status: domain.PiRuntimeStatus{State: domain.RuntimeReady, Version: "0.87.0"}})
+	outputPath := filepath.Join(t.TempDir(), "pi-desk-diagnostics.zip")
+	if err := service.ExportDiagnostics(outputPath); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.OpenReader(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	entries := map[string]string{}
+	for _, file := range reader.File {
+		stream, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(stream)
+		_ = stream.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[file.Name] = string(content)
+	}
+	for _, name := range []string{"README.txt", "diagnostics.json", "config/settings.json", "config/models.json"} {
+		if entries[name] == "" {
+			t.Fatalf("missing diagnostic entry %s: %#v", name, entries)
+		}
+	}
+	all := strings.Join([]string{entries["config/settings.json"], entries["config/models.json"]}, "\n")
+	for _, secret := range []string{"proxy-secret", "query-secret", "sk-secret", "header-secret", "mcp-secret", "user:pass", "token:secret", "provider-future-secret", "model-future-secret"} {
+		if strings.Contains(all, secret) {
+			t.Fatalf("diagnostic bundle leaked %q:\n%s", secret, all)
+		}
+	}
+	if !strings.Contains(all, "gpt-test") || !strings.Contains(all, `"apiKeyConfigured": true`) {
+		t.Fatalf("sanitized configuration is incomplete:\n%s", all)
+	}
+	if !strings.Contains(entries["diagnostics.json"], `"version": "0.87.0"`) || !strings.Contains(entries["diagnostics.json"], "mcp.json") {
+		t.Fatalf("diagnostic report is incomplete:\n%s", entries["diagnostics.json"])
+	}
+}
+
+func TestExportDiagnosticsRejectsUnsafeOutputPath(t *testing.T) {
+	service := NewDesktopService(fakeProber{})
+	for _, path := range []string{"relative.zip", filepath.Join(t.TempDir(), "diagnostics.txt")} {
+		if err := service.ExportDiagnostics(path); err == nil {
+			t.Fatalf("expected output path rejection for %s", path)
+		}
+	}
+}
+
+func TestRecentDiagnosticOperationsBoundedAndRedacted(t *testing.T) {
+	recentOperations.Lock()
+	recentOperations.entries = nil
+	recentOperations.Unlock()
+	for i := 0; i < 105; i++ {
+		beginDiagnosticOperation("pi/get_state")(nil)
+	}
+	finish := beginDiagnosticOperation("browser/navigate")
+	entries := diagnosticOperations()
+	if len(entries) != 100 || entries[len(entries)-1].Stage != "running" {
+		t.Fatalf("running entries: %#v", entries)
+	}
+	finish(context.DeadlineExceeded)
+	beginDiagnosticOperation("pi/prompt")(errors.New("SECRET_API_KEY prompt and cookies"))
+	beginDiagnosticOperation("browser/call")(context.Canceled)
+	beginDiagnosticOperation("https://secret.example/?token=SECRET")(nil)
+	entries = diagnosticOperations()
+	if entries[96].Stage != "timeout" || entries[97].Stage != "failed" || entries[98].Stage != "cancelled" || entries[99].Operation != "unknown" {
+		t.Fatalf("outcomes: %#v", entries[96:])
+	}
+	content, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "SECRET") || strings.Contains(string(content), "cookies") {
+		t.Fatal("diagnostic leaked raw error or arguments")
 	}
 }

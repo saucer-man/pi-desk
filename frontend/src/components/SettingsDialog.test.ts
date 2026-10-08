@@ -6,7 +6,7 @@ import { useAppStore } from "../stores/app";
 import SettingsDialog from "./SettingsDialog.vue";
 
 const modelConfigMocks = vi.hoisted(() => ({ selectable: vi.fn() }));
-const desktopMocks = vi.hoisted(() => ({ getBootstrapState: vi.fn(), maintainPi: vi.fn() }));
+const desktopMocks = vi.hoisted(() => ({ getBootstrapState: vi.fn(), maintainPi: vi.fn(), exportDiagnostics: vi.fn() }));
 
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
@@ -14,8 +14,8 @@ vi.mock("../services/desktop", () => desktopMocks);
 vi.mock("../services/modelconfig", () => ({ modelConfigService: { selectable: modelConfigMocks.selectable } }));
 vi.mock("../services/prompts", () => ({ promptTemplateService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn() } }));
 vi.mock("../services/skills", () => ({ managedSkillService: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
-vi.mock("../services/extensions", () => ({ piExtensionService: { list: vi.fn().mockResolvedValue({ extensions: [], todo: {} }), installTodo: vi.fn(), removeTodo: vi.fn() } }));
-vi.mock("../services/mcpconfig", () => ({ mcpConfigService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), engineStatus: vi.fn(), importCandidates: vi.fn() } }));
+vi.mock("../services/extensions", () => ({ piExtensionService: { list: vi.fn().mockResolvedValue({ extensions: [], todo: {}, goal: {}, computerUse: {}, subagents: {}, browser: {} }), installTodo: vi.fn(), removeTodo: vi.fn() } }));
+vi.mock("../services/mcpconfig", () => ({ mcpConfigService: { list: vi.fn(), get: vi.fn(), upsert: vi.fn(), delete: vi.fn(), importCandidates: vi.fn() } }));
 vi.mock("../services/repository", () => ({ repositoryService: {} }));
 
 describe("SettingsDialog", () => {
@@ -203,6 +203,27 @@ describe("SettingsDialog", () => {
     expect(desktopMocks.maintainPi).toHaveBeenCalledWith("update-self");
     expect(store.bootstrap?.runtime.version).toBe("0.85.0");
     expect(wrapper.text()).toContain("updated");
+  });
+
+  it("exports a diagnostic bundle with completion feedback", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.$patch({
+      bootstrap: {
+        productName: "Pi Desk", appVersion: "1.0.3", wailsVersion: "v3", workingDirectory: "D:\\repo",
+        runtime: { state: RuntimeState.RuntimeReady, command: "C:\\tools\\pi.cmd", version: "0.87.0" },
+        window: { x: 0, y: 0, width: 1000, height: 700, maximized: false, valid: true },
+      },
+    });
+    desktopMocks.exportDiagnostics.mockResolvedValue("D:\\repo\\pi-desk-diagnostics.zip");
+    const wrapper = mount(SettingsDialog, { global: { plugins: [pinia] } });
+
+    await wrapper.get('[data-testid="diagnostics-export-row"] button').trigger("click");
+    await flushPromises();
+
+    expect(desktopMocks.exportDiagnostics).toHaveBeenCalledWith("D:\\repo");
+    expect(wrapper.get('[data-testid="diagnostics-export-row"]').text()).toContain("Saved to D:\\repo\\pi-desk-diagnostics.zip");
   });
 
   it("does not update Pi while a task is actively running", async () => {

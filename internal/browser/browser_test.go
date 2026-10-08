@@ -3,10 +3,8 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,29 +111,6 @@ func TestScreencastAcknowledgementsHaveDistinctCommandIDs(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("screencast acknowledgement did not arrive")
 		}
-	}
-}
-
-func TestReadPortFile(t *testing.T) {
-	t.Parallel()
-	directory := t.TempDir()
-	if _, _, err := ReadPortFile(directory); !errors.Is(err, ErrBrowserNotRunning) {
-		t.Fatalf("expected ErrBrowserNotRunning for a missing port file, got %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(directory, portFileName), []byte("0\n/devtools/browser/x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ReadPortFile(directory); err == nil {
-		t.Fatal("expected port 0 to be rejected")
-	}
-
-	if err := os.WriteFile(filepath.Join(directory, portFileName), []byte("9223\n/devtools/browser/guid"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	port, wsPath, err := ReadPortFile(directory)
-	if err != nil || port != 9223 || wsPath != "/devtools/browser/guid" {
-		t.Fatalf("unexpected port file parse: port=%d path=%q err=%v", port, wsPath, err)
 	}
 }
 

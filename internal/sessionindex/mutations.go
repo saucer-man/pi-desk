@@ -406,6 +406,77 @@ func (index *Index) RewindBefore(path, entryID string) (Mutation, error) {
 	})
 }
 
+// ExcludeMessageFromContext appends Pi's native context_edit entry while
+// retaining the original transcript entry for display and later inspection.
+func (index *Index) ExcludeMessageFromContext(path, entryID string) (Mutation, error) {
+	return index.mutateMessage(path, entryID, func(lines []json.RawMessage, _ int, entry map[string]json.RawMessage) ([]json.RawMessage, error) {
+		role := entryRole(entry)
+		if role != "user" && role != "assistant" && role != "toolResult" {
+			return nil, errors.New("only user, assistant, and tool result messages can be excluded from context")
+		}
+		type relationship struct {
+			Type        string          `json:"type"`
+			ID          string          `json:"id"`
+			ParentID    *string         `json:"parentId"`
+			TargetID    string          `json:"targetId"`
+			Replacement json.RawMessage `json:"replacement"`
+		}
+		entries := make(map[string]relationship, len(lines))
+		leafID := ""
+		for _, line := range lines[1:] {
+			var item relationship
+			if err := json.Unmarshal(line, &item); err != nil {
+				return nil, err
+			}
+			entries[item.ID] = item
+			leafID = item.ID
+		}
+		branch := make([]relationship, 0, len(entries))
+		seen := make(map[string]struct{}, len(entries))
+		for current := leafID; current != ""; {
+			if _, duplicate := seen[current]; duplicate {
+				return nil, errors.New("session branch contains a parent cycle")
+			}
+			item, exists := entries[current]
+			if !exists {
+				return nil, errors.New("session branch contains a missing parent")
+			}
+			seen[current] = struct{}{}
+			branch = append(branch, item)
+			if item.ParentID == nil {
+				break
+			}
+			current = *item.ParentID
+		}
+		if _, active := seen[entryID]; !active {
+			return nil, errors.New("message is not on the active session branch")
+		}
+		excluded := false
+		for position := len(branch) - 1; position >= 0; position-- {
+			item := branch[position]
+			if item.Type == "context_edit" && item.TargetID == entryID {
+				excluded = bytes.Equal(bytes.TrimSpace(item.Replacement), []byte("null"))
+			}
+		}
+		if excluded {
+			return nil, errors.New("message is already excluded from context")
+		}
+		id, err := randomSessionID()
+		if err != nil {
+			return nil, err
+		}
+		contextEdit, err := json.Marshal(map[string]any{
+			"type": "context_edit", "id": id, "parentId": leafID,
+			"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+			"targetId":  entryID, "replacement": nil,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode context edit: %w", err)
+		}
+		return append(lines, contextEdit), nil
+	})
+}
+
 // DeleteMessage removes one entry and reconnects each direct child to the
 // deleted entry's parent. This preserves later branches without introducing a
 // non-Pi tombstone entry into the session tree.
@@ -459,7 +530,7 @@ func (index *Index) DeleteMessage(path, entryID string) (Mutation, error) {
 				_ = json.Unmarshal(child["type"], &kind)
 				_ = json.Unmarshal(child["targetId"], &targetID)
 				_, targetRemoved := removeIDs[targetID]
-				remove := kind == "label" && targetRemoved
+				remove := (kind == "label" || kind == "context_edit") && targetRemoved
 				if entryRole(child) == "toolResult" {
 					for ancestor := childParent; ancestor != ""; ancestor = parents[ancestor] {
 						if _, removed := removeIDs[ancestor]; removed {
