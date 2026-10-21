@@ -90,9 +90,16 @@ func (catalog *Catalog) RegisterTarget(registration TargetRegistration) (TargetR
 		targets[index].HostKey = candidate.HostKey
 		targets[index].Name = candidate.Name
 		targets[index].LastConnectedAt = now
-		if err := catalog.saveStateLocked(catalog.records, targets, catalog.desktop); err != nil {
+		records := slices.Clone(catalog.records)
+		for recordIndex := range records {
+			if records[recordIndex].Location.Kind == KindSSH && records[recordIndex].Location.SSH.TargetID == targets[index].ID {
+				records[recordIndex].Location.SSH.HostKeyBinding = candidate.HostKey
+			}
+		}
+		if err := catalog.saveStateLocked(records, targets, catalog.desktop); err != nil {
 			return TargetRecord{}, err
 		}
+		catalog.records = records
 		catalog.targets = targets
 		return targets[index], nil
 	}

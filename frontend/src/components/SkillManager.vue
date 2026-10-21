@@ -15,6 +15,7 @@ const loadError = ref("");
 const formError = ref("");
 const notice = ref("");
 const selectedKey = ref("");
+let skillSelectionRequest = 0;
 const deleteArmed = ref(false);
 const savedContent = ref("");
 const createDialog = ref(false);
@@ -39,12 +40,14 @@ const projectSkills = computed(() => skills.value.filter((skill) => skill.scope 
 const runtimeSkills = computed(() => appStore.activeCommands.filter((command) => command.source === "skill"));
 const dirty = computed(() => editor.content !== savedContent.value);
 const isExisting = computed(() => Boolean(editor.relativePath));
+const readOnly = computed(() => skills.value.find((skill) => keyOf(skill) === selectedKey.value)?.readOnly ?? false);
 
 function keyOf(skill: Pick<ManagedSkillSummary, "scope" | "rootDirectory" | "relativePath">) {
   return `${skill.scope}:${skill.rootDirectory}:${skill.relativePath}`;
 }
 
 function resetEditor() {
+  skillSelectionRequest++;
   selectedKey.value = "";
   deleteArmed.value = false;
   formError.value = "";
@@ -74,10 +77,10 @@ async function loadSkills(preferredKey = selectedKey.value) {
 
 async function selectSkill(skill: ManagedSkillSummary) {
   if (saving.value) return;
+  const request = ++skillSelectionRequest;
   formError.value = "";
   notice.value = "";
   deleteArmed.value = false;
-  selectedKey.value = keyOf(skill);
   try {
     const loaded = await managedSkillService.get({
       scope: skill.scope,
@@ -85,13 +88,15 @@ async function selectSkill(skill: ManagedSkillSummary) {
       rootDirectory: skill.rootDirectory,
       relativePath: skill.relativePath,
     });
+    if (request !== skillSelectionRequest || saving.value) return;
+    selectedKey.value = keyOf(skill);
     editor.scope = loaded.scope;
     editor.relativePath = loaded.relativePath;
     editor.name = loaded.name;
     editor.content = loaded.content;
     savedContent.value = loaded.content;
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : String(cause);
+    if (request === skillSelectionRequest && !saving.value) formError.value = cause instanceof Error ? cause.message : String(cause);
   }
 }
 
@@ -133,7 +138,7 @@ async function createSkill() {
 }
 
 async function saveSkill() {
-  if (!isExisting.value || saving.value || !editor.content.trim()) return;
+  if (!isExisting.value || readOnly.value || saving.value || !editor.content.trim()) return;
   saving.value = true;
   formError.value = "";
   notice.value = "";
@@ -159,7 +164,7 @@ async function saveSkill() {
 }
 
 async function deleteSkill() {
-  if (!isExisting.value || saving.value) return;
+  if (!isExisting.value || readOnly.value || saving.value) return;
   if (!deleteArmed.value) {
     deleteArmed.value = true;
     window.setTimeout(() => { deleteArmed.value = false; }, 5000);
@@ -216,10 +221,11 @@ onMounted(() => { void loadSkills(); });
       <form v-if="isExisting" class="prompt-editor flex flex-col" :class="ui.managerEditor" @submit.prevent="void saveSkill()">
         <div class="model-editor-title"><div><strong>{{ editor.name }}</strong><small>{{ (snapshot?.skills ?? []).find((skill) => keyOf(skill) === selectedKey)?.rootDirectory }}</small></div><span v-if="dirty" class="model-dirty">{{ tr("settings.unsaved") }}</span></div>
         <p class="skill-directory"><strong>{{ tr("settings.skillDirectory") }}</strong><code>{{ editor.relativePath }}</code></p>
-        <label class="model-field min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]" :class="ui.field"><span>{{ tr("settings.skillContent") }}</span><textarea class="h-full min-h-0 resize-none" :class="ui.textarea" v-model="editor.content" spellcheck="false" /></label>
+        <p v-if="readOnly" class="settings-inline-note" role="status">{{ tr("settings.sharedProjectSkillReadonly") }}</p>
+        <label class="model-field min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]" :class="ui.field"><span>{{ tr("settings.skillContent") }}</span><textarea class="h-full min-h-0 resize-none" :class="ui.textarea" v-model="editor.content" :readonly="readOnly" spellcheck="false" /></label>
         <p v-if="formError" class="form-error">{{ formError }}</p>
         <p v-if="notice" class="setting-status">{{ notice }}</p>
-        <footer class="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-2 border-t border-[var(--border)] bg-[var(--bg-raised)] py-3"><button class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteSkill()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteSkill") : tr("settings.deleteSkill") }}</button><button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingSkill") : tr("settings.saveSkill") }}</button></footer>
+        <footer v-if="!readOnly" class="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-2 border-t border-[var(--border)] bg-[var(--bg-raised)] py-3"><button class="text-button danger" :class="ui.buttonDanger" type="button" :disabled="saving" @click="void deleteSkill()"><Trash2 :size="14" />{{ deleteArmed ? tr("settings.confirmDeleteSkill") : tr("settings.deleteSkill") }}</button><button class="text-button primary" :class="ui.buttonPrimary" type="submit" :disabled="saving || !dirty"><Save :size="14" />{{ saving ? tr("settings.savingSkill") : tr("settings.saveSkill") }}</button></footer>
       </form>
       <div v-else class="settings-empty" :class="ui.empty"><ScrollText :size="18" /><span>{{ tr("settings.noManagedSkills") }}</span></div>
     </div>

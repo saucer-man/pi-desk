@@ -221,6 +221,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		if (!("prompt" in event)) return;
 		if (event.prompt.includes(KEEP_TODO_MARKER)) return;
 		clearPreviousTurn(ctx);
 	});

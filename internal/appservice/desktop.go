@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	appVersion               = "1.2.0"
+	appVersion               = "1.3.0"
 	wailsVersion             = "v3.0.0-beta.16"
 	updateManifestURL        = "https://api.github.com/repos/saucer-man/pi-desk/releases/latest"
 	maxDiagnosticConfigBytes = 4 << 20

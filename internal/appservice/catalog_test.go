@@ -462,7 +462,7 @@ func TestCatalogServicePersistsDesktopState(t *testing.T) {
 		},
 		Threads: []domain.DesktopThreadState{{
 			ID: "thread-1", Title: "Audit", WorkspacePath: workspaceRecord.Path, Trust: "deny", Status: "running",
-			SessionPath: "one.jsonl", Draft: "continue", Unread: true,
+			SessionPath: "one.jsonl", Draft: "continue", Unread: true, Archived: true,
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -470,6 +470,9 @@ func TestCatalogServicePersistsDesktopState(t *testing.T) {
 	state, err := service.GetDesktopState()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(state.Threads) != 1 || !state.Threads[0].Archived {
+		t.Fatalf("archive state was lost: %#v", state.Threads)
 	}
 	if state.ActiveThreadID != "thread-1" || len(state.Threads) != 1 || state.Threads[0].WorkspaceID != workspaceRecord.ID || state.Threads[0].Draft != "continue" || !state.Threads[0].Unread || state.Preferences == nil || state.Preferences.Language != "zh-CN" || state.Preferences.FontFamily != "mono" || state.Preferences.FontSize != 15 || state.Preferences.LightCodeTheme != "github-light" || state.Preferences.DarkCodeTheme != "github-dark" || !state.Preferences.ShowCodeLineNumbers || !state.Preferences.WrapCodeLines || state.Preferences.CodeFontSize != 12 || !state.Preferences.OfflineMode || state.Preferences.SidebarWidth != 344 || state.Preferences.InspectorWidth != 468 || state.Preferences.WorkspaceApplication != "vscode" {
 		t.Fatalf("unexpected desktop state: %#v", state)

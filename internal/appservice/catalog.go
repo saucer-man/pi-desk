@@ -395,7 +395,7 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 		result.Threads = append(result.Threads, domain.DesktopThreadState{
 			ID: thread.ID, Title: thread.Title, WorkspaceID: thread.WorkspaceID, WorkspacePath: thread.WorkspacePath, Trust: thread.Trust,
 			Status: thread.Status, SessionPath: thread.SessionPath, Draft: thread.Draft, ComposerJSON: thread.ComposerJSON,
-			CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt, Unread: thread.Unread,
+			CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt, Unread: thread.Unread, Archived: thread.Archived,
 		})
 	}
 	for _, task := range record.ScheduledTasks {
@@ -497,7 +497,7 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) (err 
 		mapped := workspace.ThreadRecord{
 			ID: strings.TrimSpace(thread.ID), Title: strings.TrimSpace(thread.Title), WorkspaceID: workspaceID, WorkspacePath: workspacePath,
 			Trust: strings.TrimSpace(thread.Trust), Status: strings.TrimSpace(thread.Status), SessionPath: sessionPath,
-			Draft: thread.Draft, ComposerJSON: thread.ComposerJSON, CreatedAt: strings.TrimSpace(thread.CreatedAt), UpdatedAt: strings.TrimSpace(thread.UpdatedAt), Unread: thread.Unread,
+			Draft: thread.Draft, ComposerJSON: thread.ComposerJSON, CreatedAt: strings.TrimSpace(thread.CreatedAt), UpdatedAt: strings.TrimSpace(thread.UpdatedAt), Unread: thread.Unread, Archived: thread.Archived,
 		}
 		record.Threads = append(record.Threads, mapped)
 	}

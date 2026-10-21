@@ -23,7 +23,7 @@ describe("ToolCallPanel", () => {
 
     expect(wrapper.find("summary").text()).toContain("bash npm test");
     expect(wrapper.find("summary").text()).toContain("Complete");
-    expect(wrapper.get(".tool-summary").element.nextElementSibling).toBe(wrapper.get(".tool-status").element);
+    expect(wrapper.get(".tool-summary-group").element.nextElementSibling).toBe(wrapper.get(".tool-status").element);
     await wrapper.get('[aria-label="Copy tool input"]').trigger("click");
     await wrapper.get('[aria-label="Copy tool output"]').trigger("click");
     expect(writeText).toHaveBeenNthCalledWith(1, JSON.stringify({ command: "npm test" }, null, 2));
@@ -42,14 +42,16 @@ describe("ToolCallPanel", () => {
     expect(wrapper.text()).toContain("Truncated in view");
   });
 
-  it("expands while running and collapses when the call finishes", async () => {
+  it("keeps live tool output collapsed and preserves a manual expansion when the call finishes", async () => {
     const wrapper = mount(ToolCallPanel, {
       props: { tool: { id: "tool-live", name: "read", output: "partial", status: "running" } },
     });
 
+    expect(wrapper.get("details").attributes("open")).toBeUndefined();
+    await wrapper.get("summary").trigger("click");
     expect(wrapper.get("details").attributes("open")).toBeDefined();
     await wrapper.setProps({ tool: { id: "tool-live", name: "read", output: "done", status: "complete" } });
-    expect(wrapper.get("details").attributes("open")).toBeUndefined();
+    expect(wrapper.get("details").attributes("open")).toBeDefined();
   });
 
   it("contains clipboard permission failures", async () => {

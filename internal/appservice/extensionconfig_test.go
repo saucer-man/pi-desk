@@ -602,6 +602,7 @@ for (const outcome of ['aborted-event', 'aborted-message', 'normal']) {
  const ctx = {ui:{setWidget(){}, notify(){}}, hasPendingMessages:()=>false, sessionManager:{getEntries:()=>[]}};
  extension(pi);
  commands.goal.handler('Finish the test objective', ctx);
+ await hooks.before_agent_start({messageType:'custom',message:{role:'custom'}}, ctx);
  await hooks.before_agent_start({prompt:prompts[0]}, ctx);
  await hooks.message_end({message:{role:'assistant',usage:{totalTokens:12},stopReason:outcome==='aborted-message'?'aborted':'stop'}}, ctx);
  await hooks.agent_settled({aborted:outcome==='aborted-event'}, ctx);

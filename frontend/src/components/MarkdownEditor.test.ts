@@ -15,6 +15,27 @@ function typeText(view: EditorView, text: string) {
 }
 
 describe("MarkdownEditor", () => {
+  it.each(["", "restored draft", "restored draft "])("resets undo history when the draft is cleared or restored (%s)", async (restored) => {
+    const wrapper = mount(MarkdownEditor, { props: { modelValue: "", placeholder: "Write", ariaLabel: "Prompt" } });
+    await flushPromises();
+    const setup = wrapper.findComponent(MarkdownEditorCore).vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const view = setup.setupState.get()?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("editor not ready");
+    typeText(view, "typed draft");
+    const editor = wrapper.get("[contenteditable='true']");
+    await editor.trigger("keydown", { key: "z", ctrlKey: true });
+    expect(editor.text()).toBe("");
+    await editor.trigger("keydown", { key: "y", ctrlKey: true });
+    expect(editor.text()).toBe("typed draft");
+    await wrapper.setProps({ modelValue: "typed draft" });
+    await wrapper.setProps({ modelValue: restored });
+    await editor.trigger("keydown", { key: "z", ctrlKey: true });
+    expect(editor.element.textContent).toBe(restored);
+    await editor.trigger("keydown", { key: "y", ctrlKey: true });
+    expect(editor.element.textContent).toBe(restored);
+    wrapper.unmount();
+  });
+
   it.each([
     ["- outer\n  - **nested**", "li li strong", "nested"],
     ["> ```html\n> <br> **literal**\n> ```", "blockquote pre code", "<br> **literal**"],

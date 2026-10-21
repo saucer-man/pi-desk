@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -82,7 +83,7 @@ func (service *McpConfigService) GetMcpServer(request domain.McpServerRequest) (
 		return domain.McpServer{}, err
 	}
 	name := strings.TrimSpace(request.Name)
-	_, servers, err := readMcpConfig(path)
+	raw, servers, err := readMcpConfig(path)
 	if err != nil {
 		return domain.McpServer{}, err
 	}
@@ -94,7 +95,9 @@ func (service *McpConfigService) GetMcpServer(request domain.McpServerRequest) (
 	if err != nil {
 		return domain.McpServer{}, err
 	}
-	return domain.McpServer{McpServerSummary: summarizeMcpServer(request.Scope, name, definition), Definition: formatted}, nil
+	summary := summarizeMcpServer(request.Scope, name, definition)
+	summary.NeedsMigration = summary.NeedsMigration || (raw["mcpServers"] == nil && raw["mcp-servers"] != nil)
+	return domain.McpServer{McpServerSummary: summary, Definition: formatted}, nil
 }
 
 func (service *McpConfigService) UpsertMcpServer(request domain.UpsertMcpServerRequest) (domain.McpServer, error) {
@@ -113,6 +116,9 @@ func (service *McpConfigService) UpsertMcpServer(request domain.UpsertMcpServerR
 	if err != nil {
 		return domain.McpServer{}, err
 	}
+	if request.Scope == domain.McpConfigScopeProject && definition["auth"] != nil {
+		return domain.McpServer{}, errors.New("auth is only allowed in the global mcp.json")
+	}
 	if transportCount(definition) == 0 {
 		if request.Scope != domain.McpConfigScopeProject {
 			return domain.McpServer{}, errors.New("global MCP server needs command or url")
@@ -130,6 +136,23 @@ func (service *McpConfigService) UpsertMcpServer(request domain.UpsertMcpServerR
 		return domain.McpServer{}, err
 	}
 	originalName := strings.TrimSpace(request.OriginalName)
+	paths := []string{path}
+	if request.Scope == domain.McpConfigScopeProject {
+		paths = append(paths, filepath.Join(service.agentDirectory, "mcp.json"))
+	} else if projectPath, _, enabled := service.projectDirectory(request.WorkspacePath); enabled {
+		paths = append(paths, projectPath)
+	}
+	for index, configPath := range paths {
+		_, entries, err := readMcpConfig(configPath)
+		if err != nil {
+			return domain.McpServer{}, err
+		}
+		for other := range entries {
+			if other != name && !(index == 0 && other == originalName) && strings.ReplaceAll(other, "-", "_") == strings.ReplaceAll(name, "-", "_") {
+				return domain.McpServer{}, fmt.Errorf("MCP server %q conflicts with %q", name, other)
+			}
+		}
+	}
 	if originalName != "" {
 		if _, ok := servers[originalName]; !ok {
 			return domain.McpServer{}, fmt.Errorf("MCP server %q was not found", originalName)
@@ -179,6 +202,14 @@ func (service *McpConfigService) TestMcpServer(request domain.TestMcpServerReque
 	definition, _, err := parseMcpDefinition(request.Definition)
 	if err != nil {
 		return domain.McpServerTestResult{}, err
+	}
+	if request.Scope == domain.McpConfigScopeProject {
+		if _, err := service.pathFor(request.Scope, request.WorkspacePath); err != nil {
+			return domain.McpServerTestResult{}, err
+		}
+		if definition["auth"] != nil {
+			return domain.McpServerTestResult{}, errors.New("auth is only allowed in the global mcp.json")
+		}
 	}
 	name := strings.TrimSpace(request.Name)
 	if name == "" {
@@ -464,7 +495,7 @@ func readMcpConfig(path string) (map[string]any, map[string]any, error) {
 }
 
 func listMcpServers(path string, scope domain.McpConfigScope) ([]domain.McpServerSummary, error) {
-	_, servers, err := readMcpConfig(path)
+	raw, servers, err := readMcpConfig(path)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +504,9 @@ func listMcpServers(path string, scope domain.McpConfigScope) ([]domain.McpServe
 		if _, ok := definition.(map[string]any); !ok {
 			continue
 		}
-		result = append(result, summarizeMcpServer(scope, name, definition))
+		summary := summarizeMcpServer(scope, name, definition)
+		summary.NeedsMigration = summary.NeedsMigration || (raw["mcpServers"] == nil && raw["mcp-servers"] != nil)
+		result = append(result, summary)
 	}
 	sortMcpServers(result)
 	return result, nil
@@ -490,8 +523,8 @@ func summarizeMcpServer(scope domain.McpConfigScope, name string, definition any
 	} else if value, ok := entry["socket"].(string); ok && strings.TrimSpace(value) != "" {
 		transport, endpoint = "socket", value
 	}
-	disabled := entry["enabled"] == false || entry["disabled"] == true
-	return domain.McpServerSummary{Scope: scope, Name: name, Transport: transport, Endpoint: endpoint, Disabled: disabled}
+	_, legacy := entry["disabled"]
+	return domain.McpServerSummary{Scope: scope, Name: name, Transport: transport, Endpoint: endpoint, Disabled: entry["enabled"] == false, NeedsMigration: legacy}
 }
 
 func sortMcpServers(servers []domain.McpServerSummary) {
@@ -526,10 +559,77 @@ func parseMcpDefinition(content string) (map[string]any, string, error) {
 		return nil, "", errors.New("native Pi MCP needs exactly one of command or url; socket and SSE are unsupported")
 	}
 	if disabled, exists := definition["disabled"]; exists {
+		if _, ok := disabled.(bool); !ok {
+			return nil, "", errors.New("disabled must be a boolean")
+		}
 		if _, configured := definition["enabled"]; !configured {
 			definition["enabled"] = disabled != true
 		}
 		delete(definition, "disabled")
+	}
+	for _, key := range []string{"command", "url", "type", "cwd", "description"} {
+		if value, exists := definition[key]; exists {
+			if _, ok := value.(string); !ok {
+				return nil, "", fmt.Errorf("%s must be a string", key)
+			}
+		}
+	}
+	if value, exists := definition["enabled"]; exists {
+		if _, ok := value.(bool); !ok {
+			return nil, "", errors.New("enabled must be a boolean")
+		}
+	}
+	if value, exists := definition["timeout"]; exists {
+		number, ok := value.(json.Number)
+		seconds, err := number.Float64()
+		if !ok || err != nil || seconds <= 0 {
+			return nil, "", errors.New("timeout must be a positive number of seconds")
+		}
+	}
+	if value, exists := definition["exposure"]; exists && !validMcpExposure(value) {
+		return nil, "", errors.New("exposure must be codemode, deferred, direct, or hidden")
+	}
+	if values, exists, err := objectValue(definition, "toolExposure"); err != nil {
+		return nil, "", errors.New("toolExposure must map tool names to exposures")
+	} else if exists {
+		for _, value := range values {
+			if !validMcpExposure(value) {
+				return nil, "", errors.New("toolExposure must map tool names to codemode, deferred, direct, or hidden")
+			}
+		}
+	}
+	for _, key := range []string{"env", "headers"} {
+		values, _, err := objectValue(definition, key)
+		if err != nil {
+			return nil, "", fmt.Errorf("%s must map names to strings", key)
+		}
+		for _, value := range values {
+			if _, ok := value.(string); !ok {
+				return nil, "", fmt.Errorf("%s must map names to strings", key)
+			}
+		}
+	}
+	if values, exists := definition["args"]; exists {
+		args, ok := values.([]any)
+		if !ok {
+			return nil, "", errors.New("args must be an array of strings")
+		}
+		for _, arg := range args {
+			if _, ok := arg.(string); !ok {
+				return nil, "", errors.New("args must be an array of strings")
+			}
+		}
+	}
+	if value, exists := definition["type"]; exists {
+		if (definition["command"] != nil && value != "stdio") || (definition["url"] != nil && value != "http" && value != "streamable-http") {
+			return nil, "", errors.New("type must match command (stdio) or url (http or streamable-http)")
+		}
+	}
+	if value, exists := definition["url"]; exists {
+		endpoint, err := url.Parse(value.(string))
+		if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+			return nil, "", errors.New("url must be an absolute HTTP or HTTPS URL")
+		}
 	}
 	if transportCount(definition) == 0 {
 		for key := range definition {
@@ -540,6 +640,14 @@ func parseMcpDefinition(content string) (map[string]any, string, error) {
 	}
 	formatted, err := formatMcpDefinition(definition)
 	return definition, formatted, err
+}
+
+func validMcpExposure(value any) bool {
+	switch value {
+	case "codemode", "codemode-deferred", "deferred", "direct", "hidden":
+		return true
+	}
+	return false
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -572,6 +680,24 @@ func formatMcpDefinition(definition any) (string, error) {
 }
 
 func writeMcpConfig(path string, raw map[string]any) error {
+	servers, ok := raw["mcpServers"].(map[string]any)
+	if !ok {
+		servers, ok = raw["mcp-servers"].(map[string]any)
+	}
+	if ok {
+		for _, value := range servers {
+			if entry, ok := value.(map[string]any); ok {
+				if disabled, ok := entry["disabled"].(bool); ok {
+					if _, exists := entry["enabled"]; !exists {
+						entry["enabled"] = !disabled
+					}
+					delete(entry, "disabled")
+				}
+			}
+		}
+		raw["mcpServers"] = servers
+		delete(raw, "mcp-servers")
+	}
 	content, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return fmt.Errorf("format MCP config: %w", err)

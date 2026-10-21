@@ -686,6 +686,7 @@ onBeforeUnmount(() => {
       <div v-if="attachmentError" class="attachment-error" role="alert">{{ attachmentError }}</div>
       <div class="composer-editor" @keydown.capture="onKeydown" @paste.capture="onPaste">
         <MarkdownEditor
+          :key="appStore.activeThreadId"
           ref="markdownEditor"
           v-model="draft"
           :placeholder="tr('composer.placeholder')"

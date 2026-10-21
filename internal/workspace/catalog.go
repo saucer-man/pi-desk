@@ -19,7 +19,8 @@ import (
 const stateVersion = 6
 
 const (
-	maxDesktopThreads    = 500
+	// ponytail: keep metadata in one JSON file; use an index beyond 10,000 threads.
+	maxDesktopThreads    = 10000
 	maxScheduledTasks    = 100
 	maxDraftBytes        = 1 << 20
 	maxThreadTitleLen    = 200
@@ -50,6 +51,7 @@ type ThreadRecord struct {
 	CreatedAt     string `json:"createdAt,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 	Unread        bool   `json:"unread,omitempty"`
+	Archived      bool   `json:"archived,omitempty"`
 }
 
 type DesktopRecord struct {
@@ -531,7 +533,7 @@ func (catalog *Catalog) loadLocked() error {
 	if state.Version < 6 {
 		targets = nil
 	}
-	targetIDs := make(map[string]TargetRecord, len(targets))
+	targetIDs := make(map[string]struct{}, len(targets))
 	targetAliases := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		if err := validateTarget(target); err != nil {
@@ -544,7 +546,7 @@ func (catalog *Catalog) loadLocked() error {
 		if _, duplicate := targetAliases[aliasKey]; duplicate {
 			return errors.New("duplicate SSH target alias")
 		}
-		targetIDs[target.ID] = target
+		targetIDs[target.ID] = struct{}{}
 		targetAliases[aliasKey] = struct{}{}
 	}
 
@@ -575,11 +577,6 @@ func (catalog *Catalog) loadLocked() error {
 				return errors.New("duplicate local workspace path")
 			}
 			localPaths[key] = struct{}{}
-		} else {
-			target, ok := targetIDs[record.Location.SSH.TargetID]
-			if !ok || target.HostKey != record.Location.SSH.HostKeyBinding {
-				return errors.New("SSH workspace target binding is invalid")
-			}
 		}
 		records = append(records, record)
 	}

@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"pi-desk/internal/domain"
+	"pi-desk/internal/piruntime"
 
 	"github.com/natefinch/atomic"
 )
@@ -75,18 +76,7 @@ func defaultModelsPath() (string, error) {
 }
 
 func defaultPiAgentDirectory() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); configured != "" {
-		absolute, err := filepath.Abs(configured)
-		if err != nil {
-			return "", fmt.Errorf("resolve Pi agent directory: %w", err)
-		}
-		return filepath.Clean(absolute), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("locate user home directory: %w", err)
-	}
-	return filepath.Join(home, ".pi", "agent"), nil
+	return piruntime.AgentDirectory()
 }
 
 func (service *ModelConfigService) GetModelsConfig() (domain.ModelConfigSnapshot, error) {

@@ -15,7 +15,7 @@ describe("groupConversationTurns", () => {
     ]);
 
     expect(grouped).toHaveLength(2);
-    expect(grouped[1]).toMatchObject({ id: "final", entryId: "entry-final", text: "Done", durationMs: 3000, thinkingCount: 2 });
+    expect(grouped[1]).toMatchObject({ id: "final", renderKey: "work", entryId: "entry-final", text: "Done", durationMs: 3000, thinkingCount: 2 });
     expect(grouped[1].executionSteps?.map((step) => step.kind)).toEqual(["thinking", "tools", "thinking"]);
   });
 
@@ -28,6 +28,24 @@ describe("groupConversationTurns", () => {
     expect(grouped[1].executionSteps).toEqual([{
       id: "thinking-thinking", kind: "thinking", text: "Reading", active: true,
     }]);
+  });
+
+  it.each(["", " \n", "<think>Checking the next file"])("keeps the visible answer in place while the next reply has no text: %s", (text) => {
+    const messages = [
+      message({ id: "user", role: "user", text: "Inspect" }),
+      message({ id: "work", role: "assistant", text: "Reading the project", tools: [{ id: "read", name: "read", output: "source", status: "complete" }] }),
+      message({ id: "next", role: "assistant", text, streaming: true }),
+    ];
+    const pending = groupConversationTurns(messages)[1];
+    expect(pending).toMatchObject({ id: "work", renderKey: "work", text: "Reading the project", streaming: true });
+    expect(pending.executionSteps?.filter(step => step.kind === "message")).toEqual([]);
+
+    messages[2].text = "Next result";
+    const ready = groupConversationTurns(messages)[1];
+    expect(ready).toMatchObject({ id: "next", renderKey: "work", text: "Next result" });
+    expect(ready.executionSteps?.filter(step => step.kind === "message")).toEqual([
+      { id: "work-message", kind: "message", text: "Reading the project" },
+    ]);
   });
 
   it.each(["think", "thinking"])("classifies %s tags in intermediate assistant messages as reasoning", (tag) => {

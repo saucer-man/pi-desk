@@ -352,6 +352,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		if (!("prompt" in event)) return;
 		if (!claim()) return;
 		const markerIndex = event.prompt.indexOf(CONTINUATION_MARKER_PREFIX);
 		if (goal && goal.status === "active" && markerIndex !== -1) {

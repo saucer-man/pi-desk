@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pi-desk/internal/domain"
+	"pi-desk/internal/workspace"
 )
 
 func TestManagedSkillServiceUsesPiGlobalSkillRules(t *testing.T) {
@@ -88,6 +89,31 @@ func TestManagedSkillServiceCreatesUpdatesAndDeletesPiSkill(t *testing.T) {
 	}
 }
 
+func TestManagedSkillServiceDeletingRootSkillPreservesOtherSkills(t *testing.T) {
+	t.Parallel()
+	agentDirectory := filepath.Join(t.TempDir(), "agent")
+	skillDirectory := filepath.Join(agentDirectory, "skills")
+	sibling := filepath.Join(skillDirectory, "other", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(sibling), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(skillDirectory, "SKILL.md"), sibling} {
+		if err := os.WriteFile(path, []byte("---\nname: review\ndescription: Review code\n---\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := newManagedSkillService(agentDirectory, nil)
+	if err := service.DeleteManagedSkill(domain.ManagedSkillRequest{Scope: domain.SkillScopeGlobal, RelativePath: "SKILL.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		t.Fatalf("deleting a root skill removed another skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDirectory, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("root skill was not deleted: %v", err)
+	}
+}
+
 func TestManagedSkillServiceRejectsUnsafeSkillPathAndUnknownRoot(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -99,5 +125,50 @@ func TestManagedSkillServiceRejectsUnsafeSkillPathAndUnknownRoot(t *testing.T) {
 		Scope: domain.SkillScopeGlobal, RootDirectory: filepath.Join(root, "outside"), RelativePath: "review\\SKILL.md",
 	}); err == nil {
 		t.Fatal("expected an unknown global root to be rejected")
+	}
+}
+
+func TestProjectSharedSkillsFollowRepoBoundaryAndStayReadOnly(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	project := filepath.Join(repo, "subdir")
+	for _, directory := range []string{root, repo, project} {
+		path := filepath.Join(directory, ".agents", "skills", filepath.Base(directory), "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("---\nname: "+filepath.Base(directory)+"\ndescription: Shared project skill\n---\nContent"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: fixture"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	service := newManagedSkillService(filepath.Join(root, "agent"), fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
+	snapshot, err := service.ListManagedSkills(domain.ListManagedSkillsRequest{WorkspacePath: project})
+	if err != nil || len(snapshot.Skills) != 2 {
+		t.Fatalf("project discovery: %#v %v", snapshot, err)
+	}
+	for _, skill := range snapshot.Skills {
+		request := domain.ManagedSkillRequest{Scope: domain.SkillScopeProject, WorkspacePath: project, RootDirectory: skill.RootDirectory, RelativePath: skill.RelativePath}
+		loaded, err := service.GetManagedSkill(request)
+		if err != nil || !loaded.ReadOnly || !skill.ReadOnly {
+			t.Fatalf("shared skill cannot be inspected read-only: %#v %v", loaded, err)
+		}
+		if _, err := service.UpdateManagedSkill(domain.UpdateManagedSkillRequest{Scope: request.Scope, WorkspacePath: project, RootDirectory: request.RootDirectory, RelativePath: request.RelativePath, Content: "changed"}); err == nil {
+			t.Fatal("shared skill was writable")
+		}
+		if err := service.DeleteManagedSkill(request); err == nil {
+			t.Fatal("shared skill was deletable")
+		}
+		content, _ := os.ReadFile(skill.Path)
+		if !strings.Contains(string(content), "Content") {
+			t.Fatal("shared skill changed")
+		}
+	}
+	service.workspaces = fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "deny"}}
+	snapshot, err = service.ListManagedSkills(domain.ListManagedSkillsRequest{WorkspacePath: project})
+	if err != nil || snapshot.ProjectEnabled || len(snapshot.Skills) != 0 {
+		t.Fatalf("untrusted project skills leaked: %#v %v", snapshot, err)
 	}
 }

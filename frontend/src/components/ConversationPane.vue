@@ -13,6 +13,7 @@ import { tr } from "../i18n";
 
 const appStore = useAppStore();
 const timeline = ref<HTMLElement>();
+const timelineContent = ref<HTMLElement>();
 const composerBar = ref<ComponentPublicInstance>();
 const composerHeight = ref(0);
 const searchInput = ref<HTMLInputElement>();
@@ -24,33 +25,23 @@ const messages = computed(() => groupConversationTurns(appStore.activeMessages))
 const shouldVirtualize = computed(() => shouldVirtualizeMessages(messages.value)
   || (appStore.activeThread?.messageCount ?? 0) > CONVERSATION_VIRTUALIZATION_THRESHOLD);
 const lastMessage = computed(() => messages.value.at(-1));
-const streamSignal = computed(() => {
-  const message = lastMessage.value;
-  if (!message) return [appStore.activeThreadId, "", 0, 0, 0, 0, "", appStore.activeWaitingForOutput] as const;
-  let thinkingLength = message.thinking.length;
-  let toolCount = message.tools.length;
-  let toolOutput = message.tools.reduce((total, tool) => total + tool.output.length, 0);
-  // Merged assistant runs keep thinking and tools inside executionSteps with
-  // message.tools/thinking emptied out, so growth has to be read from there.
-  for (const step of message.executionSteps ?? []) {
-    if (step.kind === "thinking" && step.text) thinkingLength += step.text.length;
-    for (const tool of step.tools ?? []) {
-      toolCount += 1;
-      toolOutput += tool.output.length;
-    }
-  }
-  return [appStore.activeThreadId, message.id, message.text.length, thinkingLength, toolCount, toolOutput, message.runNotice?.status ?? "", appStore.activeWaitingForOutput] as const;
-});
+// Only completed history is virtualized; the growing turn keeps native DOM sizing.
+const virtualMessageCount = computed(() => shouldVirtualize.value ? Math.max(0, messages.value.findLastIndex(message => message.role === "user")) : 0);
+const directMessages = computed(() => messages.value.slice(virtualMessageCount.value));
 
 const virtualizer = useVirtualizer(computed(() => ({
-  count: shouldVirtualize.value ? messages.value.length : 0,
+  count: virtualMessageCount.value,
   getScrollElement: () => timeline.value ?? null,
-  getItemKey: (index: number) => messages.value[index]?.id ?? index,
+  getItemKey: (index: number) => messages.value[index]?.renderKey ?? messages.value[index]?.id ?? index,
   estimateSize: (index: number) => estimateMessageSize(messages.value[index]),
   overscan: 6,
 })));
 const virtualRows = computed(() => virtualizer.value.getVirtualItems());
 const virtualTotalSize = computed(() => virtualizer.value.getTotalSize());
+// The DOM observer owns bottom-following; virtual anchoring still handles history browsing.
+watch(stickToBottom, (pinned) => {
+  virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = pinned ? () => false : undefined;
+}, { immediate: true });
 
 type SearchMatch = { messageId: string; messageIndex: number };
 type ConversationNavigationItem = SearchMatch & { title: string; answer: string };
@@ -123,23 +114,10 @@ function scrollToBottom() {
   if (element) element.scrollTop = element.scrollHeight;
 }
 
-// Coalesce autoscroll into one frame-aligned correction: per-delta scrolls
-// otherwise force extra layouts and let intermediate offsets reach the screen.
-let autoScrollFrame = 0;
-function scheduleAutoScroll() {
-  if (autoScrollFrame) return;
-  autoScrollFrame = requestAnimationFrame(() => {
-    autoScrollFrame = 0;
-    if (!stickToBottom.value) return;
-    scrollToBottom();
-    updateActiveNavigation();
-  });
-}
-
 function onTimelineScroll() {
   const element = timeline.value;
   if (!element) return;
-  stickToBottom.value = isNearBottom(element.scrollTop, element.clientHeight, element.scrollHeight);
+  if (isNearBottom(element.scrollTop, element.clientHeight, element.scrollHeight, 1)) stickToBottom.value = true;
   updateActiveNavigation();
 }
 
@@ -148,9 +126,10 @@ function updateActiveNavigation() {
   if (!element || !navigationItems.value.length) return;
 
   if (shouldVirtualize.value) {
-    const activeIndex = virtualRows.value.reduce((current, row) => (
+    let activeIndex = virtualRows.value.reduce((current, row) => (
       row.start <= element.scrollTop + 48 ? Math.max(current, row.index) : current
     ), 0);
+    if (element.scrollTop + 48 >= virtualTotalSize.value) activeIndex = virtualMessageCount.value;
     const activeItem = navigationItems.value.findLast((item) => item.messageIndex <= activeIndex);
     activeNavigationId.value = activeItem?.messageId ?? navigationItems.value[0].messageId;
     return;
@@ -184,7 +163,8 @@ function closeSearch() {
 }
 
 async function scrollToMessage(messageIndex: number, messageId: string, block: ScrollLogicalPosition) {
-  if (shouldVirtualize.value) virtualizer.value.scrollToIndex(messageIndex, { align: block === "start" ? "start" : "center" });
+  stickToBottom.value = false;
+  if (messageIndex < virtualMessageCount.value) virtualizer.value.scrollToIndex(messageIndex, { align: block === "start" ? "start" : "center" });
   await nextTick();
   const row = Array.from(timeline.value?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [])
     .find((element) => element.dataset.messageId === messageId);
@@ -278,23 +258,27 @@ watch(() => composerBar.value?.$el, (element, _previous, onCleanup) => {
   });
 }, { flush: "post" });
 
-watch(() => appStore.activeThreadId, async () => {
+async function openConversation() {
   activeNavigationId.value = navigationItems.value[0]?.messageId ?? "";
   stickToBottom.value = true;
   await nextTick();
   virtualizer.value.measure();
-  scrollToBottom();
+  await nextTick();
+  if (stickToBottom.value) scrollToBottom();
   updateActiveNavigation();
+}
+
+watch(() => appStore.activeThreadId, openConversation);
+appStore.$onAction(({ name, args, after }) => {
+  // Selecting the current conversation does not change activeThreadId.
+  if (name === "selectThread" && args[0] === appStore.activeThreadId) after(() => { void openConversation(); });
 });
 
-watch(streamSignal, (_signal, previous) => {
-  const messageChanged = previous?.[1] !== lastMessage.value?.id;
-  if (messageChanged && lastMessage.value?.role === "user") stickToBottom.value = true;
-  if (stickToBottom.value) scheduleAutoScroll();
-});
-
-watch(virtualTotalSize, () => {
-  if (stickToBottom.value && shouldVirtualize.value) scheduleAutoScroll();
+watch(() => lastMessage.value?.id, () => {
+  if (lastMessage.value?.role === "user") {
+    stickToBottom.value = true;
+    void nextTick().then(scrollToBottom);
+  }
 });
 
 watch(navigationItems, (items) => {
@@ -310,15 +294,19 @@ watch(searchMatches, (matches) => {
   activeSearchMatch.value = matches.length ? Math.min(activeSearchMatch.value, matches.length - 1) : 0;
 }, { flush: "post" });
 
-onMounted(async () => {
+let contentResizeObserver: ResizeObserver | undefined;
+onMounted(() => {
   document.addEventListener("keydown", onDocumentKeydown, true);
-  await nextTick();
-  virtualizer.value.measure();
-  scrollToBottom();
-  updateActiveNavigation();
+  // Follow the committed DOM height before paint, including virtual row measurements.
+  contentResizeObserver = new ResizeObserver(() => {
+    if (stickToBottom.value) scrollToBottom();
+    updateActiveNavigation();
+  });
+  if (timelineContent.value) contentResizeObserver.observe(timelineContent.value);
+  void openConversation();
 });
 onBeforeUnmount(() => {
-  if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame);
+  contentResizeObserver?.disconnect();
   document.removeEventListener("keydown", onDocumentKeydown, true);
   hideHoveredNavigation();
 });
@@ -385,7 +373,13 @@ onBeforeUnmount(() => {
           <span><em>{{ tr("conversation.navigationAnswer") }}</em>{{ hoveredNavigationItem.answer }}</span>
         </aside>
       </nav>
-      <div ref="timeline" class="timeline h-full w-full min-w-0 overflow-x-clip overflow-y-auto" role="log" aria-live="polite" @scroll="onTimelineScroll">
+      <div ref="timeline" class="timeline h-full w-full min-w-0 overflow-x-clip overflow-y-auto" role="log" aria-live="polite"
+        @scroll="onTimelineScroll"
+        @wheel.passive="$event.deltaY < 0 && (stickToBottom = false)"
+        @keydown="['ArrowUp', 'PageUp', 'Home'].includes($event.key) && (stickToBottom = false)"
+        @pointerdown.self="stickToBottom = false"
+      >
+      <div ref="timelineContent" class="timeline-content">
       <div v-if="appStore.sessionMutationErrorByThread?.[appStore.activeThreadId]" class="conversation-operation-banner mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]" role="status">
         {{ tr("conversation.historyMutationLimit") }}
       </div>
@@ -411,8 +405,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <template v-else>
       <div
-        v-else-if="shouldVirtualize"
+        v-if="shouldVirtualize"
         class="virtual-message-list"
         data-virtualized="true"
         :style="{ height: `${virtualTotalSize}px` }"
@@ -429,15 +424,18 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <ConversationMessage v-else v-for="message in messages" :key="message.id" :message="message" :search-query="searchQuery" :search-active="message.id === activeSearchMessageId" />
+      <ConversationMessage v-for="message in directMessages" :key="message.renderKey ?? message.id" :message="message" :search-query="searchQuery" :search-active="message.id === activeSearchMessageId" />
+      </template>
       <div
-        v-if="appStore.activeWaitingForOutput && !appStore.activeRetry"
+        v-if="messages.length > 0"
         class="waiting-for-output mt-3 inline-flex size-8 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-raised)] text-[var(--text-secondary)] shadow-sm"
+        :class="{ invisible: !appStore.activeWaitingForOutput || Boolean(appStore.activeRetry) }"
         role="status"
         aria-live="polite"
         :aria-label="tr('conversation.waitingForOutput')"
       >
         <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
+      </div>
       </div>
       </div>
     </div>

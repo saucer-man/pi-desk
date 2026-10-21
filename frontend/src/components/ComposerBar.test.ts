@@ -41,6 +41,58 @@ describe("ComposerBar", () => {
     vi.mocked(repositoryService.clipboardFiles).mockReset().mockResolvedValue([]);
   });
 
+  it.each(["plain text", "**bold**", "- first\n- second"])("undoes and redoes pasted text without sending (%s)", async (text) => {
+    const store = useAppStore();
+    store.$patch({
+      threads: [{ id: "shortcuts", title: "Shortcuts", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: true, generation: 1 }],
+      activeThreadId: "shortcuts",
+      draftsByThread: { shortcuts: "original" },
+    });
+    store.sendActivePrompt = vi.fn();
+    const wrapper = mount(ComposerBar);
+    await flushPromises();
+    const setup = wrapper.findComponent(MarkdownEditorCore).vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const view = setup.setupState.get()?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("editor not ready");
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 9)));
+    const editor = wrapper.get("[contenteditable='true']");
+    await editor.trigger("paste", { clipboardData: { items: [], getData: () => text } });
+    await flushPromises();
+    const pasted = store.activeDraft;
+    expect(pasted.replace(/^\* /gm, "- ")).toBe(text);
+    for (const redo of [{ key: "y", keyCode: 89 }, { key: "Z", keyCode: 90, shiftKey: true }]) {
+      await editor.trigger("keydown", { key: "z", ctrlKey: true });
+      expect(store.activeDraft).toBe("original");
+      await editor.trigger("keydown", { ...redo, ctrlKey: true });
+      expect(store.activeDraft).toBe(pasted);
+    }
+    expect(store.sendActivePrompt).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("does not undo changes from another conversation with an identical draft", async () => {
+    const store = useAppStore();
+    store.$patch({
+      threads: ["first", "second"].map((id) => ({ id, title: id, workspace: "repo", workspacePath: "D:\\repo", trust: "approve" as const, status: "idle" as const, started: true, generation: 1 })),
+      activeThreadId: "first",
+      draftsByThread: { first: "draft", second: "draft!" },
+    });
+    const wrapper = mount(ComposerBar);
+    await flushPromises();
+    const setup = wrapper.findComponent(MarkdownEditorCore).vm.$ as unknown as { setupState: { get(): Editor | undefined } };
+    const view = setup.setupState.get()?.action((ctx) => ctx.get(editorViewCtx));
+    if (!view) throw new Error("editor not ready");
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)).insertText("!"));
+    await flushPromises();
+    expect(store.activeDraft).toBe("draft!");
+    store.activeThreadId = "second";
+    await flushPromises();
+    await wrapper.get("[contenteditable='true']").trigger("keydown", { key: "z", ctrlKey: true });
+    expect(store.activeDraft).toBe("draft!");
+    expect(wrapper.get("[contenteditable='true']").text()).toBe("draft!");
+    wrapper.unmount();
+  });
+
   it("pastes file references into the queue editor selection", async () => {
     const store = useAppStore();
     store.$patch({

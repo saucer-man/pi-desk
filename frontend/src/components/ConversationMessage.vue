@@ -70,7 +70,7 @@ const showMessageMeta = computed(() => (
   Boolean(props.message.delivery)
   || (props.message.role === "user" && Boolean(props.message.timestamp))
   || Boolean(props.message.contextExcluded)
-  || showActions.value
+  || actionable.value
 ));
 const runNotice = computed(() => {
   if (props.message.role !== "assistant") return undefined;
@@ -203,19 +203,10 @@ const durationLabel = computed(() => {
   return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 });
 
-watch(() => props.message.streaming, (streaming, wasStreaming) => {
-  if (streaming) executionOpen.value = true;
-  else if (wasStreaming) executionOpen.value = false;
-});
-watch(() => props.message.id, () => { changedFilesExpanded.value = false; });
+watch(() => props.message.renderKey ?? props.message.id, () => { changedFilesExpanded.value = false; });
 
 function syncExecutionOpen(event: Event) {
   const details = event.currentTarget as HTMLDetailsElement;
-  if (props.message.streaming && !details.open) {
-    details.open = true;
-    executionOpen.value = true;
-    return;
-  }
   executionOpen.value = details.open;
 }
 
@@ -328,7 +319,7 @@ function stepThinking(step: ExecutionStep): string {
         </summary>
         <div class="execution-process-details">
           <template v-for="step in executionSteps" :key="step.id">
-            <details v-if="step.kind === 'thinking'" class="thinking-block" :open="step.active">
+            <details v-if="step.kind === 'thinking'" class="thinking-block">
               <summary>
                 <ChevronRight class="disclosure-icon" :size="13" aria-hidden="true" />
                 <BrainCircuit class="thinking-icon" :size="15" aria-hidden="true" />

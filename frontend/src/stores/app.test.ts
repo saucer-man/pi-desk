@@ -163,6 +163,7 @@ vi.mock("../services/terminal", () => ({
   },
 }));
 import { useAppStore } from "./app";
+import { tr } from "../i18n";
 
 describe("app store", () => {
   it("reveals created and selected browser tabs while keeping state updates in their owning conversation", async () => {
@@ -377,6 +378,71 @@ describe("app store", () => {
     await store.loadSessionSearchBodies();
     expect(mocks.searchSessionText).toHaveBeenCalledTimes(1);
     expect(mocks.getSessionSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("preserves archived sessions across startup, catalog sync, save and reload", async () => {
+    const sessions = ["archived", "recent"].map(id => ({
+      id, path: `C:\\sessions\\${id}.jsonl`, cwd: "D:\\repo", title: id,
+      createdAt: "2026-10-20T08:00:00Z", modifiedAt: "2026-10-20T09:00:00Z", messageCount: 1,
+    }));
+    mocks.listWorkspaces.mockResolvedValue([{ id: "repo", name: "repo", path: "D:\\repo", trust: "deny" }]);
+    mocks.listSessions.mockResolvedValue(sessions);
+    mocks.getDesktopState.mockResolvedValue({
+      activeThreadId: "saved-archive",
+      threads: [{ id: "saved-archive", title: "archived", workspacePath: "D:\\repo", sessionPath: sessions[0].path, status: "idle", archived: true }],
+    });
+    const store = useAppStore();
+    await store.loadCatalog();
+    expect(store.threads.find(thread => thread.id === "saved-archive")?.archived).toBe(true);
+    expect(store.activeThreadId).toBe("session-recent");
+    await store.syncLocalSessions();
+    expect(store.threads.find(thread => thread.id === "saved-archive")?.archived).toBe(true);
+    await store.persistDesktopState();
+    const saved = mocks.saveDesktopState.mock.calls.at(-1)![0];
+    expect(saved.threads.find((thread: { id: string }) => thread.id === "saved-archive").archived).toBe(true);
+    mocks.getDesktopState.mockResolvedValue(saved);
+    await store.loadCatalog();
+    expect(store.threads.find(thread => thread.id === "saved-archive")?.archived).toBe(true);
+    store.setThreadArchived("saved-archive", false);
+    await store.persistDesktopState();
+    expect(mocks.saveDesktopState.mock.calls.at(-1)![0].threads.find((thread: { id: string }) => thread.id === "saved-archive").archived).toBeUndefined();
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(mocks.stopSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks archiving busy or queued tasks and selects a remaining task when archiving", () => {
+    const store = useAppStore();
+    store.scheduleDesktopStateSave = vi.fn();
+    store.threads = ["a", "b"].map(id => ({ id, title: id, workspace: "repo", workspacePath: "D:\\repo", trust: "deny", status: "idle", started: false, generation: 0 }));
+    store.activeThreadId = "a";
+    const thread = store.threads[0];
+    for (const status of ["running", "starting"] as const) {
+      thread.status = status;
+      store.setThreadArchived("a", true);
+      expect(thread.archived).toBeUndefined();
+    }
+    thread.status = "idle";
+    for (const state of [store.bashRunningByThread, store.waitingForOutputByThread, store.pendingPromptDispatchByThread]) {
+      state.a = true;
+      store.setThreadArchived("a", true);
+      expect(thread.archived).toBeUndefined();
+      delete state.a;
+    }
+    store.pendingPromptsByThread.a = [{ id: "queued", text: "Continue", images: [], createdAt: "2026-10-20T08:00:00Z" }];
+    store.setThreadArchived("a", true);
+    expect(thread.archived).toBeUndefined();
+    delete store.pendingPromptsByThread.a;
+    store.sessionOperationByThread.a = "Cloning";
+    store.setThreadArchived("a", true);
+    expect(thread.archived).toBeUndefined();
+    delete store.sessionOperationByThread.a;
+    store.setThreadArchived("a", true);
+    expect(thread.archived).toBe(true);
+    expect(store.activeThreadId).toBe("b");
+    expect(store.scheduleDesktopStateSave).toHaveBeenCalled();
+    store.setThreadArchived("a", false);
+    expect(thread.archived).toBe(false);
+    expect(store.threads).toHaveLength(2);
   });
 
   it("does not mark loaded sessions unavailable when desktop state persistence fails", async () => {
@@ -1745,7 +1811,7 @@ describe("app store", () => {
     expect(store.activeMessages[0].tools[0].durationMs).toBe(23);
   });
 
-  it.each([[true, undefined, "任务已停止"], [false, "Upstream failed", "任务执行失败"]])("distinguishes cancellation and failure in notifications", async (aborted, error, title) => {
+  it.each([[true, undefined, "notifications.taskCancelled"], [false, "Upstream failed", "notifications.taskFailed"]])("distinguishes cancellation and failure in notifications", async (aborted, error, title) => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "deny");
@@ -1753,7 +1819,7 @@ describe("app store", () => {
     thread.generation = 8; thread.started = true;
     store.messagesByThread[thread.id] = [{ id: "last", role: "assistant", text: "", thinking: "", timestamp: "", streaming: false, tools: [], error: error as string | undefined }];
     store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_settled", payload: { aborted } } });
-    expect(mocks.notifyDesktop).toHaveBeenCalledWith(title, "New task");
+    expect(mocks.notifyDesktop).toHaveBeenCalledWith(tr(title as string), "New task");
   });
 
   it("captures Pi edit result diffs and tool duration from RPC events", async () => {
@@ -1814,17 +1880,40 @@ describe("app store", () => {
     expect(store.activeMessages.map((message) => message.streaming)).toEqual([false, false]);
   });
 
-  it("notifies when the active task finishes while the app is unfocused", async () => {
-    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  it.each([true, false])("notifies when the active task settles (window focused: %s)", async (focused) => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(focused);
     const store = useAppStore();
     await store.createThread("D:\\work\\repo", "deny");
     const thread = store.activeThread!;
     thread.generation = 8;
     thread.started = true;
 
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_start", payload: {} } });
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_end", payload: {} } });
+    expect(mocks.notifyDesktop).not.toHaveBeenCalled();
     store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_settled", payload: {} } });
 
-    expect(mocks.notifyDesktop).toHaveBeenCalledWith("任务已完成", "New task");
+    expect(mocks.notifyDesktop).toHaveBeenCalledOnce();
+    expect(mocks.notifyDesktop).toHaveBeenCalledWith(tr("notifications.taskCompleted"), "New task");
+  });
+
+  it.each([
+    { enabled: false, queued: false },
+    { enabled: true, queued: true },
+  ])("skips task notifications while disabled or more work is queued: %j", async ({ enabled, queued }) => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    thread.generation = 8;
+    thread.started = true;
+    store.notificationsEnabled = enabled;
+    store.dispatchNextPendingPrompt = vi.fn().mockResolvedValue(undefined);
+    if (queued) store.pendingPromptsByThread[thread.id] = [{ id: "next", text: "Continue", images: [], createdAt: "2026-10-20T08:00:00Z" }];
+
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_start", payload: {} } });
+    store.handlePiEvent({ threadId: thread.id, event: { generation: 8, type: "agent_settled", payload: {} } });
+
+    expect(mocks.notifyDesktop).not.toHaveBeenCalled();
   });
 
   it("bounds projected tool output while retaining its beginning and end", async () => {
@@ -1981,6 +2070,27 @@ describe("app store", () => {
       event: { generation: 5, type: "queue_update", payload: { steering: ["Inspect logs"], followUp: ["Run tests"] } },
     });
     expect(store.activeQueue).toEqual({ steering: ["Inspect logs"], followUp: ["Run tests"] });
+  });
+
+  it("reuses rendered message identity only when snapshot content and tool calls match", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "deny");
+    const thread = store.activeThread!;
+    for (const [text, toolId, expectedKey] of [
+      ["Done", "read-1", "live-assistant"], ["Changed", "read-1", undefined], ["Done", "read-2", undefined],
+    ] as const) {
+      store.messagesByThread[thread.id] = [{
+        id: "live-assistant", role: "assistant", text: "Done", thinking: "", timestamp: "10:00", streaming: false,
+        tools: [{ id: "read-1", name: "read", status: "complete", output: "source" }],
+      }];
+      store.applySessionSnapshot(thread, { messages: [{
+        role: "assistant", piDeskEntryId: "persisted", content: [
+          { type: "text", text }, { type: "toolCall", id: toolId, name: "read" },
+        ],
+      }], messageCount: 1 });
+      expect(store.activeMessages[0].renderKey).toBe(expectedKey);
+      expect(store.activeMessages[0].entryId).toBe("persisted");
+    }
   });
 
   it("tracks the latest prompt-cache result across resumed and live messages", async () => {
@@ -3227,6 +3337,54 @@ describe("app store", () => {
 
     expect(store.activeMessages.map((message) => message.text)).toEqual(["Old prompt", "Continue the audit"]);
     expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "Continue the audit" }));
+  });
+
+  it.each(["idle", "running"] as const)("preserves new draft text and images while history loads (%s)", async (status) => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.status = status;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.transcriptStateByThread[thread.id] = "error";
+    const firstImage = { id: "first", name: "first.png", data: "YQ==", mimeType: "image/png", previewUrl: "data:image/png;base64,YQ==" };
+    const nextImage = { ...firstImage, id: "next", name: "next.png" };
+    store.updateDraft("First prompt");
+    store.attachmentsByThread[thread.id] = [firstImage];
+    let finish!: (snapshot: { messages: unknown[] }) => void;
+    mocks.getSessionSnapshot.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const deliver = vi.spyOn(store, "deliverPrompt").mockResolvedValue(true);
+    const pending = store.sendActivePrompt();
+    expect(store.transcriptStateByThread[thread.id]).toBe("loading");
+    store.updateDraft("Next prompt");
+    store.attachmentsByThread[thread.id] = [firstImage, nextImage];
+    finish({ messages: [] });
+    await pending;
+    expect(store.activeDraft).toBe("Next prompt");
+    expect(store.activeAttachments).toEqual([nextImage]);
+    if (status === "running") {
+      expect(store.activePendingPrompts).toEqual([expect.objectContaining({ text: "First prompt", images: [firstImage] })]);
+      expect(deliver).not.toHaveBeenCalled();
+    } else {
+      expect(deliver).toHaveBeenCalledWith(expect.anything(), "First prompt", [firstImage], undefined);
+    }
+  });
+
+  it("preserves text typed while a bash command waits for history", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.transcriptStateByThread[thread.id] = "error";
+    store.updateDraft("! git status");
+    let finish!: (snapshot: { messages: unknown[] }) => void;
+    mocks.getSessionSnapshot.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = store.sendActiveBash();
+    store.updateDraft("Next prompt");
+    finish({ messages: [] });
+    await pending;
+    expect(mocks.bash).toHaveBeenCalledWith(expect.objectContaining({ command: "git status" }));
+    expect(store.activeDraft).toBe("Next prompt");
   });
 
   it("restores persisted drafts and converts an interrupted run to attention", async () => {

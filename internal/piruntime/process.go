@@ -186,17 +186,39 @@ func buildPiArgs(config StartConfig) ([]string, error) {
 	return args, nil
 }
 
+// AgentDirectory is shared by configuration editors and child Pi processes.
+func AgentDirectory() (string, error) {
+	directory := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	if directory == "" || directory == "~" || strings.HasPrefix(directory, "~/") || (filepath.Separator == '\\' && strings.HasPrefix(directory, "~\\")) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("locate Pi home directory: %w", err)
+		}
+		if directory == "" {
+			directory = filepath.Join(home, ".pi", "agent")
+		} else {
+			directory = filepath.Join(home, strings.TrimLeft(directory[1:], "/\\"))
+		}
+	}
+	return filepath.Abs(directory)
+}
+
 func processEnvironment(config StartConfig) ([]string, error) {
+	agentDirectory, err := AgentDirectory()
+	if err != nil {
+		return nil, err
+	}
 	environment := make([]string, 0, len(os.Environ())+9)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(strings.ToUpper(key), "PI_DESK_BROWSER_") {
+		if strings.HasPrefix(strings.ToUpper(key), "PI_DESK_BROWSER_") || strings.EqualFold(key, "PI_CODING_AGENT_DIR") {
 			continue
 		}
 		if !strings.EqualFold(key, "PI_DESK_REMOTE_SOCKET") && !strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") && !strings.EqualFold(key, "PI_DESK_REMOTE_ROOT") {
 			environment = append(environment, entry)
 		}
 	}
+	environment = append(environment, "PI_CODING_AGENT_DIR="+agentDirectory)
 	proxyURL := strings.TrimSpace(config.ProxyURL)
 	if proxyURL != "" {
 		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {

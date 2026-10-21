@@ -150,6 +150,38 @@ func TestCatalogPersistsDesktopState(t *testing.T) {
 	}
 }
 
+func TestCatalogPersistsArchiveStateForLargeHistory(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state.json")
+	catalog := NewCatalog(statePath)
+	project, err := catalog.Add(root, "deny")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads := make([]ThreadRecord, 1200)
+	for index := range threads {
+		threads[index] = ThreadRecord{
+			ID: fmt.Sprintf("thread-%d", index), Title: "History", WorkspaceID: project.ID,
+			WorkspacePath: project.Path, Trust: "deny", Status: "idle", Archived: index%2 == 0,
+		}
+	}
+	if err := catalog.SaveDesktop(DesktopRecord{Threads: threads}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewCatalog(statePath).Desktop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Threads) != len(threads) {
+		t.Fatalf("lost threads: got %d, want %d", len(restored.Threads), len(threads))
+	}
+	for index, thread := range restored.Threads {
+		if thread.Archived != threads[index].Archived {
+			t.Fatalf("lost archive state at %d", index)
+		}
+	}
+}
+
 func TestCatalogDropsRemovedMetadataOnSave(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	legacy := `{

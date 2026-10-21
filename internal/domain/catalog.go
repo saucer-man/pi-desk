@@ -206,6 +206,7 @@ type DesktopThreadState struct {
 	CreatedAt     string `json:"createdAt,omitempty"`
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 	Unread        bool   `json:"unread,omitempty"`
+	Archived      bool   `json:"archived,omitempty"`
 }
 
 type ScheduledTaskState struct {

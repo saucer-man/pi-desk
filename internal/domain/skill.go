@@ -17,6 +17,7 @@ type ManagedSkillSummary struct {
 	Directory     string     `json:"directory"`
 	Kind          string     `json:"kind"`
 	Enabled       bool       `json:"enabled"`
+	ReadOnly      bool       `json:"readOnly,omitempty"`
 	Warnings      []string   `json:"warnings,omitempty"`
 }
 

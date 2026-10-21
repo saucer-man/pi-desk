@@ -62,6 +62,18 @@ describe("ConversationPane", () => {
     expect(wrapper.find("composer-bar-stub").exists()).toBe(true);
   });
 
+  it("keeps the latest user and assistant turn outside history virtualization", async () => {
+    const wrapper = mountTranscript(82);
+    await flushPromises();
+    expect(wrapper.find("[data-virtualized]").exists()).toBe(true);
+    for (const id of ["message-80", "message-81"]) {
+      const row = wrapper.get(`[data-message-id="${id}"]`).element;
+      expect(row.closest(".virtual-message-row")).toBeNull();
+      expect(row.parentElement).toBe(wrapper.get(".timeline-content").element);
+    }
+    wrapper.unmount();
+  });
+
   it("opens an already selected conversation at its latest message", async () => {
     const wrapper = mountTranscript(4);
     const timeline = wrapper.get(".timeline").element as HTMLElement;
@@ -71,6 +83,32 @@ describe("ConversationPane", () => {
     await flushPromises();
 
     expect(timeline.scrollTop).toBe(1200);
+  });
+
+  it("opens cached conversations at the bottom, including reselecting the current conversation", async () => {
+    const wrapper = mountTranscript(4);
+    await flushPromises();
+    const store = useAppStore();
+    store.threads.push({ ...store.threads[0], id: "thread-2" });
+    store.messagesByThread["thread-2"] = transcript(6);
+    const timeline = wrapper.get(".timeline").element as HTMLElement;
+    Object.defineProperty(timeline, "scrollHeight", {
+      get: () => wrapper.findAll(".stub-message").length * 300,
+    });
+
+    for (const threadId of ["thread-1", "thread-2", "thread-1"]) {
+      await wrapper.get(".timeline").trigger("wheel", { deltaY: -100 });
+      timeline.scrollTop = 100;
+      store.selectThread(threadId);
+      await flushPromises();
+      expect(timeline.scrollTop).toBe(timeline.scrollHeight);
+    }
+
+    wrapper.unmount();
+    timeline.scrollTop = 100;
+    store.selectThread("thread-1");
+    await flushPromises();
+    expect(timeline.scrollTop).toBe(100);
   });
 
   it("measures the composer stack and follows its growth only while pinned to the bottom", async () => {
@@ -110,6 +148,7 @@ describe("ConversationPane", () => {
     expect(timeline.scrollTop).toBe(1200);
 
     timeline.scrollTop = 100;
+    await wrapper.get(".timeline").trigger("wheel", { deltaY: -100 });
     await wrapper.get(".timeline").trigger("scroll");
     rect.mockReturnValue({ height: 400 } as DOMRect);
     observer.callback();
@@ -120,6 +159,129 @@ describe("ConversationPane", () => {
     expect(timeline.scrollTop).toBe(100);
     wrapper.unmount();
     expect(observer.disconnect).toHaveBeenCalled();
+  });
+
+  it("follows measured content growth without mistaking layout scrolls for an upward wheel", async () => {
+    const observers: Array<{ callback: () => void; target?: Element; disconnect: () => void }> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      record: (typeof observers)[number];
+      constructor(callback: () => void) {
+        this.record = { callback, disconnect: vi.fn() };
+        observers.push(this.record);
+      }
+      observe(target: Element) { this.record.target = target; }
+      unobserve() {}
+      disconnect() { this.record.disconnect(); }
+    });
+    const wrapper = mountTranscript(4);
+    await flushPromises();
+    const observer = observers.find((item) => item.target === wrapper.get(".timeline-content").element)!;
+    const timeline = wrapper.get(".timeline").element as HTMLElement;
+    Object.defineProperties(timeline, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1200 },
+    });
+    timeline.scrollTop = 600;
+    await wrapper.get(".timeline").trigger("scroll");
+
+    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 2000 });
+    await wrapper.get(".timeline").trigger("scroll");
+    observer.callback();
+    expect(timeline.scrollTop).toBe(2000);
+
+    await wrapper.get(".timeline").trigger("wheel", { deltaY: -5 });
+    timeline.scrollTop = 1395;
+    await wrapper.get(".timeline").trigger("scroll");
+    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 3000 });
+    observer.callback();
+    expect(timeline.scrollTop).toBe(1395);
+
+    timeline.scrollTop = 2400;
+    await wrapper.get(".timeline").trigger("scroll");
+    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 3200 });
+    observer.callback();
+    expect(timeline.scrollTop).toBe(3200);
+    wrapper.unmount();
+    expect(observer.disconnect).toHaveBeenCalled();
+  });
+
+  it("keeps the first answer DOM in place through the empty start of a tool follow-up", async () => {
+    const store = useAppStore();
+    store.threads = [{ id: "thread-1", title: "First turn", workspace: "repo", workspacePath: "D:\\repo", trust: "deny", status: "running", started: true, generation: 1 }];
+    store.activeThreadId = "thread-1";
+    store.messagesByThread["thread-1"] = [];
+    const live = mount(ConversationPane, { global: { stubs: { ComposerBar: true } } });
+    try {
+      await flushPromises();
+      expect(live.find(".empty-thread").exists()).toBe(true);
+      store.messagesByThread["thread-1"] = [
+        { ...transcript(1)[0], id: "first-user", text: "Inspect" },
+        { ...transcript(2)[1], id: "first-work", text: "Reading the project", streaming: true, tools: [{ id: "read", name: "read", output: "source", status: "complete" }] },
+      ];
+      await live.vm.$nextTick();
+      const body = live.get('[data-role="assistant"] .message-content > .markdown-body').element;
+      store.messagesByThread["thread-1"][1].streaming = false;
+      store.messagesByThread["thread-1"].push({ ...transcript(2)[1], id: "next-work", text: "", thinking: "Checking the next file", streaming: true });
+      await live.vm.$nextTick();
+      expect(live.get('[data-role="assistant"] .message-content > .markdown-body').element).toBe(body);
+      expect(live.get('[data-role="assistant"] .message-content > .markdown-body').text()).toBe("Reading the project");
+      expect(live.findAll(".execution-process-details > .markdown-body")).toHaveLength(0);
+    } finally {
+      live.unmount();
+    }
+  });
+
+  it("preserves the assistant row and open tools through streaming, completion and history refresh", async () => {
+    const store = useAppStore();
+    store.threads = [{
+      id: "thread-1", title: "Live task", workspace: "repo", workspacePath: "D:\\repo",
+      trust: "deny", status: "running", started: false, generation: 0,
+    }];
+    store.activeThreadId = "thread-1";
+    store.messagesByThread["thread-1"] = [
+      { ...transcript(1)[0], id: "request", text: "Inspect" },
+      { ...transcript(2)[1], id: "work", thinking: "Check sources", streaming: true, tools: [{ id: "tool", name: "read", output: "source", status: "complete" }] },
+    ];
+    const wrapper = mount(ConversationPane, { global: { stubs: { ComposerBar: true } } });
+    const row = wrapper.get('[data-role="assistant"]').element;
+    const tool = wrapper.get(".tool-call").element;
+    const thinking = wrapper.get(".thinking-block").element;
+    await wrapper.get(".thinking-block > summary").trigger("click");
+    await wrapper.get(".tool-call > summary").trigger("click");
+    expect(wrapper.get(".tool-call").attributes("open")).toBeDefined();
+
+    store.messagesByThread["thread-1"].push({ ...transcript(2)[1], id: "answer", text: "Done", streaming: true });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-role="assistant"]').element).toBe(row);
+    expect(wrapper.get('[data-role="assistant"]').attributes("data-message-id")).toBe("answer");
+    expect(wrapper.get(".tool-call").element).toBe(tool);
+    expect(wrapper.get(".tool-call").attributes("open")).toBeDefined();
+    store.activeAssistantByThread["thread-1"] = "answer";
+    store.finishAssistant("thread-1");
+    store.threads[0].status = "idle";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".execution-process").attributes("open")).toBeDefined();
+    const waitingSlot = wrapper.get(".waiting-for-output").element;
+    store.applySessionSnapshot(store.threads[0], { messages: [
+      { role: "user", piDeskEntryId: "request", content: "Inspect" },
+      { role: "assistant", piDeskEntryId: "work", content: [
+        { type: "thinking", thinking: "Check sources" },
+        { type: "text", text: "Message 1" }, { type: "toolCall", id: "tool", name: "read" },
+      ] },
+      { role: "toolResult", toolCallId: "tool", piDeskEntryId: "result", content: "source" },
+      { role: "assistant", piDeskEntryId: "answer", content: "Done" },
+    ], messageCount: 4 });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-role="assistant"]').element).toBe(row);
+    expect(wrapper.get('[data-role="assistant"]').attributes("data-message-id")).toBe("history-answer");
+    expect(wrapper.get(".tool-call").element).toBe(tool);
+    expect(wrapper.get(".tool-call").attributes("open")).toBeDefined();
+    expect(wrapper.get(".thinking-block").element).toBe(thinking);
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
+    expect(wrapper.get(".waiting-for-output").element).toBe(waitingSlot);
+    expect(wrapper.get(".waiting-for-output").classes()).toContain("invisible");
+    wrapper.unmount();
   });
 
   it("shows the temporary thinking status only while waiting for backend output", async () => {
@@ -144,15 +306,15 @@ describe("ConversationPane", () => {
     expect(status.text()).toBe("");
     expect(status.attributes("aria-label")).toBe("Thinking");
     expect(status.find("svg.is-spinning").exists()).toBe(true);
-    expect(wrapper.get(".timeline").element.lastElementChild?.classList.contains("waiting-for-output")).toBe(true);
+    expect(wrapper.get(".timeline-content").element.lastElementChild?.classList.contains("waiting-for-output")).toBe(true);
 
     store.retryByThread["thread-1"] = { attempt: 1, maxAttempts: 3, delayMs: 4000 };
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(".waiting-for-output").exists()).toBe(false);
+    expect(wrapper.get(".waiting-for-output").classes()).toContain("invisible");
 
     store.waitingForOutputByThread["thread-1"] = false;
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(".waiting-for-output").exists()).toBe(false);
+    expect(wrapper.get(".waiting-for-output").classes()).toContain("invisible");
   });
 
   it("opens conversation search with Ctrl+F and navigates results", async () => {

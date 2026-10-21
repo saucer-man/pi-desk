@@ -8,11 +8,12 @@ const (
 )
 
 type McpServerSummary struct {
-	Scope     McpConfigScope `json:"scope"`
-	Name      string         `json:"name"`
-	Transport string         `json:"transport"`
-	Endpoint  string         `json:"endpoint,omitempty"`
-	Disabled  bool           `json:"disabled"`
+	Scope          McpConfigScope `json:"scope"`
+	Name           string         `json:"name"`
+	Transport      string         `json:"transport"`
+	Endpoint       string         `json:"endpoint,omitempty"`
+	Disabled       bool           `json:"disabled"`
+	NeedsMigration bool           `json:"needsMigration,omitempty"`
 }
 
 // McpConfigSnapshot exposes the native Pi user and trusted-project configuration.

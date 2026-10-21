@@ -13,7 +13,7 @@ const props = defineProps<{
   excludeFromContext?: (entryId: string) => Promise<boolean>;
 }>();
 const copied = ref<"input" | "output" | "">("");
-const open = ref(props.tool.status === "running");
+const open = ref(false);
 const confirmingContextExclusion = ref(false);
 const excludingContext = ref(false);
 const contextError = ref("");
@@ -111,10 +111,6 @@ const durationLabel = computed(() => {
   return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)}s`;
 });
 
-watch(() => props.tool.status, (status, previous) => {
-  if (status === "running") open.value = true;
-  else if (previous === "running") open.value = false;
-});
 watch(() => props.tool.contextExcluded, (excluded) => {
   if (excluded) confirmingContextExclusion.value = false;
 });
@@ -178,31 +174,31 @@ onBeforeUnmount(() => {
         <span class="tool-summary">{{ summary }}</span>
         <span v-if="subagentAgents" class="tool-agent-chip" :title="tr('tools.subagentAgent')">{{ subagentAgents }}</span>
         <span v-if="subagentTaskPreview" class="tool-subtitle" :title="subagentTaskPreview">{{ subagentTaskPreview }}</span>
-        <span v-if="durationLabel" class="tool-duration">{{ durationLabel }}</span>
         <span v-if="tool.diff" class="tool-diff-badge">diff</span>
-        <span class="tool-status">
-          <LoaderCircle v-if="tool.status === 'running'" :size="12" class="is-spinning" aria-hidden="true" />
-          <CircleCheck v-else-if="tool.status === 'complete'" :size="12" aria-hidden="true" />
-          <CirclePause v-else-if="tool.status === 'unfinished'" :size="12" aria-hidden="true" />
-          <CircleX v-else :size="12" aria-hidden="true" />
-          {{ statusLabel }}
+        <span v-if="tool.contextExcluded" class="tool-context-badge" :title="tr('conversation.excludedFromContext')">
+          <MessageSquareOff :size="12" aria-hidden="true" />
+          <span>{{ tr('conversation.excludedFromContext') }}</span>
         </span>
+        <button
+          v-else-if="canExcludeFromContext"
+          class="message-action tool-context-action"
+          type="button"
+          :title="tr('conversation.excludeFromContext')"
+          :aria-label="tr('conversation.excludeFromContext')"
+          :disabled="contextBusy || excludingContext"
+          @click.stop.prevent="requestContextExclusion"
+        >
+          <MessageSquareOff :size="13" />
+        </button>
       </span>
-      <span v-if="tool.contextExcluded" class="tool-context-badge" :title="tr('conversation.excludedFromContext')">
-        <MessageSquareOff :size="12" aria-hidden="true" />
-        {{ tr('conversation.excludedFromContext') }}
+      <span v-if="durationLabel" class="tool-duration">{{ durationLabel }}</span>
+      <span class="tool-status">
+        <LoaderCircle v-if="tool.status === 'running'" :size="12" class="is-spinning" aria-hidden="true" />
+        <CircleCheck v-else-if="tool.status === 'complete'" :size="12" aria-hidden="true" />
+        <CirclePause v-else-if="tool.status === 'unfinished'" :size="12" aria-hidden="true" />
+        <CircleX v-else :size="12" aria-hidden="true" />
+        {{ statusLabel }}
       </span>
-      <button
-        v-else-if="canExcludeFromContext"
-        class="message-action tool-context-action"
-        type="button"
-        :title="tr('conversation.excludeFromContext')"
-        :aria-label="tr('conversation.excludeFromContext')"
-        :disabled="contextBusy || excludingContext"
-        @click.stop.prevent="requestContextExclusion"
-      >
-        <MessageSquareOff :size="13" />
-      </button>
     </summary>
     <div v-if="confirmingContextExclusion" class="message-delete-confirm tool-context-confirm" role="alert">
       <span>{{ tr('conversation.excludeToolConfirm') }}</span>

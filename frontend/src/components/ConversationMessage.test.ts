@@ -84,7 +84,7 @@ describe("ConversationMessage", () => {
     await wrapper.setProps({ message: {
       ...wrapper.props("message"), text: `<${tag}>Still inspecting`, streaming: true,
     } });
-    expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeUndefined();
     expect(wrapper.get(".thinking-block pre").text()).toBe("Still inspecting");
     await wrapper.setProps({ message: {
       ...wrapper.props("message"), text: `<${tag}>Still inspecting</${tag}>Done`, streaming: true,
@@ -180,7 +180,7 @@ describe("ConversationMessage", () => {
     expect(streamedOutput.text()).toBe("Partial answer");
   });
 
-  it("keeps execution expanded until all assistant output finishes", async () => {
+  it("preserves manual execution expansion across output state changes", async () => {
     const pinia = createPinia();
     const wrapper = mount(ConversationMessage, {
       props: {
@@ -199,16 +199,24 @@ describe("ConversationMessage", () => {
     const details = wrapper.get(".execution-process");
     expect(details.attributes("open")).toBeDefined();
     expect(wrapper.find(".message-actions").exists()).toBe(false);
+    const metaSlot = wrapper.get(".message-meta").element;
 
     await details.get("summary").trigger("click");
     await wrapper.vm.$nextTick();
-    expect(details.attributes("open")).toBeDefined();
+    expect(details.attributes("open")).toBeUndefined();
 
     await wrapper.setProps({ message: { ...wrapper.props("message"), streaming: false } });
     await wrapper.vm.$nextTick();
     expect(details.attributes("open")).toBeUndefined();
     expect(wrapper.find(".message-actions").exists()).toBe(true);
+    expect(wrapper.get(".message-meta").element).toBe(metaSlot);
     expect(wrapper.findAll(".message-action")).toHaveLength(4);
+    await details.get("summary").trigger("click");
+    await wrapper.setProps({ message: { ...wrapper.props("message"), streaming: true } });
+    expect(details.attributes("open")).toBeDefined();
+    expect(wrapper.get(".message-meta").element).toBe(metaSlot);
+    await wrapper.setProps({ message: { ...wrapper.props("message"), streaming: false } });
+    expect(details.attributes("open")).toBeDefined();
   });
 
   it("shows successful changed files after the response and opens them in the Inspector", async () => {
@@ -291,7 +299,7 @@ describe("ConversationMessage", () => {
     expect(store.openRepositoryDiff).toHaveBeenCalledWith("src/main.go", "+ changed", "assistant-remote-file");
   });
 
-  it("expands only the active reasoning step and collapses it when reasoning finishes", async () => {
+  it("keeps live reasoning collapsed and preserves manual expansion when reasoning finishes", async () => {
     const pinia = createPinia();
     const message = {
       id: "assistant-thinking-live", role: "assistant" as const, text: "", thinking: "Inspecting",
@@ -300,12 +308,14 @@ describe("ConversationMessage", () => {
     };
     const wrapper = mount(ConversationMessage, { props: { message }, global: { plugins: [pinia] } });
 
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeUndefined();
+    await wrapper.get(".thinking-block > summary").trigger("click");
     expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
     await wrapper.setProps({ message: {
       ...message, text: "Answer", activeExecution: "text" as const,
       executionSteps: [{ ...message.executionSteps[0], active: false }],
     } });
-    expect(wrapper.get(".thinking-block").attributes("open")).toBeUndefined();
+    expect(wrapper.get(".thinking-block").attributes("open")).toBeDefined();
   });
 
   it("keeps message actions visible while disabling persisted mutations during a model run", async () => {

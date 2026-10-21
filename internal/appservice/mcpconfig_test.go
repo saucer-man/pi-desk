@@ -192,6 +192,108 @@ func TestMcpNativeOverridesAndLegacyNames(t *testing.T) {
 	}
 }
 
+func TestMcpNativeFieldValidation(t *testing.T) {
+	for _, definition := range []string{
+		`{"command":"node","type":"http"}`, `{"url":"https://example.test","type":"stdio"}`,
+		`{"command":"node","exposure":"invalid"}`, `{"command":"node","exposure":null}`,
+		`{"command":"node","toolExposure":{"read":"invalid"}}`, `{"command":"node","toolExposure":[]}`,
+		`{"command":"node","timeout":0}`, `{"command":"node","timeout":-1}`, `{"command":"node","timeout":"60"}`,
+		`{"command":"node","enabled":"false"}`, `{"command":"node","disabled":"true"}`,
+		`{"command":"node","args":[1]}`, `{"command":"node","env":{"KEY":1}}`, `{"url":"https://example.test","headers":[]}`,
+		`{"url":"file:///tmp/server"}`, `{"command":"node","description":false}`, `{"command":"node","cwd":1}`,
+	} {
+		t.Run(definition, func(t *testing.T) {
+			if _, _, err := parseMcpDefinition(definition); err == nil {
+				t.Fatal("accepted incompatible native definition")
+			}
+		})
+	}
+	for _, definition := range []string{
+		`{"command":"node","type":"stdio","args":["server.js"],"env":{"KEY":"${TOKEN}"},"timeout":0.5,"exposure":"codemode-deferred"}`,
+		`{"url":"https://example.test/mcp","type":"streamable-http","headers":{"Authorization":"Bearer ${TOKEN}"},"toolExposure":{"get_*":"direct"},"oauth":{"clientId":"test"}}`,
+		`{"enabled":false,"exposure":"hidden"}`,
+	} {
+		if _, _, err := parseMcpDefinition(definition); err != nil {
+			t.Fatalf("rejected native definition: %v", err)
+		}
+	}
+}
+
+func TestMcpNamespaceConflictsPreserveSavedConfig(t *testing.T) {
+	root := t.TempDir()
+	agent, project := filepath.Join(root, "agent"), filepath.Join(root, "project")
+	service := newMcpConfigService(agent, fakeWorkspaceResolver{record: workspace.Record{Path: project, Trust: "approve"}})
+	if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeGlobal, Name: "docs-api", Definition: `{"command":"node"}`}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(agent, "mcp.json"))
+	for _, scope := range []domain.McpConfigScope{domain.McpConfigScopeGlobal, domain.McpConfigScopeProject} {
+		if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: scope, WorkspacePath: project, Name: "docs_api", Definition: `{"command":"node"}`}); err == nil || !strings.Contains(err.Error(), "conflicts") {
+			t.Fatalf("accepted namespace conflict: %v", err)
+		}
+	}
+	after, _ := os.ReadFile(filepath.Join(agent, "mcp.json"))
+	if string(before) != string(after) {
+		t.Fatal("failed save changed global config")
+	}
+	if _, err := os.Stat(filepath.Join(project, ".pi", "mcp.json")); !os.IsNotExist(err) {
+		t.Fatal("failed save created project config")
+	}
+	if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeProject, WorkspacePath: project, Name: "docs-api", Definition: `{"enabled":false}`}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeProject, WorkspacePath: project, Name: "credentials", Definition: `{"url":"https://example.test","auth":{"provider":"openai"}}`}); err == nil {
+		t.Fatal("accepted project auth")
+	}
+}
+
+func TestMcpLegacyConfigIsMarkedAndMigratesAllEntriesOnSave(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "mcp.json")
+	before := `{"autoEnableCodemode":false,"custom":{"keep":true},"mcp-servers":{"one":{"command":"node","disabled":false},"two":{"command":"node","disabled":true,"env":{"KEEP":"value"}}}}`
+	if err := os.WriteFile(path, []byte(before), 0600); err != nil {
+		t.Fatal(err)
+	}
+	service := newMcpConfigService(directory, nil)
+	snapshot, err := service.ListMcpServers(domain.ListMcpServersRequest{})
+	if err != nil || len(snapshot.Servers) != 2 {
+		t.Fatalf("legacy list: %#v %v", snapshot, err)
+	}
+	for _, server := range snapshot.Servers {
+		if !server.NeedsMigration {
+			t.Fatal("legacy server reported as native")
+		}
+	}
+	unchanged, _ := os.ReadFile(path)
+	if string(unchanged) != before {
+		t.Fatal("listing changed the user's config")
+	}
+	server, err := service.GetMcpServer(domain.McpServerRequest{Scope: domain.McpConfigScopeGlobal, Name: "one"})
+	if err != nil || !server.NeedsMigration {
+		t.Fatalf("legacy editor: %#v %v", server, err)
+	}
+	if _, err := service.UpsertMcpServer(domain.UpsertMcpServerRequest{Scope: domain.McpConfigScopeGlobal, OriginalName: "one", Name: "one", Definition: server.Definition}); err != nil {
+		t.Fatal(err)
+	}
+	raw, servers, err := readMcpConfig(path)
+	if err != nil || raw["mcp-servers"] != nil || raw["custom"] == nil || raw["autoEnableCodemode"] != false {
+		t.Fatalf("migration lost config: %#v %v", raw, err)
+	}
+	two := servers["two"].(map[string]any)
+	if two["enabled"] != false || two["disabled"] != nil || two["env"].(map[string]any)["KEEP"] != "value" {
+		t.Fatalf("migration changed untouched server: %#v", two)
+	}
+	snapshot, err = service.ListMcpServers(domain.ListMcpServersRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range snapshot.Servers {
+		if server.NeedsMigration {
+			t.Fatal("native server still marked as legacy")
+		}
+	}
+}
+
 func TestNativeMcpProbeUsesPiWithoutChangingConfig(t *testing.T) {
 	bin := os.Getenv("PI_DESK_TEST_NATIVE_PI")
 	if bin == "" {

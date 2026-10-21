@@ -37,7 +37,7 @@ describe("AppSidebar", () => {
     const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
 
     expect(wrapper.find(".sidebar-expand-button").exists()).toBe(false);
-    expect(wrapper.get(".primary-nav-row").findAll("button")).toHaveLength(1);
+    expect(wrapper.get(".primary-nav-row").findAll("button")).toHaveLength(2);
     store.sidebarCollapsed = true;
     await wrapper.vm.$nextTick();
 
@@ -175,6 +175,89 @@ describe("AppSidebar", () => {
     expect(wrapper.findAll(".thread-title").map((item) => item.text())).toEqual([
       "Old task", "Latest reply", "Middle task",
     ]);
+  });
+
+  it("shows 20 recent tasks per workspace and keeps selected and busy tasks visible", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.workspaces = [{ id: "repo", name: "repo", path: "D:\\repo", trust: "deny" }];
+    store.threads = Array.from({ length: 55 }, (_, index) => ({
+      id: `task-${index}`, title: `Task ${index}`, workspace: "repo", workspacePath: "D:\\repo", trust: "deny",
+      status: "idle", started: false, generation: 0, modifiedAt: new Date(60_000 * (55 - index)).toISOString(),
+    }));
+    store.activeThreadId = "task-54";
+    store.threads[53].status = "running";
+    store.threads[52].status = "starting";
+    store.bashRunningByThread["task-51"] = true;
+    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
+
+    expect(wrapper.findAll(".thread-row")).toHaveLength(24);
+    expect(wrapper.findAll(".thread-title").slice(-4).map(item => item.text())).toEqual(["Task 51", "Task 52", "Task 53", "Task 54"]);
+    expect(wrapper.get(".show-more-threads").text()).toContain("31 remaining");
+    await wrapper.get(".show-more-threads").trigger("click");
+    expect(wrapper.findAll(".thread-row")).toHaveLength(44);
+    await wrapper.get(".show-more-threads").trigger("click");
+    expect(wrapper.findAll(".thread-row")).toHaveLength(55);
+    expect(wrapper.find(".show-more-threads").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("searches all history beyond the visible limit and restores archived results", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.workspaces = [{ id: "repo", name: "repo", path: "D:\\repo", trust: "deny" }];
+    store.threads = Array.from({ length: 45 }, (_, index) => ({
+      id: `task-${index}`, title: `Task ${index}`, workspace: "repo", workspacePath: "D:\\repo", trust: "deny",
+      status: "idle", started: false, generation: 0, archived: index === 44,
+    }));
+    store.loadSessionSearchBodies = vi.fn();
+    store.searchBodyTextByThread["task-44"] = "hidden archived answer";
+    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
+
+    expect(wrapper.findAll(".thread-row")).toHaveLength(20);
+    store.searchQuery = "Task";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".thread-row")).toHaveLength(45);
+    expect(wrapper.find(".show-more-threads").exists()).toBe(false);
+    store.searchQuery = "hidden archived answer";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".thread-title").map(item => item.text())).toEqual(["Task 44"]);
+    store.searchQuery = "";
+    await wrapper.get('button[aria-label="Archived tasks"]').trigger("click");
+    expect(wrapper.findAll(".thread-title").map(item => item.text())).toEqual(["Task 44"]);
+    await wrapper.get(".thread-row").trigger("contextmenu");
+    await wrapper.get('[role="menu"]').findAll('[role="menuitem"]').find(item => item.text() === "Restore task")!.trigger("click");
+    expect(store.threads[44].archived).toBe(false);
+    expect(wrapper.text()).toContain("No archived tasks");
+    store.selectThread("task-0");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('button[aria-label="Archived tasks"]').attributes("aria-pressed")).toBe("false");
+    expect(wrapper.findAll(".thread-row")).toHaveLength(20);
+    wrapper.unmount();
+  });
+
+  it("archives idle tasks from their menu and disables archiving while busy", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useAppStore();
+    store.workspaces = [{ id: "repo", name: "repo", path: "D:\\repo", trust: "deny" }];
+    store.threads = [{ id: "task", title: "Task", workspace: "repo", workspacePath: "D:\\repo", trust: "deny", status: "running", started: true, generation: 1 }];
+    store.activeThreadId = "task";
+    const wrapper = mount(AppSidebar, { global: { plugins: [pinia] } });
+    await wrapper.get(".thread-row").trigger("contextmenu");
+    const archive = wrapper.get('[role="menu"]').findAll('[role="menuitem"]').find(item => item.text() === "Archive task")!;
+    expect(archive.attributes("disabled")).toBeDefined();
+    store.threads[0].status = "idle";
+    await wrapper.vm.$nextTick();
+    await archive.trigger("click");
+    expect(store.threads[0].archived).toBe(true);
+    expect(store.activeThreadId).toBe("");
+    expect(wrapper.find(".thread-row").exists()).toBe(false);
+    await wrapper.get('button[aria-label="Archived tasks"]').trigger("click");
+    expect(wrapper.get(".thread-title").text()).toBe("Task");
+    wrapper.unmount();
   });
 
   it("does not show sessions unavailable after a non-catalog error", () => {
@@ -403,9 +486,10 @@ describe("AppSidebar", () => {
       "Export HTML",
       "Compact context",
       "Start Pi process",
+      "Archive task",
       "Delete task",
     ]);
-    expect(wrapper.get(".thread-context-menu").text()).not.toContain("Archive task");
+    expect(menuItems.find((item) => item.text() === "Archive task")!.attributes("disabled")).toBeUndefined();
 
     await menuItems[0].trigger("click");
     expect(store.openWorkspace).toHaveBeenCalledWith("workspace-1");

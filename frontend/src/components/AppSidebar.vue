@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ui } from "../ui/classes";
 import {
+  Archive,
+  ArchiveRestore,
   Copy,
   CalendarClock,
   Download,
@@ -32,6 +34,8 @@ import { tr } from "../i18n";
 const appStore = useAppStore();
 const searchInput = ref<HTMLInputElement>();
 const collapsedWorkspaceIDs = ref<Record<string, boolean>>({});
+const visibleThreadCounts = ref<Record<string, number>>({});
+const showArchived = ref(false);
 const taskMenu = ref({ open: false, threadId: "", x: 0, y: 0 });
 const workspaceMenu = ref({ open: false, workspaceID: "", x: 0, y: 0 });
 const workspaceActionID = ref("");
@@ -78,22 +82,31 @@ function comparablePath(path: string): string {
 }
 
 const workspaceGroups = computed(() => appStore.workspaces.map((workspace) => {
-  const threads = appStore.filteredThreads.filter((thread) => workspace.kind === "ssh"
+  const searching = Boolean(appStore.searchQuery.trim());
+  const threads = appStore.filteredThreads.filter((thread) => (searching || Boolean(thread.archived) === showArchived.value)
+    && (workspace.kind === "ssh"
     ? thread.workspaceId === workspace.id
-    : comparablePath(thread.workspacePath) === comparablePath(workspace.path));
-  return { workspace, threads, threadCount: threads.length };
+    : comparablePath(thread.workspacePath) === comparablePath(workspace.path)));
+  const limit = visibleThreadCounts.value[workspace.id] ?? 20;
+  const visibleThreads = searching ? threads : threads.filter((thread, index) => index < limit
+    || thread.id === appStore.activeThreadId || thread.status === "running" || thread.status === "starting"
+    || appStore.bashRunningByThread[thread.id]);
+  return { workspace, threads: visibleThreads, threadCount: threads.length, hiddenCount: threads.length - visibleThreads.length };
 }).filter((group) => !appStore.searchQuery.trim() || group.threadCount > 0));
 const defaultExpandedWorkspaceID = computed(() => {
   const activeThread = appStore.activeThread;
-  const activeWorkspace = activeThread && appStore.workspaces.find((workspace) => workspace.kind === "ssh"
-    ? activeThread.workspaceId === workspace.id
-    : comparablePath(activeThread.workspacePath) === comparablePath(workspace.path));
+  const activeWorkspace = activeThread && workspaceGroups.value.find((group) => group.threads.some((thread) => thread.id === activeThread.id))?.workspace;
   return activeWorkspace?.id || workspaceGroups.value.find((group) => group.threadCount > 0)?.workspace.id || "";
 });
 
 watch(() => appStore.searchQuery, (query) => {
   if (query.trim()) void appStore.loadSessionSearchBodies();
   else appStore.cancelSessionSearch();
+});
+
+watch(showArchived, () => { visibleThreadCounts.value = {}; });
+watch(() => [appStore.activeThreadId, appStore.activeThread?.archived], () => {
+  if (appStore.activeThread) showArchived.value = Boolean(appStore.activeThread.archived);
 });
 
 function isWorkspaceCollapsed(workspaceID: string): boolean {
@@ -195,7 +208,7 @@ async function submitWorkspaceRename() {
 
 function openTaskMenu(event: MouseEvent, threadId: string) {
   const width = 210;
-  const height = 300;
+  const height = 340;
   taskMenu.value = {
     open: true,
     threadId,
@@ -336,6 +349,7 @@ onBeforeUnmount(() => {
           <Search :size="20" :stroke-width="1.7" />
           <span>{{ tr("sidebar.search") }}</span>
         </button>
+        <button class="icon-button inline-grid size-8 shrink-0 place-items-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.archivedTasks')" :aria-label="tr('sidebar.archivedTasks')" :aria-pressed="showArchived" @click="showArchived = !showArchived"><Archive :size="18" /></button>
       </div>
       <button v-if="!appStore.sidebarCollapsed" class="flex h-8 w-full items-center gap-2 whitespace-nowrap rounded-md border border-transparent bg-transparent px-2.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)] active:bg-[var(--bg-active)] aria-pressed:bg-[var(--bg-active)] aria-pressed:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" :title="tr('sidebar.review')" :aria-label="tr('sidebar.review')" :aria-pressed="appStore.inspectorOpen && appStore.inspectorTab === 'changes'" @click="appStore.toggleInspector('changes')">
         <FileSearch :size="20" :stroke-width="1.7" />
@@ -353,6 +367,7 @@ onBeforeUnmount(() => {
     <div v-if="!appStore.sidebarCollapsed" class="sidebar-section task-section min-h-0 flex-1 overflow-y-auto px-2.5 pt-1.5">
       <p v-if="appStore.catalogLoading" class="sidebar-empty mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]">{{ tr("sidebar.loading") }}</p>
       <p v-else-if="!appStore.catalogReady && appStore.catalogError" class="sidebar-empty error-text mx-2 my-1 text-xs leading-relaxed text-[var(--text-secondary)]" :title="appStore.catalogError">{{ tr("sidebar.unavailable") }}</p>
+      <p v-if="showArchived && !appStore.searchQuery.trim()" class="mx-2 my-1 text-xs text-[var(--text-secondary)]">{{ tr(workspaceGroups.some(group => group.threadCount) ? "sidebar.archivedTasks" : "sidebar.noArchivedTasks") }}</p>
       <div v-for="group in workspaceGroups" :key="group.workspace.id" class="workspace-group mt-1">
         <div class="workspace-header group flex h-8 min-w-0 items-center rounded-md border border-transparent hover:bg-[var(--bg-hover)] active:bg-[var(--bg-active)]">
           <input
@@ -409,6 +424,7 @@ onBeforeUnmount(() => {
             @contextmenu.prevent="openTaskMenu($event, thread.id)"
           >
             <span class="thread-title min-w-0 flex-1 truncate" :class="{ 'is-started text-[var(--sidebar-thread-active-text)]': thread.started }">{{ thread.title }}</span>
+            <Archive v-if="thread.archived" :size="13" class="shrink-0" :aria-label="tr('sidebar.archivedTasks')" />
             <time v-if="relativeTime(thread.modifiedAt || thread.createdAt)" class="thread-time" :datetime="thread.modifiedAt || thread.createdAt">{{ relativeTime(thread.modifiedAt || thread.createdAt) }}</time>
             <span
               v-if="thread.status === 'running' || thread.status === 'starting'"
@@ -418,7 +434,8 @@ onBeforeUnmount(() => {
             />
             <span v-else-if="thread.unread" class="thread-unread size-2 shrink-0 rounded-full bg-[var(--text)]" :aria-label="tr('sidebar.unread')" />
           </button>
-          <p v-if="group.threads.length === 0" class="sidebar-empty mx-2 my-1 text-xs text-[var(--text-secondary)]">{{ tr("sidebar.noTasks") }}</p>
+          <button v-if="group.hiddenCount" class="show-more-threads h-8 rounded-md pl-8 pr-2 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] focus-visible:outline-2 focus-visible:outline-[var(--focus)]" type="button" @click="visibleThreadCounts[group.workspace.id] = (visibleThreadCounts[group.workspace.id] ?? 20) + 20">{{ tr("sidebar.showMore", { count: group.hiddenCount }) }}</button>
+          <p v-if="group.threads.length === 0" class="sidebar-empty mx-2 my-1 text-xs text-[var(--text-secondary)]">{{ tr(showArchived ? "sidebar.noArchivedTasks" : "sidebar.noTasks") }}</p>
         </div>
       </div>
       <p v-if="workspaceActionError" class="sidebar-empty error-text mx-2 my-1 text-xs text-[var(--red)]" role="alert">{{ workspaceActionError }}</p>
@@ -450,6 +467,7 @@ onBeforeUnmount(() => {
       <button type="button" role="menuitem" :disabled="!taskMenuThread.started" @click="void runTaskAction('compact')"><Sparkles :size="14" />{{ tr("topbar.compact") }}</button>
       <button v-if="taskMenuThread.started" type="button" role="menuitem" @click="void appStore.stopThread(taskMenuThread.id)"><Square :size="14" />{{ tr("sidebar.closePi") }}</button>
       <button v-else type="button" role="menuitem" @click="appStore.startThreadInBackground(taskMenuThread.id)"><Play :size="14" />{{ tr("sidebar.startPi") }}</button>
+      <button type="button" role="menuitem" :disabled="!taskMenuThread.archived && !appStore.canArchiveThread(taskMenuThread.id)" @click="appStore.setThreadArchived(taskMenuThread.id, !taskMenuThread.archived)"><component :is="taskMenuThread.archived ? ArchiveRestore : Archive" :size="14" />{{ tr(taskMenuThread.archived ? "sidebar.restoreTask" : "sidebar.archiveTask") }}</button>
       <button type="button" role="menuitem" class="danger" @click="appStore.requestDeleteThread(taskMenuThread.id)"><Trash2 :size="14" />{{ tr("sidebar.delete") }}</button>
     </div>
 

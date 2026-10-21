@@ -5,17 +5,18 @@ function executionSteps(messages: TimelineMessage[], finalIndex: number): Execut
   const steps: ExecutionStep[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
+    const key = message.renderKey ?? message.id;
     const tagged = splitTaggedThinking(message.text);
     if (message.thinking) steps.push({
-      id: `${message.id}-thinking`, kind: "thinking", text: message.thinking,
+      id: `${key}-thinking`, kind: "thinking", text: message.thinking,
       active: message.streaming && message.activeExecution === "thinking",
     });
     if (tagged.thinking) steps.push({
-      id: `${message.id}-tagged-thinking`, kind: "thinking", text: tagged.thinking,
+      id: `${key}-tagged-thinking`, kind: "thinking", text: tagged.thinking,
       active: message.streaming && tagged.open,
     });
-    if (message.tools.length) steps.push({ id: `${message.id}-tools`, kind: "tools", tools: message.tools });
-    if (index !== finalIndex && tagged.text) steps.push({ id: `${message.id}-message`, kind: "message", text: tagged.text });
+    if (message.tools.length) steps.push({ id: `${key}-tools`, kind: "tools", tools: message.tools });
+    if (index !== finalIndex && tagged.text.trim()) steps.push({ id: `${key}-message`, kind: "message", text: tagged.text });
   }
   return steps;
 }
@@ -49,17 +50,8 @@ function mergedRunNotice(messages: TimelineMessage[]): TimelineRunNotice | undef
 function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number): TimelineMessage | undefined {
   if (!messages.length) return undefined;
   const streaming = messages.some((message) => message.streaming);
-  let finalIndex = -1;
-  if (streaming) {
-    finalIndex = messages.length - 1;
-  } else {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index].text) {
-        finalIndex = index;
-        break;
-      }
-    }
-  }
+  // Empty and thinking-only starts must not move the visible answer into the execution panel.
+  let finalIndex = messages.findLastIndex(message => Boolean(splitTaggedThinking(message.text).text.trim() || message.images?.length));
   if (finalIndex < 0) finalIndex = messages.length - 1;
 
   const finalMessage = messages[finalIndex];
@@ -72,6 +64,7 @@ function mergeAssistantRun(messages: TimelineMessage[], turnStartedAt?: number):
   return {
     ...finalMessage,
     id: finalMessage.id,
+    renderKey: messages[0].renderKey ?? messages[0].id,
     text: finalTagged.text,
     thinking: "",
     thinkingCount: steps.filter((step) => step.kind === "thinking").length,

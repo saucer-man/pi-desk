@@ -68,16 +68,23 @@ func (service *ManagedSkillService) ListManagedSkills(request domain.ListManaged
 		}
 		snapshot.Skills = append(snapshot.Skills, skills...)
 	}
-	projectDirectory, notice, enabled := service.projectDirectory(request.WorkspacePath)
-	snapshot.ProjectDirectory = projectDirectory
+	projectDirectories, notice, enabled := service.projectDirectories(request.WorkspacePath)
+	if len(projectDirectories) > 0 {
+		snapshot.ProjectDirectory = projectDirectories[0]
+	}
 	snapshot.ProjectNotice = notice
 	snapshot.ProjectEnabled = enabled
 	if enabled {
-		projectSkills, err := listManagedSkills(projectDirectory, domain.SkillScopeProject, false)
-		if err != nil {
-			return domain.ManagedSkillSnapshot{}, err
+		for index, directory := range projectDirectories {
+			projectSkills, err := listManagedSkills(directory, domain.SkillScopeProject, index == 0)
+			if err != nil {
+				return domain.ManagedSkillSnapshot{}, err
+			}
+			for i := range projectSkills {
+				projectSkills[i].ReadOnly = index > 0
+			}
+			snapshot.Skills = append(snapshot.Skills, projectSkills...)
 		}
-		snapshot.Skills = append(snapshot.Skills, projectSkills...)
 	}
 	sortManagedSkills(snapshot.Skills)
 	return snapshot, nil
@@ -87,7 +94,7 @@ func (service *ManagedSkillService) GetManagedSkill(request domain.ManagedSkillR
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory, false)
 	if err != nil {
 		return domain.ManagedSkill{}, err
 	}
@@ -99,14 +106,19 @@ func (service *ManagedSkillService) GetManagedSkill(request domain.ManagedSkillR
 	if err != nil {
 		return domain.ManagedSkill{}, err
 	}
-	return makeManagedSkillSummary(directory, request.Scope, relativePath, content), nil
+	skill := makeManagedSkillSummary(directory, request.Scope, relativePath, content)
+	if request.Scope == domain.SkillScopeProject {
+		primary, _, _ := service.projectDirectory(request.WorkspacePath)
+		skill.ReadOnly = !samePath(primary, directory)
+	}
+	return skill, nil
 }
 
 func (service *ManagedSkillService) CreateManagedSkill(request domain.CreateManagedSkillRequest) (domain.ManagedSkill, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, "")
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, "", true)
 	if err != nil {
 		return domain.ManagedSkill{}, err
 	}
@@ -143,7 +155,7 @@ func (service *ManagedSkillService) UpdateManagedSkill(request domain.UpdateMana
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory, true)
 	if err != nil {
 		return domain.ManagedSkill{}, err
 	}
@@ -173,7 +185,7 @@ func (service *ManagedSkillService) DeleteManagedSkill(request domain.ManagedSki
 	service.mu.Lock()
 	defer service.mu.Unlock()
 
-	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory)
+	directory, err := service.directoryFor(request.Scope, request.WorkspacePath, request.RootDirectory, true)
 	if err != nil {
 		return err
 	}
@@ -182,7 +194,7 @@ func (service *ManagedSkillService) DeleteManagedSkill(request domain.ManagedSki
 		return err
 	}
 	target := path
-	if filepath.Base(relativePath) == "SKILL.md" {
+	if filepath.Base(relativePath) == "SKILL.md" && filepath.Dir(relativePath) != "." {
 		target = filepath.Dir(path)
 	}
 	if err := os.RemoveAll(target); err != nil {
@@ -229,7 +241,7 @@ func (service *ManagedSkillService) globalDirectory() (string, error) {
 	return filepath.Join(filepath.Clean(service.agentDirectory), "skills"), nil
 }
 
-func (service *ManagedSkillService) directoryFor(scope domain.SkillScope, workspacePath, rootDirectory string) (string, error) {
+func (service *ManagedSkillService) directoryFor(scope domain.SkillScope, workspacePath, rootDirectory string, writable bool) (string, error) {
 	switch scope {
 	case domain.SkillScopeGlobal:
 		if strings.TrimSpace(rootDirectory) == "" {
@@ -247,14 +259,25 @@ func (service *ManagedSkillService) directoryFor(scope domain.SkillScope, worksp
 		}
 		return "", errors.New("skill root must be a Pi global skill directory")
 	case domain.SkillScopeProject:
-		directory, notice, enabled := service.projectDirectory(workspacePath)
+		directories, notice, enabled := service.projectDirectories(workspacePath)
 		if !enabled {
 			if notice == "" {
 				notice = "project skills are unavailable"
 			}
 			return "", errors.New(notice)
 		}
-		return directory, nil
+		if strings.TrimSpace(rootDirectory) == "" || samePath(rootDirectory, directories[0]) {
+			return directories[0], nil
+		}
+		for _, directory := range directories[1:] {
+			if samePath(rootDirectory, directory) {
+				if writable {
+					return "", errors.New("shared project skills are read-only")
+				}
+				return directory, nil
+			}
+		}
+		return "", errors.New("skill root must be a discovered project skill directory")
 	default:
 		return "", errors.New("skill scope must be global or project")
 	}
@@ -271,11 +294,32 @@ func (service *ManagedSkillService) projectDirectory(workspacePath string) (stri
 	if err != nil {
 		return "", "project skills require a registered workspace", false
 	}
+	if record.Location.Kind == workspace.KindSSH {
+		return "", "skill configuration requires a local workspace", false
+	}
 	directory := filepath.Join(filepath.Clean(record.Path), ".pi", "skills")
 	if record.Trust != "approve" {
 		return directory, "trust project resources before managing project skills", false
 	}
 	return directory, "", true
+}
+
+func (service *ManagedSkillService) projectDirectories(workspacePath string) ([]string, string, bool) {
+	primary, notice, enabled := service.projectDirectory(workspacePath)
+	if !enabled {
+		return []string{primary}, notice, false
+	}
+	directories := []string{primary}
+	for directory := filepath.Dir(filepath.Dir(primary)); ; directory = filepath.Dir(directory) {
+		shared := filepath.Join(directory, ".agents", "skills")
+		if !samePath(shared, service.sharedSkillDirectory) {
+			directories = append(directories, shared)
+		}
+		if _, err := os.Stat(filepath.Join(directory, ".git")); err == nil || filepath.Dir(directory) == directory {
+			break
+		}
+	}
+	return directories, "", true
 }
 
 func skillDirectoryMode(scope domain.SkillScope) os.FileMode {

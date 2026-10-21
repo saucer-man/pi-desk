@@ -69,7 +69,8 @@ const normalizedQuery = computed(() => searchQuery.value.trim().toLocaleLowerCas
 const filteredServers = computed(() => scopeServers.value.filter((server) => !normalizedQuery.value || `${server.name} ${server.transport} ${server.endpoint || ""}`.toLocaleLowerCase().includes(normalizedQuery.value)));
 const visibleServerCount = computed(() => scopeServers.value.length);
 const isExisting = computed(() => Boolean(editor.originalName));
-const dirty = computed(() => fingerprint() !== savedFingerprint.value || (editorMode.value === "json" && jsonDocument.value !== savedJsonDocument.value));
+const needsMigration = computed(() => allServers.value.some((server) => keyOf(server) === selectedKey.value && server.needsMigration));
+const dirty = computed(() => needsMigration.value || fingerprint() !== savedFingerprint.value || (editorMode.value === "json" && jsonDocument.value !== savedJsonDocument.value));
 const importTargetScope = computed(() => activeScope.value === McpConfigScope.McpConfigScopeProject && !snapshot.value?.projectEnabled ? McpConfigScope.McpConfigScopeGlobal : activeScope.value);
 const importableCandidates = computed(() => importCandidates.value.filter((candidate) => !isConflicting(candidate)));
 const pickedCount = computed(() => importableCandidates.value.filter((candidate) => picked[candidateKey(candidate)]).length);
@@ -90,7 +91,7 @@ function candidateKey(candidate: McpImportCandidate) {
 }
 
 function isConflicting(candidate: McpImportCandidate) {
-  return allServers.value.some((server) => server.scope === importTargetScope.value && server.name === candidate.name);
+  return allServers.value.some((server) => server.name.replaceAll("-", "_") === candidate.name.replaceAll("-", "_") && (server.scope === importTargetScope.value || server.name !== candidate.name));
 }
 
 async function changeListScope(event: Event) {
@@ -150,8 +151,7 @@ function parseJsonDocument() {
 function setEditorMode(mode: EditorMode) {
   if (mode === editorMode.value) return;
   if (mode === "json") {
-    updateDefinitionFromFields();
-    if (formError.value) return;
+    if (!updateDefinitionFromFields()) return;
     syncJsonDocument();
   } else if (!parseJsonDocument()) return;
   editorMode.value = mode;
@@ -192,7 +192,7 @@ function parseDefinition() {
     editor.command = typeof parsed.command === "string" ? parsed.command : "";
     editor.url = typeof parsed.url === "string" ? parsed.url : "";
     editor.args = JSON.stringify(Array.isArray(parsed.args) ? parsed.args : [], null, 2);
-    editor.disabled = parsed.enabled === false || parsed.disabled === true;
+    editor.disabled = parsed.enabled === false || (parsed.enabled === undefined && parsed.disabled === true);
     editor.transport = editor.command ? "stdio" : editor.url ? "http" : "override";
     formError.value = "";
   } catch {
@@ -202,17 +202,19 @@ function parseDefinition() {
 
 function updateDefinitionFromFields() {
   formError.value = "";
-  let parsed: Record<string, unknown> = {};
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(editor.definition || "{}") as Record<string, unknown>;
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") parsed = {};
+    parsed = JSON.parse(editor.definition) as Record<string, unknown>;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error();
   } catch {
-    // The common fields can repair malformed advanced JSON.
+    formError.value = tr("settings.mcpDefinitionInvalid");
+    return false;
   }
   delete parsed.command;
   delete parsed.args;
   delete parsed.url;
   delete parsed.socket;
+  delete parsed.type;
   if (editor.transport === "stdio") {
     parsed.command = editor.command.trim();
     try {
@@ -221,7 +223,7 @@ function updateDefinitionFromFields() {
       if (args.length) parsed.args = args;
     } catch {
       formError.value = tr("settings.mcpArgsInvalid");
-      return;
+      return false;
     }
   } else if (editor.transport === "http") parsed.url = editor.url.trim();
   delete parsed.disabled;
@@ -229,6 +231,7 @@ function updateDefinitionFromFields() {
   else if (editor.transport === "override") parsed.enabled = true;
   else delete parsed.enabled;
   editor.definition = `${JSON.stringify(parsed, null, 2)}\n`;
+  return true;
 }
 
 async function loadServers() {
@@ -333,7 +336,7 @@ function validForm(includeName = true) {
 
 async function testServer() {
   if (editorMode.value === "json" && !parseJsonDocument()) return;
-  if (editorMode.value === "form") updateDefinitionFromFields();
+  if (editorMode.value === "form" && !updateDefinitionFromFields()) return;
   if (!validForm(false) || testing.value) return;
   testing.value = true;
   testError.value = "";
@@ -349,7 +352,7 @@ async function testServer() {
 
 async function saveServer() {
   if (editorMode.value === "json" && !parseJsonDocument()) return;
-  if (editorMode.value === "form") updateDefinitionFromFields();
+  if (editorMode.value === "form" && !updateDefinitionFromFields()) return;
   if (!validForm() || saving.value) return;
   saving.value = true;
   notice.value = "";
@@ -411,7 +414,7 @@ async function toggleServer(server: McpServerSummary) {
     const loaded = await mcpConfigService.get({ scope: server.scope, workspacePath: workspacePath.value, name: server.name });
     const definition = JSON.parse(loaded.definition) as Record<string, unknown>;
     delete definition.disabled;
-    if (server.disabled) delete definition.enabled;
+    if (server.disabled) definition.enabled = true;
     else definition.enabled = false;
     await mcpConfigService.upsert({ scope: server.scope, workspacePath: workspacePath.value, originalName: server.name, name: server.name, definition: `${JSON.stringify(definition, null, 2)}\n` });
     await loadServers();
@@ -501,10 +504,10 @@ onMounted(() => {
           <div class="mcp-server-list">
             <article v-for="server in filteredServers" :key="keyOf(server)" class="mcp-server-row">
               <button class="mcp-server-main" type="button" :disabled="saving" @click="void selectServer(server)">
-                <span class="mcp-server-icon"><Cable :size="17" aria-hidden="true" /><i :class="{ 'is-offline': server.disabled }" aria-hidden="true"></i></span>
-                <span><strong>{{ server.name }}</strong><small>{{ server.transport }}{{ server.endpoint ? ` 路 ${server.endpoint}` : "" }}</small></span>
+                <span class="mcp-server-icon"><Cable :size="17" aria-hidden="true" /><i :class="{ 'is-offline': server.disabled || server.needsMigration }" aria-hidden="true"></i></span>
+                <span><strong>{{ server.name }}</strong><small>{{ server.transport }}{{ server.endpoint ? ` 路 ${server.endpoint}` : "" }}</small><small v-if="server.needsMigration">{{ tr("settings.mcpMigrationRequired") }}</small></span>
               </button>
-              <button class="mcp-switch" type="button" role="switch" :aria-checked="!server.disabled" :aria-label="server.disabled ? tr('settings.enableMcp') : tr('settings.disableMcp')" :disabled="saving" @click="void toggleServer(server)"><span></span></button>
+              <button class="mcp-switch" type="button" role="switch" :aria-checked="!server.disabled && !server.needsMigration" :aria-label="server.disabled ? tr('settings.enableMcp') : tr('settings.disableMcp')" :disabled="saving || server.needsMigration" @click="void toggleServer(server)"><span></span></button>
             </article>
           </div>
         </section>
@@ -577,6 +580,7 @@ onMounted(() => {
             </template>
           </section>
           <p class="prompt-reload-note">{{ appStore.activeThread?.started ? tr("settings.mcpRestartNeeded") : tr("settings.mcpReadyOnStart") }}</p>
+          <p v-if="needsMigration" class="settings-inline-note" role="status">{{ tr("settings.mcpMigrationRequired") }}</p>
           <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
           <p v-if="notice" class="setting-status" aria-live="polite">{{ notice }}</p>
           <footer class="mcp-editor-footer">

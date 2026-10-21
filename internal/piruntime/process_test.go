@@ -126,3 +126,47 @@ func TestProcessEnvironmentAppliesProxyOnlyToChild(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentDirectoryMatchesChildEnvironment(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "~", "~/.pi/custom", `~\.pi\custom`, "relative-agent", t.TempDir()} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("PI_CODING_AGENT_DIR", value)
+			directory, err := AgentDirectory()
+			if err != nil || !filepath.IsAbs(directory) {
+				t.Fatalf("agent directory %q: %v", directory, err)
+			}
+			if value == "" && directory != filepath.Join(home, ".pi", "agent") {
+				t.Fatal(directory)
+			}
+			if value == "~" && directory != home {
+				t.Fatal(directory)
+			}
+			if strings.HasPrefix(value, "~/") || (filepath.Separator == '\\' && strings.HasPrefix(value, `~\`)) {
+				if directory != filepath.Join(home, ".pi", "custom") {
+					t.Fatal(directory)
+				}
+			}
+			environment, err := processEnvironment(StartConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, entry := range environment {
+				key, configured, _ := strings.Cut(entry, "=")
+				if strings.EqualFold(key, "PI_CODING_AGENT_DIR") {
+					count++
+					if configured != directory {
+						t.Fatalf("editor %q != child %q", directory, configured)
+					}
+				}
+			}
+			if count != 1 || os.Getenv("PI_CODING_AGENT_DIR") != value {
+				t.Fatal("changed parent environment or duplicated child setting")
+			}
+		})
+	}
+}

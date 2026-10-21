@@ -4,12 +4,14 @@ import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx
 import { codeBlockSchema, commonmark, createCodeBlockInputRule, hardbreakSchema, strongInputRule, strongSchema } from "@milkdown/preset-commonmark";
 import { markRule } from "@milkdown/prose";
 import { exitCode, newlineInCode } from "@milkdown/prose/commands";
+import { history, redo, undo } from "@milkdown/prose/history";
 import { textblockTypeInputRule } from "@milkdown/prose/inputrules";
+import { keymap } from "@milkdown/prose/keymap";
 import { Fragment, Slice } from "@milkdown/prose/model";
 import { TextSelection } from "@milkdown/prose/state";
 import { gfm } from "@milkdown/preset-gfm";
 import { Milkdown, useEditor } from "@milkdown/vue";
-import { $inputRule, replaceAll } from "@milkdown/utils";
+import { $inputRule, $prose, replaceAll } from "@milkdown/utils";
 import { nextTick, onMounted, ref, watch } from "vue";
 import { normalizeMarkdownBreakTags } from "../utils/markdown";
 
@@ -46,6 +48,8 @@ const { loading, get } = useEditor((editorRoot) => Editor.make()
     { getAttr: (match) => ({ marker: match[1]?.[0] }) },
   )))
   .use(gfm)
+  .use($prose(() => history()))
+  .use($prose(() => keymap({ "Mod-z": undo, "Mod-Shift-z": redo, "Mod-y": redo })))
   .config((ctx) => {
     ctx.set(rootCtx, editorRoot);
     ctx.set(defaultValueCtx, props.modelValue);
@@ -172,7 +176,7 @@ function applyMarkdown(value: string, flush = false): boolean {
     if (trailingWhitespace) {
       editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
-        view.dispatch(view.state.tr.insertText(trailingWhitespace, view.state.doc.content.size - 1));
+        view.dispatch(view.state.tr.insertText(trailingWhitespace, view.state.doc.content.size - 1).setMeta("addToHistory", !flush));
       });
     }
   } finally {
