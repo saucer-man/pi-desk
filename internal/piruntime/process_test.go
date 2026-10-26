@@ -45,7 +45,8 @@ func TestBuildPiArgsForRemoteAdapterDisablesLocalToolFallback(t *testing.T) {
 	digest := sha256.Sum256(adapterContent)
 	config := StartConfig{
 		Trust: TrustApprove, RemoteAdapter: adapter, RemoteSocket: filepath.Join(directory, "broker.sock"),
-		RemoteToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", RemoteRoot: "/srv/repo",
+		DisablePlugins: true,
+		RemoteToken:    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", RemoteRoot: "/srv/repo",
 		RemoteAdapterSHA256: hex.EncodeToString(digest[:]), RemoteAdapterSize: int64(len(adapterContent)),
 	}
 	args, err := buildPiArgs(config)
@@ -67,6 +68,23 @@ func TestBuildPiArgsForRemoteAdapterDisablesLocalToolFallback(t *testing.T) {
 	for _, expected := range []string{"PI_DESK_REMOTE_SOCKET=" + config.RemoteSocket, "PI_DESK_REMOTE_TOKEN=" + config.RemoteToken, "PI_DESK_REMOTE_ROOT=/srv/repo"} {
 		if !slices.Contains(environment, expected) {
 			t.Fatalf("missing remote environment %q", expected)
+		}
+	}
+	for _, disableSkills := range []bool{false, true} {
+		for _, disablePlugins := range []bool{false, true} {
+			config.DisableSkills, config.DisablePlugins = disableSkills, disablePlugins
+			args, err := buildPiArgs(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(args, "--no-skills") != disableSkills || slices.Contains(args, "--no-extensions") != disablePlugins {
+				t.Fatalf("remote resource choices were ignored: skills=%v plugins=%v args=%#v", disableSkills, disablePlugins, args)
+			}
+			for _, required := range []string{"--no-builtin-tools", "--no-context-files", "--extension", adapter} {
+				if !slices.Contains(args, required) {
+					t.Fatalf("remote routing lost %q: %#v", required, args)
+				}
+			}
 		}
 	}
 	if err := os.WriteFile(adapter, append(adapterContent, '\n'), 0o600); err != nil {

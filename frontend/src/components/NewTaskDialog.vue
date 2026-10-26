@@ -19,6 +19,8 @@ const remoteAliases = ref<RemoteAliasSummary[]>([]);
 const remoteName = ref("");
 const remoteAlias = ref("");
 const remoteRoot = ref("");
+const loadLocalSkills = ref(true);
+const loadLocalPlugins = ref(false);
 const remoteNameCustomized = ref(false);
 const remoteAliasOpen = ref(false);
 const remoteAliasActiveIndex = ref(-1);
@@ -173,6 +175,8 @@ watch(() => appStore.newTaskOpen, (open) => {
   remoteName.value = "";
   remoteAlias.value = "";
   remoteRoot.value = "";
+  loadLocalSkills.value = true;
+  loadLocalPlugins.value = false;
   remoteNameCustomized.value = false;
   closeRemoteAliasPicker();
   candidate.value = undefined;
@@ -251,7 +255,7 @@ async function createRemote() {
       completeRemoteStep("approve");
       startRemoteStep("workspace");
       appStore.assertRemoteTargetEpoch(targetID, epoch);
-      await appStore.createRemoteThread(approved);
+      await appStore.createRemoteThread(approved, { disableSkills: !loadLocalSkills.value, loadLocalPlugins: loadLocalPlugins.value });
       completeRemoteStep("workspace");
       startRemoteStep("thread");
       candidate.value = undefined;
@@ -368,6 +372,9 @@ async function create() {
           <input :class="ui.input" id="remote-root" v-model="remoteRoot" spellcheck="false" placeholder="/home/me/project" />
           <label for="remote-name">{{ tr("newTask.sshName") }}</label>
           <input :class="ui.input" id="remote-name" v-model="remoteName" maxlength="100" @input="remoteNameCustomized = true" />
+          <label class="checkbox-row"><input v-model="loadLocalSkills" type="checkbox" :disabled="remoteBusy" />{{ tr("newTask.sshLocalSkills") }}</label>
+          <label class="checkbox-row"><input v-model="loadLocalPlugins" type="checkbox" :disabled="remoteBusy" />{{ tr("newTask.sshLocalPlugins") }}</label>
+          <p class="form-warning">{{ tr("newTask.sshLocalResourcesHelp") }}</p>
           <div v-if="candidate" class="remote-root-review">
             <strong>{{ tr("newTask.sshReview") }}</strong>
             <span>{{ candidate.hostAlias }}</span>

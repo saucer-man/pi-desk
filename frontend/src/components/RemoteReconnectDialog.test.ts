@@ -36,6 +36,14 @@ describe("RemoteReconnectDialog", () => {
     expect(wrapper.text()).toContain("/srv/repo");
     expect(wrapper.findAll(".remote-progress-step")).toHaveLength(3);
     expect(wrapper.get(".remote-setup-progress").attributes("role")).toBe("status");
+    const choices = wrapper.findAll('input[type="checkbox"]');
+    expect(choices[0].element).toHaveProperty("checked", true);
+    expect(choices[1].element).toHaveProperty("checked", false);
+    await choices[0].setValue(false);
+    await choices[1].setValue(true);
+    await wrapper.get("footer .primary").trigger("click");
+    expect(store.confirmRemoteReconnect).toHaveBeenCalledWith({ disableSkills: true, loadLocalPlugins: true });
+    vi.mocked(store.confirmRemoteReconnect).mockClear();
     await wrapper.find("footer .text-button").trigger("click");
     expect(store.remoteReconnectOpen).toBe(false);
     expect(store.confirmRemoteReconnect).not.toHaveBeenCalled();

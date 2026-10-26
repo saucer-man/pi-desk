@@ -630,8 +630,11 @@ func readPiPackageSettings(settingsPath string) (map[string]json.RawMessage, []j
 		return nil, nil, errors.New("Pi settings exceed the 4 MiB safety limit")
 	}
 	settings := map[string]json.RawMessage{}
-	if err := json.Unmarshal(content, &settings); err != nil {
+	if err := json.Unmarshal(bytes.TrimPrefix(content, []byte("\xef\xbb\xbf")), &settings); err != nil {
 		return nil, nil, fmt.Errorf("parse Pi settings: %w", err)
+	}
+	if settings == nil {
+		return nil, nil, errors.New("Pi settings root must be an object")
 	}
 	var packages []json.RawMessage
 	if raw := settings["packages"]; len(raw) > 0 && string(raw) != "null" {

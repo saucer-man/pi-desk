@@ -1,6 +1,7 @@
 package appservice
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -221,18 +222,13 @@ func (service *ModelConfigService) UpsertModel(request domain.UpsertModelConfigR
 	models[target] = model
 	provider["models"] = objectSlice(models)
 
-	if err := service.writeDocument(root); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	if err := service.updateCompactionOverride(
-		modelKey(request.OriginalProviderID, request.OriginalModelID),
-		modelKey(request.ProviderID, request.ModelID),
-		request.ReserveTokens,
-		request.KeepRecentTokens,
-	); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	return service.snapshot(root)
+	return service.commitConfig(root, func() error {
+		return service.updateCompactionOverride(
+			modelKey(request.OriginalProviderID, request.OriginalModelID),
+			modelKey(request.ProviderID, request.ModelID),
+			request.ReserveTokens, request.KeepRecentTokens,
+		)
+	})
 }
 
 // AddModels writes a discovered model set in one atomic models.json update.
@@ -349,10 +345,7 @@ func (service *ModelConfigService) AddModels(request domain.AddModelsConfigReque
 		existing[modelID] = struct{}{}
 	}
 	provider["models"] = objectSlice(models)
-	if err := service.writeDocument(root); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	return service.snapshot(root)
+	return service.commitConfig(root, nil)
 }
 
 func (service *ModelConfigService) DeleteModel(request domain.DeleteModelConfigRequest) (domain.ModelConfigSnapshot, error) {
@@ -396,13 +389,9 @@ func (service *ModelConfigService) DeleteModel(request domain.DeleteModelConfigR
 		return domain.ModelConfigSnapshot{}, fmt.Errorf("model %s/%s was not found", request.ProviderID, request.ModelID)
 	}
 	provider["models"] = objectSlice(filtered)
-	if err := service.writeDocument(root); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	if err := service.deleteCompactionOverrides([]string{modelKey(request.ProviderID, request.ModelID)}); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	return service.snapshot(root)
+	return service.commitConfig(root, func() error {
+		return service.deleteCompactionOverrides([]string{modelKey(request.ProviderID, request.ModelID)})
+	})
 }
 
 func (service *ModelConfigService) DeleteProvider(request domain.DeleteProviderConfigRequest) (domain.ModelConfigSnapshot, error) {
@@ -435,13 +424,7 @@ func (service *ModelConfigService) DeleteProvider(request domain.DeleteProviderC
 		}
 	}
 	delete(providers, request.ProviderID)
-	if err := service.writeDocument(root); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	if err := service.deleteCompactionOverrides(keys); err != nil {
-		return domain.ModelConfigSnapshot{}, err
-	}
-	return service.snapshot(root)
+	return service.commitConfig(root, func() error { return service.deleteCompactionOverrides(keys) })
 }
 
 func normalizeModelRequest(request domain.UpsertModelConfigRequest) domain.UpsertModelConfigRequest {
@@ -614,7 +597,7 @@ func (service *ModelConfigService) readDocument() (map[string]any, error) {
 		return nil, errors.New("models.json exceeds the 4 MiB safety limit")
 	}
 	root := map[string]any{}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimPrefix(string(data), "\ufeff")))
 	decoder.UseNumber()
 	if err := decoder.Decode(&root); err != nil {
 		return nil, fmt.Errorf("decode models.json: %w", err)
@@ -833,6 +816,72 @@ func validHTTPHeaderValue(value string) bool {
 		}
 	}
 	return true
+}
+
+// commitConfig restores both files when a write or the final snapshot fails.
+// ponytail: each file is atomic; rollback covers returned errors, not process/power loss.
+func (service *ModelConfigService) commitConfig(root map[string]any, updateSettings func() error) (result domain.ModelConfigSnapshot, err error) {
+	if _, _, err := readPiPackageSettings(service.settingsPath); err != nil {
+		return result, err
+	}
+	type previousFile struct {
+		path string
+		data []byte
+		mode os.FileMode
+	}
+	var previous []previousFile
+	for _, path := range []string{service.modelsPath, service.settingsPath} {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return result, readErr
+		}
+		mode := os.FileMode(0)
+		if readErr == nil {
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				return result, statErr
+			}
+			mode = info.Mode().Perm()
+		}
+		previous = append(previous, previousFile{path, data, mode})
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, file := range previous {
+			current, readErr := os.ReadFile(file.path)
+			if errors.Is(readErr, os.ErrNotExist) && file.data == nil {
+				continue
+			}
+			if readErr == nil && bytes.Equal(current, file.data) {
+				if info, statErr := os.Stat(file.path); statErr == nil && info.Mode().Perm() == file.mode {
+					continue
+				}
+			}
+			var restoreErr error
+			if file.data == nil {
+				restoreErr = os.Remove(file.path)
+			} else {
+				restoreErr = atomic.WriteFile(file.path, bytes.NewReader(file.data))
+				if restoreErr == nil {
+					restoreErr = os.Chmod(file.path, file.mode)
+				}
+			}
+			if restoreErr != nil && !errors.Is(restoreErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("restore %s: %w", filepath.Base(file.path), restoreErr))
+			}
+		}
+	}()
+	if err = service.writeDocument(root); err != nil {
+		return result, err
+	}
+	if updateSettings != nil {
+		if err = updateSettings(); err != nil {
+			return result, err
+		}
+	}
+	return service.snapshot(root)
 }
 
 func (service *ModelConfigService) writeDocument(root map[string]any) error {

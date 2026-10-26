@@ -705,18 +705,26 @@ describe("app store", () => {
     expect(store.piProcessOrder).toEqual(store.threads.slice(1).map((thread) => thread.id));
   });
 
-  it("creates a remote thread with WorkspaceID and no local path", async () => {
+  it.each([[false, false], [false, true], [true, false], [true, true]])("creates a remote thread with skill disable=%s and local plugins=%s", async (disableSkills, loadLocalPlugins) => {
     const store = useAppStore();
     await store.createRemoteThread({
       id: "workspace-remote", name: "remote repo", path: "", kind: "ssh",
       targetId: "target-remote", remoteRoot: "/srv/repo", trust: "approve",
       addedAt: "2026-08-10T08:00:00Z", lastOpenedAt: "2026-08-10T08:00:00Z",
-    });
+    }, { disableSkills, loadLocalPlugins });
 
     expect(store.activeThread).toMatchObject({
       workspaceId: "workspace-remote", workspacePath: "", workspace: "remote repo", trust: "approve",
+      disableSkills, loadLocalPlugins,
     });
     expect(store.workspaces[0]).toMatchObject({ id: "workspace-remote", kind: "ssh", remoteRoot: "/srv/repo" });
+    await store.ensureSession(store.activeThread!);
+    expect(mocks.startSession).toHaveBeenCalledWith(expect.objectContaining({ disableSkills, disablePlugins: !loadLocalPlugins }));
+    store.catalogReady = true;
+    await store.persistDesktopState();
+    expect(mocks.saveDesktopState.mock.calls.at(-1)![0].threads[0]).toMatchObject({
+      disableSkills: disableSkills || undefined, loadLocalPlugins: loadLocalPlugins || undefined,
+    });
   });
 
   it("selecting a persisted remote thread stays offline until explicit reconnect", async () => {
@@ -731,22 +739,40 @@ describe("app store", () => {
       workspacePath: "", trust: "approve", status: "idle", started: false, generation: 0,
       sessionFile: "C:\\sessions\\remote.jsonl",
     }];
-    store.transcriptStateByThread["thread-remote"] = "loaded";
+    mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [
+      { role: "user", content: "Inspect the retired server" },
+      { role: "assistant", content: [{ type: "text", text: "Saved remote conversation" }] },
+    ] });
 
     store.selectThread("thread-remote");
-    await Promise.resolve();
+    await vi.waitFor(() => expect(store.transcriptStateByThread["thread-remote"]).toBe("loaded"));
+    expect(store.activeMessages.map(message => message.text)).toEqual(["Inspect the retired server", "Saved remote conversation"]);
+    expect(mocks.getSessionSnapshot).toHaveBeenCalledWith("C:\\sessions\\remote.jsonl");
+    expect(store.remoteReconnectOpen).toBe(false);
     expect(mocks.resumeRemoteWorkspace).not.toHaveBeenCalled();
     expect(mocks.startSession).not.toHaveBeenCalled();
 
     store.startThreadInBackground("thread-remote");
     expect(store.remoteReconnectOpen).toBe(true);
     expect(mocks.startSession).not.toHaveBeenCalled();
+    mocks.resumeRemoteWorkspace.mockRejectedValueOnce(new Error("SSH server is unavailable"));
     await store.confirmRemoteReconnect();
+    expect(store.remoteReconnectError).toBe("SSH server is unavailable");
+    store.cancelRemoteReconnect();
+    store.selectThread("thread-remote");
+    expect(store.remoteReconnectOpen).toBe(false);
+    expect(store.activeMessages.map(message => message.text)).toEqual(["Inspect the retired server", "Saved remote conversation"]);
+    expect(mocks.getSessionSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.startSession).not.toHaveBeenCalled();
+
+    store.startThreadInBackground("thread-remote");
+    await store.confirmRemoteReconnect({ disableSkills: true, loadLocalPlugins: true });
 
     expect(mocks.resumeRemoteWorkspace).toHaveBeenCalledWith("workspace-remote");
     await vi.waitFor(() => expect(mocks.startSession).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "thread-remote", workspace: "", workspaceId: "workspace-remote",
       sessionPath: "C:\\sessions\\remote.jsonl",
+      disableSkills: true, disablePlugins: false,
     })));
   });
 
@@ -3206,6 +3232,10 @@ describe("app store", () => {
   });
 
   it("restores an SSH anchor transcript by immutable WorkspaceID", async () => {
+    mocks.getDesktopState.mockResolvedValueOnce({ threads: [{
+      id: "thread-remote", workspaceId: "workspace-remote", workspacePath: "", trust: "approve", status: "idle",
+      sessionPath: "C:\\sessions\\remote.jsonl", disableSkills: true, loadLocalPlugins: true,
+    }] });
     mocks.listWorkspaces.mockResolvedValueOnce([{
       id: "workspace-remote", name: "remote", path: "", kind: "ssh", targetId: "target-remote",
       remoteRoot: "/srv/repo", trust: "approve", addedAt: "2026-08-01T08:00:00Z", lastOpenedAt: "2026-08-10T08:00:00Z",
@@ -3221,7 +3251,8 @@ describe("app store", () => {
 
     expect(store.workspaces).toHaveLength(1);
     expect(store.threads[0]).toMatchObject({
-      id: "session-session-remote", workspaceId: "workspace-remote", workspacePath: "", sessionFile: "C:\\sessions\\remote.jsonl",
+      id: "thread-remote", workspaceId: "workspace-remote", workspacePath: "", sessionFile: "C:\\sessions\\remote.jsonl",
+      disableSkills: true, loadLocalPlugins: true,
     });
     expect(mocks.resumeRemoteWorkspace).not.toHaveBeenCalled();
     expect(mocks.startSession).not.toHaveBeenCalled();
@@ -3721,18 +3752,80 @@ describe("app store", () => {
     thread.generation = 1;
     thread.sessionFile = "C:\\sessions\\one.jsonl";
     const model = { provider: "custom", id: "gpt-5.6", name: "GPT 5.6" };
-    store.sessionStateByThread[thread.id] = { model };
+    const historicalModel = { provider: "custom", id: "old", name: "Old" };
+    let runtimeModel = historicalModel;
+    let sentModel: typeof model | undefined;
+    store.sessionStateByThread[thread.id] = { model: historicalModel };
     store.transcriptStateByThread[thread.id] = "loaded";
     store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
-    mocks.replaySessionMessage.mockResolvedValueOnce({});
+    mocks.setModel.mockImplementation(async () => { runtimeModel = model; });
+    mocks.getState.mockImplementation(async () => ({ model: runtimeModel }));
+    mocks.replaySessionMessage.mockImplementation(async () => { runtimeModel = historicalModel; });
     mocks.getSessionSnapshot.mockResolvedValueOnce({ messages: [] });
-    mocks.getState.mockResolvedValueOnce({ model });
+    mocks.sendPrompt.mockImplementation(async () => { sentModel = runtimeModel; });
 
+    await store.chooseModel(model);
     expect(await store.resendEditedMessage("latest", "Continue again")).toBe(true);
 
-    expect(mocks.setModel).toHaveBeenCalledWith({ threadId: thread.id, provider: model.provider, modelId: model.id });
-    expect(mocks.setModel.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendPrompt.mock.invocationCallOrder[0]);
+    expect(mocks.setModel).toHaveBeenCalledTimes(2);
+    expect(mocks.setModel.mock.invocationCallOrder[1]).toBeLessThan(mocks.sendPrompt.mock.invocationCallOrder[0]);
+    expect(sentModel).toEqual(model);
     expect(mocks.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ message: "Continue again" }));
+  });
+
+  it("keeps a model selected while the replayed session is being reloaded", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 1;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    const oldModel = { provider: "custom", id: "old" };
+    const selected = { provider: "custom", id: "new" };
+    let runtimeModel = oldModel;
+    let sentModel: typeof oldModel | undefined;
+    let finishReplay!: () => void;
+    store.sessionStateByThread[thread.id] = { model: oldModel };
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.getState.mockImplementation(async () => ({ model: runtimeModel }));
+    mocks.setModel.mockImplementation(async ({ modelId }) => { runtimeModel = { provider: "custom", id: modelId }; });
+    mocks.replaySessionMessage.mockImplementation(() => new Promise<void>((resolve) => {
+      finishReplay = () => { runtimeModel = oldModel; resolve(); };
+    }));
+    mocks.getAvailableThinkingLevels.mockResolvedValue({ levels: ["high"] });
+    mocks.sendPrompt.mockImplementation(async () => { sentModel = runtimeModel; });
+    const replay = store.resendEditedMessage("latest", "Continue again");
+    await vi.waitFor(() => expect(mocks.replaySessionMessage).toHaveBeenCalled());
+    await store.chooseModel(selected);
+    finishReplay();
+    expect(await replay).toBe(true);
+    expect(sentModel).toEqual(selected);
+    expect(store.activeSessionState?.model).toEqual(selected);
+    expect(store.activeThinkingLevels).toEqual(["high"]);
+  });
+
+  it("finishes an in-flight model switch before rewinding the session", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.generation = 1;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    const selected = { provider: "custom", id: "new" };
+    let finishSelection!: () => void;
+    let selecting = true;
+    let overlapped = false;
+    mocks.setModel.mockReturnValueOnce(new Promise<void>((resolve) => { finishSelection = () => { selecting = false; resolve(); }; }));
+    mocks.getState.mockResolvedValue({ model: selected });
+    mocks.replaySessionMessage.mockImplementation(async () => { overlapped = selecting; });
+    const selection = store.chooseModel(selected);
+    const replay = store.resendEditedMessage("latest", "Continue again");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishSelection();
+    await selection;
+    expect(await replay).toBe(true);
+    expect(overlapped).toBe(false);
   });
 
   it("reports a failed resend after rewind and keeps the edited draft for recovery", async () => {
@@ -3750,6 +3843,23 @@ describe("app store", () => {
     expect(thread.error).toBe("send failed");
     expect(store.activeMessages.some((message) => message.error === "send failed")).toBe(true);
     expect(mocks.forkSessionAt).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected model when the transcript reload after replay fails", async () => {
+    const store = useAppStore();
+    await store.createThread("D:\\work\\repo", "approve");
+    const thread = store.activeThread!;
+    thread.started = true;
+    thread.sessionFile = "C:\\sessions\\one.jsonl";
+    const selected = { provider: "custom", id: "new" };
+    store.sessionStateByThread[thread.id] = { model: selected };
+    store.messagesByThread[thread.id] = [{ id: "latest", entryId: "entry", role: "user", text: "Continue", thinking: "", timestamp: "", streaming: false, tools: [] }];
+    mocks.replaySessionMessage.mockResolvedValueOnce({});
+    mocks.getSessionSnapshot.mockRejectedValueOnce(new Error("reload failed"));
+    expect(await store.resendEditedMessage("latest", "Continue again")).toBe(false);
+    expect(store.pendingModelByThread[thread.id]).toEqual(selected);
+    expect(store.activeDraft).toBe("Continue again");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
   });
 
   it("forks after an assistant entry and keeps the composer empty", async () => {

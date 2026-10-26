@@ -154,7 +154,11 @@ func buildPiArgs(config StartConfig) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		args = append(args, "--no-builtin-tools", "--no-extensions", "--no-context-files", "--extension", adapter)
+		args = append(args, "--no-builtin-tools", "--no-context-files")
+		if config.DisablePlugins {
+			args = append(args, "--no-extensions")
+		}
+		args = append(args, "--extension", adapter)
 	} else if config.DisablePlugins {
 		args = append(args, "--no-extensions", "--extension", "builtin:mcp", "--extension", "builtin:codemode", "--extension", "builtin:tool-search", "--extension", "builtin:llama.cpp")
 	}

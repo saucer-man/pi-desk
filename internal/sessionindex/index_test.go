@@ -11,11 +11,145 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"pi-desk/internal/workspace"
 )
+
+func TestSummaryCachePersistsAndInvalidates(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "workspace")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "one.jsonl")
+	content := `{"type":"session","id":"one","cwd":` + quote(root) + `}` + "\n" + `{"type":"message","message":{"role":"user","content":"First"}}` + "\n"
+	writeSession(t, path, content)
+	index := New(root)
+	first, err := index.List(context.Background(), "")
+	if err != nil || len(first) != 1 || first[0].FirstMessage != "First" {
+		t.Fatalf("initial list: %#v, %v", first, err)
+	}
+	cachePath := filepath.Join(root, summaryCacheName)
+	stamp := time.Unix(1000000000, 0)
+	if err := os.Chtimes(cachePath, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(root)
+	warm, err := restarted.List(context.Background(), "")
+	if err != nil || len(warm) != 1 || warm[0].FirstMessage != "First" {
+		t.Fatalf("cached list: %#v, %v", warm, err)
+	}
+	info, err := os.Stat(cachePath)
+	if err != nil || !info.ModTime().Equal(stamp) {
+		t.Fatalf("unchanged cache was rewritten: %v", err)
+	}
+	writeSession(t, path, strings.Replace(content, "First", "Other", 1))
+	if err := os.Chtimes(path, stamp.Add(time.Hour), stamp.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := restarted.List(context.Background(), "")
+	if err != nil || len(updated) != 1 || updated[0].FirstMessage != "Other" {
+		t.Fatalf("same-size edit was not refreshed: %#v, %v", updated, err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString(`{"type":"message","message":{"role":"assistant","content":"Done"}}` + "\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("append: %v, %v", writeErr, closeErr)
+	}
+	updated, err = restarted.List(context.Background(), "")
+	if err != nil || len(updated) != 1 || updated[0].MessageCount != 2 {
+		t.Fatalf("append was not refreshed: %#v, %v", updated, err)
+	}
+	if err := os.WriteFile(cachePath, []byte("corrupt cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := New(root)
+	updated, err = rebuilt.List(context.Background(), "")
+	if err != nil || len(updated) != 1 || updated[0].MessageCount != 2 {
+		t.Fatalf("corrupt cache was not rebuilt: %#v, %v", updated, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = rebuilt.List(context.Background(), "")
+	if err != nil || len(updated) != 0 || len(loadSummaryCache(root)) != 0 {
+		t.Fatalf("deleted entry was retained: %#v, %v", updated, err)
+	}
+}
+
+func TestSummaryCacheIsOptionalAndConcurrent(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "workspace")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, filepath.Join(directory, "one.jsonl"), `{"type":"session","id":"one","cwd":`+quote(root)+"}\n")
+	if err := os.Mkdir(filepath.Join(root, summaryCacheName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index := New(root)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			items, err := index.List(context.Background(), "")
+			if err != nil || len(items) != 1 {
+				t.Errorf("unwritable cache broke listing: %#v, %v", items, err)
+			}
+		}()
+	}
+	workers.Wait()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := index.List(ctx, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation ignored: %v", err)
+	}
+}
+
+func BenchmarkSummaryCache(b *testing.B) {
+	root := b.TempDir()
+	directory := filepath.Join(root, "workspace")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		b.Fatal(err)
+	}
+	var paths []string
+	for i := range 100 {
+		path := filepath.Join(directory, strconv.Itoa(i)+".jsonl")
+		content := `{"type":"session","id":"` + strconv.Itoa(i) + `","cwd":` + quote(root) + "}\n" + strings.Repeat(`{"type":"message","message":{"role":"user","content":"Review the project"}}`+"\n", 200)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			b.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	index := New(root)
+	if _, err := index.List(context.Background(), ""); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("uncached", func(b *testing.B) {
+		for range b.N {
+			for _, path := range paths {
+				if _, ok := readSummary(path); !ok {
+					b.Fatal("invalid fixture")
+				}
+			}
+		}
+	})
+	b.Run("cached", func(b *testing.B) {
+		for range b.N {
+			if result, err := index.List(context.Background(), ""); err != nil || len(result) != 100 {
+				b.Fatalf("cached list: %d, %v", len(result), err)
+			}
+		}
+	})
+}
 
 func canonicalTestPath(t *testing.T, path string) string {
 	t.Helper()

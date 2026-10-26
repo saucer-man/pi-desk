@@ -138,6 +138,8 @@ export interface WorkspaceSummary {
 }
 
 export interface ThreadSummary {
+  disableSkills?: boolean;
+  loadLocalPlugins?: boolean;
   id: string;
   title: string;
   workspace: string;
@@ -1429,7 +1431,7 @@ export const useAppStore = defineStore("app", {
         this.activateThread(threadId);
         if (this.activeThread) this.activeThread.unread = false;
         if (this.activeThread?.sessionFile) void this.loadThreadTranscript(threadId);
-        if (this.catalogReady && this.activeThread) void this.startThreadInBackground(threadId);
+        if (this.catalogReady && this.activeThread && !this.remoteWorkspaceForThread(this.activeThread)) void this.startThreadInBackground(threadId);
         this.scheduleDesktopStateSave();
       }
     },
@@ -1615,13 +1617,14 @@ export const useAppStore = defineStore("app", {
       else this.workspaces.unshift(normalized);
       return normalized;
     },
-    async createRemoteThread(workspace: HostWorkspaceSummary) {
+    async createRemoteThread(workspace: HostWorkspaceSummary, options: Pick<ThreadSummary, "disableSkills" | "loadLocalPlugins"> = {}) {
       if (workspace.trust !== "approve") throw new Error("Remote workspace is not ready");
       const normalized = this.recordRemoteWorkspace(workspace, true);
       const threadID = createID("thread");
       const thread: ThreadSummary = {
         id: threadID, title: "New task", workspace: normalized.name,
         workspaceId: normalized.id, workspacePath: "", trust: "approve",
+        disableSkills: options.disableSkills, loadLocalPlugins: options.loadLocalPlugins,
         status: "idle", started: false, generation: 0,
         createdAt: nowISO(), modifiedAt: nowISO(), unread: false,
       };
@@ -2025,7 +2028,7 @@ export const useAppStore = defineStore("app", {
       this.remoteReconnectError = "";
       this.remoteReconnectProgress = [];
     },
-    async confirmRemoteReconnect() {
+    async confirmRemoteReconnect(options: Pick<ThreadSummary, "disableSkills" | "loadLocalPlugins"> = {}) {
       const thread = this.remoteReconnectThread;
       const workspace = thread ? this.remoteWorkspaceForThread(thread) : undefined;
       const targetID = workspace?.targetId;
@@ -2053,6 +2056,8 @@ export const useAppStore = defineStore("app", {
           return;
         }
         this.remoteReadyByWorkspace[workspace.id] = true;
+        Object.assign(thread, options);
+        this.scheduleDesktopStateSave();
         this.remoteReconnectOpen = false;
         this.remoteReconnectThreadId = "";
         this.activateThread(thread.id);
@@ -2719,21 +2724,25 @@ export const useAppStore = defineStore("app", {
       const latestUserMessage = this.activeMessages.findLast((item) => item.role === "user");
       if (!thread?.sessionFile || !message?.entryId || latestUserMessage?.id !== messageId || !text.trim() || thread.status === "running" || thread.status === "starting" || this.sessionOperationByThread[thread.id] || this.sessionMutationErrorByThread[thread.id]) return false;
       const images = message.images?.map((image) => ({ ...image })) ?? [];
-      const modelToRestore = this.pendingModelByThread[thread.id] ?? this.sessionStateByThread[thread.id]?.model;
-      const modelSelectionGeneration = this.modelSelectionGenerationByThread[thread.id];
       this.sessionOperationByThread[thread.id] = "Replaying message";
       this.invalidateSessionReads(thread.id);
       try {
-        await this.callWithSession(thread, () => agentService.replaySessionMessage({
-          threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
-        }));
+        await this.callWithSession(thread, async () => {
+          await this.applyPendingModel(thread);
+          const modelToRestore = this.sessionStateByThread[thread.id]?.model;
+          try {
+            return await agentService.replaySessionMessage({
+              threadId: thread.id, path: thread.sessionFile!, entryId: message.entryId!,
+            });
+          } finally {
+            // Rewinding restores Pi's historical model; a newer selection takes priority.
+            if (modelToRestore) this.pendingModelByThread[thread.id] ??= { ...modelToRestore };
+          }
+        });
         this.draftsByThread[thread.id] = text;
         this.attachmentsByThread[thread.id] = images;
         this.scheduleDesktopStateSave();
         await this.reloadSessionTranscript(thread, false);
-        if (modelToRestore && this.modelSelectionGenerationByThread[thread.id] === modelSelectionGeneration) {
-          this.pendingModelByThread[thread.id] = { ...modelToRestore };
-        }
       } catch (error) {
         thread.status = "attention";
         thread.error = errorMessage(error);
@@ -2744,6 +2753,7 @@ export const useAppStore = defineStore("app", {
       if (this.activeThreadId !== thread.id) return false;
       const replayAttachments = this.attachmentsByThread[thread.id];
       const sent = await this.deliverPrompt(thread, text, images);
+      if (sent) await this.refreshThinkingLevels(thread.id).catch(() => undefined);
       if (sent && this.draftsByThread[thread.id] === text) {
         this.draftsByThread[thread.id] = "";
         if (this.attachmentsByThread[thread.id] === replayAttachments) this.attachmentsByThread[thread.id] = [];
@@ -3004,6 +3014,7 @@ export const useAppStore = defineStore("app", {
         this.sessionStateByThread[thread.id] = { ...(this.sessionStateByThread[thread.id] ?? {}), model: { ...model } };
         return;
       }
+      if (this.sessionOperationByThread[thread.id] === "Replaying message") return;
       try {
         await this.applyPendingModel(thread);
       } catch (error) {
@@ -3150,6 +3161,7 @@ export const useAppStore = defineStore("app", {
         trust: thread.trust,
         offline: this.offlineMode,
         disableThemes: true,
+        ...(remoteWorkspace ? { disableSkills: !!thread.disableSkills, disablePlugins: !thread.loadLocalPlugins } : {}),
         proxyUrl: this.proxyEnabled ? this.proxyURL.trim() : undefined,
       });
       if (piExitedGenerationByThread.get(thread.id) === session.generation) {
@@ -3957,6 +3969,8 @@ export const useAppStore = defineStore("app", {
             }
             existing.unread = saved.unread;
             existing.archived = saved.archived && !interrupted;
+            existing.disableSkills = saved.disableSkills;
+            existing.loadLocalPlugins = saved.loadLocalPlugins;
             existing.status = interrupted ? "attention" : saved.status as ThreadStatus;
             if (interrupted) existing.error = "Previous Pi run was interrupted";
             existing.createdAt ||= saved.createdAt;
@@ -3977,6 +3991,8 @@ export const useAppStore = defineStore("app", {
               modifiedAt: saved.updatedAt,
               unread: saved.unread,
               archived: saved.archived && !interrupted,
+              disableSkills: saved.disableSkills,
+              loadLocalPlugins: saved.loadLocalPlugins,
               error: interrupted ? "Previous Pi run was interrupted" : undefined,
             });
             drafts.set(saved.id, saved.draft ?? "");
@@ -4170,6 +4186,8 @@ export const useAppStore = defineStore("app", {
               updatedAt: thread.modifiedAt,
               unread: thread.unread || undefined,
               archived: thread.archived || undefined,
+              disableSkills: thread.disableSkills || undefined,
+              loadLocalPlugins: thread.loadLocalPlugins || undefined,
             })),
           };
           try {

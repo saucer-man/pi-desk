@@ -149,6 +149,8 @@ export interface DesktopState {
 }
 
 export interface DesktopThreadState {
+    "disableSkills"?: boolean;
+    "loadLocalPlugins"?: boolean;
     "id": string;
     "title": string;
     "workspaceId"?: string;

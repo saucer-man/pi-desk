@@ -12,7 +12,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-vue-next";
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { tr } from "../i18n";
 import { modelConfigService, type DiscoveredModel, type ManagedModel, type ManagedModelProvider, type ModelConfigSnapshot, type ModelQuotaResult, type ModelTestResult } from "../services/modelconfig";
 import { useAppStore } from "../stores/app";
@@ -39,6 +39,7 @@ const newProviderValue = "__new_provider__";
 const defaultProviderUserAgent = "codex_cli_rs/0.146.0 (Windows 11.0.26100; x86_64) Terminal";
 let headerEntrySequence = 0;
 let modelTestRequest: ReturnType<typeof modelConfigService.test> | undefined;
+let discoveryGeneration = 0;
 
 type ProviderHeaderEntry = {
   id: number;
@@ -191,10 +192,14 @@ function setProviderFields(provider?: ManagedModelProvider, useDefaultHeaders = 
 }
 
 function resetDiscovery() {
+  discoveryGeneration++;
+  discovering.value = false;
   discoveryError.value = "";
   discoveryEndpoint.value = "";
   discoveredModels.value = [];
 }
+
+watch(() => JSON.stringify([editor.providerId, editor.baseUrl, editor.api, editor.apiKey, editor.headers]), resetDiscovery, { flush: "sync" });
 
 function selectModel(provider: ManagedModelProvider, model: ManagedModel) {
   selectedKey.value = `${provider.id}/${model.id}`;
@@ -510,6 +515,7 @@ async function discoverModels() {
     return;
   }
   discovering.value = true;
+  const generation = ++discoveryGeneration;
   try {
     const result = await modelConfigService.discover({
       baseUrl: editor.baseUrl,
@@ -517,12 +523,13 @@ async function discoverModels() {
       apiKey: editor.apiKey,
       headers: headersForRequest(),
     });
+    if (generation !== discoveryGeneration) return;
     discoveredModels.value = result.models ?? [];
     discoveryEndpoint.value = result.endpoint;
   } catch (cause) {
-    discoveryError.value = cause instanceof Error ? cause.message : String(cause);
+    if (generation === discoveryGeneration) discoveryError.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    discovering.value = false;
+    if (generation === discoveryGeneration) discovering.value = false;
   }
 }
 
@@ -673,6 +680,7 @@ onMounted(() => {
   document.addEventListener("keydown", onProviderMenuKeydown);
 });
 onBeforeUnmount(() => {
+  discoveryGeneration++;
   closeModelTest();
   document.removeEventListener("pointerdown", onProviderMenuPointerDown);
   document.removeEventListener("keydown", onProviderMenuKeydown);
@@ -878,7 +886,8 @@ onBeforeUnmount(() => {
           <div class="model-form-grid" :class="ui.formGrid">
             <label class="model-field" :class="ui.field">
               <span>{{ tr("settings.reserveTokens") }}</span>
-              <input :class="ui.input" v-model.number="editor.reserveTokens" data-testid="reserve-tokens" type="number" min="0" step="1" placeholder="16384" />
+              <input :class="ui.input" v-model.number="editor.reserveTokens" data-testid="reserve-tokens" type="number" min="0" step="1" placeholder="16384" aria-describedby="model-reserve-tokens-help" />
+              <small id="model-reserve-tokens-help">{{ tr("settings.reserveTokensHelp") }}</small>
             </label>
             <label class="model-field" :class="ui.field">
               <span>{{ tr("settings.keepRecentTokens") }}</span>

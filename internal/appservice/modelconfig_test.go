@@ -1,9 +1,12 @@
 package appservice
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +23,117 @@ func TestGetModelsConfigReturnsEmptyDocument(t *testing.T) {
 	}
 	if snapshot.Path != path || len(snapshot.Providers) != 0 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
+	}
+}
+
+func TestModelConfigAcceptsUTF8BOM(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "models.json")
+	models := "\ufeff" + `{"future":true,"providers":{"custom":{"api":"openai-completions","baseUrl":"https://example.test/v1","models":[{"id":"test","contextWindow":128000,"maxTokens":4096}]}}}`
+	settings := "\ufeff" + `{"theme":"dark","packages":["npm:test"],"compaction":{"modelOverrides":{"custom/test":{"reserveTokens":2000,"keepRecentTokens":1000}}}}`
+	for name, content := range map[string]string{"models.json": models, "settings.json": settings} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := newModelConfigService(path, nil)
+	snapshot, err := service.GetModelsConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := snapshot.Providers[0].Models[0]
+	if model.ReserveTokens == nil || *model.ReserveTokens != 2000 {
+		t.Fatalf("BOM settings were not loaded: %#v", model)
+	}
+	reserve := 3000
+	if _, err := service.UpsertModel(domain.UpsertModelConfigRequest{
+		OriginalProviderID: "custom", OriginalModelID: "test", ProviderID: "custom", ModelID: "test",
+		API: "openai-completions", BaseURL: "https://example.test/v1", ContextWindow: 128000, MaxTokens: 4096, ReserveTokens: &reserve,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, retained := range map[string]string{"models.json": `"future": true`, "settings.json": `"npm:test"`} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil || !json.Valid(data) || !strings.Contains(string(data), retained) {
+			t.Fatalf("BOM config was not preserved on save: %s, %v", data, err)
+		}
+	}
+	snapshot, err = service.GetModelsConfig()
+	if err != nil || *snapshot.Providers[0].Models[0].ReserveTokens != reserve {
+		t.Fatalf("updated BOM config did not reload: %#v, %v", snapshot, err)
+	}
+}
+
+func TestModelChangesRejectInvalidSettingsBeforeWriting(t *testing.T) {
+	for _, action := range []string{"upsert", "add", "delete", "delete-provider"} {
+		t.Run(action, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "models.json")
+			original := []byte(`{"providers":{"custom":{"api":"openai-completions","baseUrl":"https://example.test/v1","models":[{"id":"old","contextWindow":128000,"maxTokens":4096}]}}}`)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "settings.json"), []byte(`{`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			service := newModelConfigService(path, nil)
+			var err error
+			switch action {
+			case "upsert":
+				_, err = service.UpsertModel(domain.UpsertModelConfigRequest{ProviderID: "custom", ModelID: "new", API: "openai-completions", BaseURL: "https://example.test/v1", ContextWindow: 128000, MaxTokens: 4096})
+			case "add":
+				_, err = service.AddModels(domain.AddModelsConfigRequest{ProviderID: "custom", API: "openai-completions", BaseURL: "https://example.test/v1", Models: []domain.ManagedModel{{ID: "new", ContextWindow: 128000, MaxTokens: 4096}}})
+			case "delete":
+				_, err = service.DeleteModel(domain.DeleteModelConfigRequest{ProviderID: "custom", ModelID: "old"})
+			case "delete-provider":
+				_, err = service.DeleteProvider(domain.DeleteProviderConfigRequest{ProviderID: "custom"})
+			}
+			if err == nil {
+				t.Fatal("invalid settings were accepted")
+			}
+			data, _ := os.ReadFile(path)
+			if !bytes.Equal(data, original) {
+				t.Fatalf("failed change modified models.json: %s", data)
+			}
+		})
+	}
+}
+
+func TestModelCommitRestoresBothFilesOnFailure(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		t.Run(strconv.FormatBool(exists), func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "models.json")
+			original := []byte("\ufeff" + `{"providers":{}}`)
+			settings := []byte("\ufeff" + `{"theme":"dark","packages":[]}`)
+			if exists {
+				if err := os.WriteFile(path, original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service := newModelConfigService(path, nil)
+			if err := os.WriteFile(service.settingsPath, settings, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("simulated settings write failure")
+			_, err := service.commitConfig(map[string]any{"providers": map[string]any{}, "changed": true}, func() error {
+				if err := os.WriteFile(service.settingsPath, []byte(`{"changed":true}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return failure
+			})
+			if !errors.Is(err, failure) {
+				t.Fatalf("lost original failure: %v", err)
+			}
+			data, readErr := os.ReadFile(path)
+			if exists && (readErr != nil || !bytes.Equal(data, original)) || !exists && !errors.Is(readErr, os.ErrNotExist) {
+				t.Fatalf("models.json was not restored: %s, %v", data, readErr)
+			}
+			data, readErr = os.ReadFile(service.settingsPath)
+			if readErr != nil || !bytes.Equal(data, settings) {
+				t.Fatalf("settings.json was not restored: %s, %v", data, readErr)
+			}
+		})
 	}
 }
 

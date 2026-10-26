@@ -19,7 +19,7 @@ func TestMcpConfigServicePreservesUnknownFieldsAndManagesGlobalConfig(t *testing
 	if err := os.MkdirAll(agent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agent, "mcp.json"), []byte("{\n  \"settings\": {\"toolPrefix\": \"server\"},\n  \"mcpServers\": {\"docs\": {\"url\": \"https://example.test/mcp\"}}\n}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(agent, "mcp.json"), []byte("\ufeff{\n  \"settings\": {\"toolPrefix\": \"server\"},\n  \"mcpServers\": {\"docs\": {\"url\": \"https://example.test/mcp\"}}\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	service := newMcpConfigService(agent, nil)
@@ -124,14 +124,14 @@ func TestMcpConfigServiceListImportableMcpServersScansHostConfigs(t *testing.T) 
 	t.Setenv("USERPROFILE", root)
 	t.Setenv("AppData", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
-	if err := os.WriteFile(filepath.Join(root, ".claude.json"), []byte(`{"mcpServers":{"fs":{"type":"stdio","command":"npx","args":["-y","@mcp/fs"]},"broken":{"foo":1}}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".claude.json"), []byte("\ufeff"+`{"mcpServers":{"fs":{"type":"stdio","command":"npx","args":["-y","@mcp/fs"]},"broken":{"foo":1}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cursor := filepath.Join(root, ".cursor", "mcp.json")
 	if err := os.MkdirAll(filepath.Dir(cursor), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cursor, []byte("// .cursor/mcp.json\n{\"mcpServers\":{\"git\":{\"command\":\"uvx\",\"args\":[\"mcp-server-git\"]}}}"), 0o600); err != nil {
+	if err := os.WriteFile(cursor, []byte("\ufeff// .cursor/mcp.json\n{\"mcpServers\":{\"git\":{\"command\":\"uvx\",\"args\":[\"mcp-server-git\"]}}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

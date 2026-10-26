@@ -393,6 +393,7 @@ func (service *CatalogService) GetDesktopState() (domain.DesktopState, error) {
 	}
 	for _, thread := range record.Threads {
 		result.Threads = append(result.Threads, domain.DesktopThreadState{
+			DisableSkills: thread.DisableSkills, LoadLocalPlugins: thread.LoadLocalPlugins,
 			ID: thread.ID, Title: thread.Title, WorkspaceID: thread.WorkspaceID, WorkspacePath: thread.WorkspacePath, Trust: thread.Trust,
 			Status: thread.Status, SessionPath: thread.SessionPath, Draft: thread.Draft, ComposerJSON: thread.ComposerJSON,
 			CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt, Unread: thread.Unread, Archived: thread.Archived,
@@ -472,10 +473,25 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) (err 
 		sessionPath := strings.TrimSpace(thread.SessionPath)
 		if sessionPath != "" {
 			summary, err := service.index.Header(sessionPath)
-			if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Keep unsent work as a draft; stale history alone must not block other saves.
+				if thread.Draft == "" && thread.ComposerJSON == "" {
+					if record.ActiveThreadID == thread.ID {
+						record.ActiveThreadID = ""
+					}
+					continue
+				}
+				if !knownWorkspace {
+					workspaceRecord, err = service.catalog.Add(workspacePath, "deny")
+					if err != nil {
+						return err
+					}
+					workspaceID, workspacePath, thread.Trust = workspaceRecord.ID, workspaceRecord.Path, "deny"
+				}
+				sessionPath = ""
+			} else if err != nil {
 				return err
-			}
-			if knownWorkspace && workspaceRecord.Location.Kind == workspace.KindSSH {
+			} else if knownWorkspace && workspaceRecord.Location.Kind == workspace.KindSSH {
 				if !summary.SSHAnchor || summary.AnchorWorkspaceID != workspaceRecord.ID {
 					return errors.New("remote session anchor does not match the thread workspace")
 				}
@@ -492,9 +508,12 @@ func (service *CatalogService) SaveDesktopState(state domain.DesktopState) (err 
 				}
 				workspacePath = canonical
 			}
-			sessionPath = summary.Path
+			if sessionPath != "" {
+				sessionPath = summary.Path
+			}
 		}
 		mapped := workspace.ThreadRecord{
+			DisableSkills: thread.DisableSkills, LoadLocalPlugins: thread.LoadLocalPlugins,
 			ID: strings.TrimSpace(thread.ID), Title: strings.TrimSpace(thread.Title), WorkspaceID: workspaceID, WorkspacePath: workspacePath,
 			Trust: strings.TrimSpace(thread.Trust), Status: strings.TrimSpace(thread.Status), SessionPath: sessionPath,
 			Draft: thread.Draft, ComposerJSON: thread.ComposerJSON, CreatedAt: strings.TrimSpace(thread.CreatedAt), UpdatedAt: strings.TrimSpace(thread.UpdatedAt), Unread: thread.Unread, Archived: thread.Archived,

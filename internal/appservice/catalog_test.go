@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -479,6 +481,68 @@ func TestCatalogServicePersistsDesktopState(t *testing.T) {
 	}
 }
 
+func TestMissingHistoryDoesNotBlockOtherDrafts(t *testing.T) {
+	for _, keepDraft := range []bool{false, true} {
+		t.Run(strconv.FormatBool(keepDraft), func(t *testing.T) {
+			root := t.TempDir()
+			catalog := workspace.NewCatalog(filepath.Join(root, "desktop.json"))
+			record, err := catalog.Add(root, "deny")
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := &fakeSessionLister{sessions: []sessionindex.Summary{{Path: "history.jsonl", CWD: record.Path}}}
+			service := newCatalogService(catalog, index, nil)
+			state := domain.DesktopState{ActiveThreadID: "history", Threads: []domain.DesktopThreadState{
+				{ID: "history", Title: "History", WorkspaceID: record.ID, WorkspacePath: record.Path, Trust: "deny", Status: "idle", SessionPath: "history.jsonl", Archived: true},
+				{ID: "draft", Title: "Draft", WorkspaceID: record.ID, WorkspacePath: record.Path, Trust: "deny", Status: "idle", Draft: "old"},
+			}}
+			if keepDraft {
+				state.Threads[0].Draft = "recover this"
+			}
+			if err := service.SaveDesktopState(state); err != nil {
+				t.Fatal(err)
+			}
+			state.Threads[1].Draft = "new"
+			index.err = os.ErrPermission
+			if err := service.SaveDesktopState(state); !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("permission error was ignored: %v", err)
+			}
+			index.err = os.ErrNotExist
+			if err := service.SaveDesktopState(state); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := catalog.Desktop()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Threads[len(stored.Threads)-1].Draft != "new" {
+				t.Fatal("unrelated draft was not saved")
+			}
+			if keepDraft {
+				if len(stored.Threads) != 2 || stored.Threads[0].SessionPath != "" || stored.Threads[0].Draft != "recover this" || stored.ActiveThreadID != "history" {
+					t.Fatalf("draft recovery failed: %#v", stored)
+				}
+			} else if len(stored.Threads) != 1 || stored.ActiveThreadID != "" {
+				t.Fatalf("stale history was retained: %#v", stored)
+			}
+		})
+	}
+}
+
+func TestMissingDiscoveredSessionRetainsUnsentDraft(t *testing.T) {
+	root := t.TempDir()
+	catalog := workspace.NewCatalog(filepath.Join(root, "state.json"))
+	service := newCatalogService(catalog, &fakeSessionLister{err: os.ErrNotExist}, nil)
+	state := domain.DesktopState{ActiveThreadID: "draft", Threads: []domain.DesktopThreadState{{ID: "draft", Title: "Draft", WorkspacePath: root, Trust: "approve", Status: "idle", SessionPath: "missing.jsonl", Draft: "unsent text"}}}
+	if err := service.SaveDesktopState(state); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := service.GetDesktopState()
+	if err != nil || len(restored.Threads) != 1 || restored.Threads[0].Draft != "unsent text" || restored.Threads[0].SessionPath != "" || restored.Threads[0].WorkspaceID == "" || restored.Threads[0].Trust != "deny" {
+		t.Fatalf("discovered draft was not safely recovered: %#v, %v", restored, err)
+	}
+}
+
 func TestCatalogServicePersistsSessionAfterWorkspaceRemoval(t *testing.T) {
 	root := t.TempDir()
 	workspacePath := filepath.Join(root, "removed")
@@ -504,6 +568,7 @@ func TestCatalogServicePersistsRemoteDesktopStateByAnchorIdentity(t *testing.T) 
 	state := domain.DesktopState{ActiveThreadID: "thread-remote", Threads: []domain.DesktopThreadState{{
 		ID: "thread-remote", Title: "Remote audit", WorkspaceID: remoteWorkspace.ID, WorkspacePath: "",
 		Trust: "approve", Status: "idle", SessionPath: "remote.jsonl", Draft: "continue",
+		DisableSkills: true, LoadLocalPlugins: true,
 	}}}
 	if err := service.SaveDesktopState(state); err != nil {
 		t.Fatal(err)
@@ -511,6 +576,9 @@ func TestCatalogServicePersistsRemoteDesktopStateByAnchorIdentity(t *testing.T) 
 	persisted, err := service.GetDesktopState()
 	if err != nil || len(persisted.Threads) != 1 || persisted.Threads[0].WorkspaceID != remoteWorkspace.ID || persisted.Threads[0].WorkspacePath != "" || persisted.Threads[0].SessionPath != "remote.jsonl" {
 		t.Fatalf("remote desktop state=%#v err=%v", persisted, err)
+	}
+	if !persisted.Threads[0].DisableSkills || !persisted.Threads[0].LoadLocalPlugins {
+		t.Fatalf("remote resource choices were lost: %#v", persisted.Threads[0])
 	}
 
 	index.sessions[0].AnchorWorkspaceID = "workspace-fedcba9876543210fedcba9876543210"

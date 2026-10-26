@@ -90,7 +90,17 @@ type Index struct {
 	root       string
 	anchorRoot string
 	mutationMu sync.Mutex
+	summaryMu  sync.Mutex
+	summaries  map[string]summaryCacheEntry
 }
+
+type summaryCacheEntry struct {
+	Size    int64
+	ModTime time.Time
+	Summary Summary
+}
+
+const summaryCacheName = ".pi-desk-summary-cache.json"
 
 func DefaultRoot() (string, error) {
 	if root := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_SESSION_DIR")); root != "" {
@@ -172,6 +182,11 @@ func (index *Index) projectSSHAnchor(summary *Summary) bool {
 }
 
 func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, error) {
+	index.summaryMu.Lock()
+	defer index.summaryMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	root, err := index.canonicalRoot()
 	if errors.Is(err, os.ErrNotExist) {
 		return []Summary{}, nil
@@ -192,9 +207,16 @@ func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, 
 	if err != nil {
 		return nil, err
 	}
+	if index.summaries == nil {
+		index.summaries = loadSummaryCache(root)
+	}
 
 	jobs := make(chan string)
-	results := make(chan Summary)
+	type summaryResult struct {
+		entry   summaryCacheEntry
+		changed bool
+	}
+	results := make(chan summaryResult)
 	workerCount := min(maxConcurrentLoads, len(files))
 	var workers sync.WaitGroup
 	workers.Add(workerCount)
@@ -202,12 +224,27 @@ func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, 
 		go func() {
 			defer workers.Done()
 			for path := range jobs {
-				summary, ok := readSummary(path)
-				if !ok || !index.projectSSHAnchor(&summary) || (workspaceKey != "" && pathKey(summary.CWD) != workspaceKey) {
+				info, err := os.Lstat(path)
+				if err != nil || !info.Mode().IsRegular() {
 					continue
 				}
+				entry, found := index.summaries[path]
+				changed := !found || entry.Size != info.Size() || !entry.ModTime.Equal(info.ModTime()) || entry.Summary.Path != path
+				if changed {
+					summary, ok := readSummary(path)
+					if !ok {
+						continue
+					}
+					entry = summaryCacheEntry{Size: info.Size(), ModTime: info.ModTime(), Summary: summary}
+				}
+				// Never retain a summary read while its transcript was being changed.
+				current, statErr := os.Lstat(path)
+				if statErr != nil || !os.SameFile(info, current) || info.Size() != current.Size() || !info.ModTime().Equal(current.ModTime()) {
+					entry.Size = -1
+					changed = true
+				}
 				select {
-				case results <- summary:
+				case results <- summaryResult{entry, changed}:
 				case <-ctx.Done():
 					return
 				}
@@ -230,11 +267,36 @@ func (index *Index) List(ctx context.Context, workspacePath string) ([]Summary, 
 	}()
 
 	summaries := make([]Summary, 0, len(files))
-	for summary := range results {
-		summaries = append(summaries, summary)
+	nextCache := make(map[string]summaryCacheEntry, len(files))
+	changed := false
+	for result := range results {
+		changed = changed || result.changed
+		summary := result.entry.Summary
+		if result.entry.Size >= 0 {
+			nextCache[summary.Path] = result.entry
+		}
+		// Anchor markers and workspace filters must always use the current catalog.
+		if index.projectSSHAnchor(&summary) && (workspaceKey == "" || pathKey(summary.CWD) == workspaceKey) {
+			summaries = append(summaries, summary)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	changed = changed || len(nextCache) != len(index.summaries)
+	index.summaries = nextCache
+	if changed {
+		data, marshalErr := json.Marshal(struct {
+			Version int
+			Entries map[string]summaryCacheEntry
+		}{1, nextCache})
+		if marshalErr == nil {
+			path := filepath.Join(root, summaryCacheName)
+			// The cache is disposable: a read-only cache must not break session listing.
+			if githubatomic.WriteFile(path, bytes.NewReader(data)) == nil {
+				_ = os.Chmod(path, 0o600)
+			}
+		}
 	}
 	slices.SortFunc(summaries, func(a, b Summary) int { return b.ModifiedAt.Compare(a.ModifiedAt) })
 	return summaries, nil
@@ -1179,6 +1241,23 @@ func readHeader(path string) (Summary, bool) {
 	}
 	summary.CreatedAt, _ = time.Parse(time.RFC3339Nano, entry.Timestamp)
 	return summary, true
+}
+
+func loadSummaryCache(root string) map[string]summaryCacheEntry {
+	path := filepath.Join(root, summaryCacheName)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxSessionBytes {
+		return map[string]summaryCacheEntry{}
+	}
+	data, err := os.ReadFile(path)
+	var cache struct {
+		Version int
+		Entries map[string]summaryCacheEntry
+	}
+	if err != nil || json.Unmarshal(data, &cache) != nil || cache.Version != 1 || cache.Entries == nil {
+		return map[string]summaryCacheEntry{}
+	}
+	return cache.Entries
 }
 
 func readSummary(path string) (Summary, bool) {

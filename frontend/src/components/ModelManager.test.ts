@@ -333,6 +333,49 @@ describe("ModelManager", () => {
     expect(mocks.test).not.toHaveBeenCalled();
   });
 
+  it.each(["success", "error"])("ignores an old provider discovery %s without clearing the new request", async outcome => {
+    const snapshot = structuredClone(configured);
+    snapshot.providers.push({ ...structuredClone(snapshot.providers[0]), id: "other-provider", baseUrl: "https://other.test/v1" });
+    mocks.get.mockResolvedValue(snapshot);
+    type Discovery = { endpoint: string; models: { id: string }[] };
+    let resolveOld!: (value: Discovery) => void;
+    let rejectOld!: (error: Error) => void;
+    let resolveNew!: (value: Discovery) => void;
+    mocks.discover.mockImplementationOnce(() => new Promise<Discovery>((resolve, reject) => { resolveOld = resolve; rejectOld = reject; }))
+      .mockImplementationOnce(() => new Promise<Discovery>(resolve => { resolveNew = resolve; }));
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+    const fetch = () => wrapper.findAll(".model-field-heading button").find(button => button.text() === "Fetch models")!;
+    await fetch().trigger("click");
+    await wrapper.findAll(".model-config-provider")[1].get("button").trigger("click");
+    expect(fetch().attributes("disabled")).toBeUndefined();
+    await fetch().trigger("click");
+    if (outcome === "success") resolveOld({ endpoint: "https://old.test/models", models: [{ id: "old-only" }] });
+    else rejectOld(new Error("old provider failed"));
+    await flushPromises();
+    expect(wrapper.find('option[value="old-only"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("old provider failed");
+    expect(wrapper.findAll(".model-field-heading button").find(button => button.text() === "Fetching")!.attributes("disabled")).toBeDefined();
+    resolveNew({ endpoint: "https://other.test/models", models: [{ id: "new-only" }] });
+    await flushPromises();
+    expect(wrapper.find('option[value="new-only"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("https://other.test/models");
+    wrapper.unmount();
+  });
+
+  it("invalidates discovery when the endpoint is edited", async () => {
+    let resolve!: (value: { endpoint: string; models: { id: string }[] }) => void;
+    mocks.discover.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    await flushPromises();
+    await wrapper.findAll(".model-field-heading button").find(button => button.text() === "Fetch models")!.trigger("click");
+    await wrapper.get('input[placeholder="https://api.example.com/v1"]').setValue("https://changed.test/v1");
+    resolve({ endpoint: "https://old.test/models", models: [{ id: "old-only" }] });
+    await flushPromises();
+    expect(wrapper.find('option[value="old-only"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("fetches provider models and applies the selected model", async () => {
     const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
     await flushPromises();

@@ -127,6 +127,11 @@ describe("NewTaskDialog", () => {
     await chooseRemoteAlias(wrapper);
     await wrapper.get("#remote-name").setValue("repo");
     await wrapper.get("#remote-root").setValue("/srv/repo");
+    const choices = wrapper.findAll('input[type="checkbox"]');
+    expect(choices[0].element).toHaveProperty("checked", true);
+    expect(choices[1].element).toHaveProperty("checked", false);
+    await choices[0].setValue(false);
+    await choices[1].setValue(true);
     await wrapper.get("footer .primary").trigger("click");
 
     await vi.waitFor(() => expect(wrapper.text()).toContain("/srv/repo"));
@@ -135,6 +140,7 @@ describe("NewTaskDialog", () => {
     await vi.waitFor(() => expect(store.createRemoteThread).toHaveBeenCalled());
     expect(remoteWorkspaceService.connectNew).toHaveBeenCalledWith("repo", "work");
     expect(remoteWorkspaceService.decideRoot).toHaveBeenCalledWith("a".repeat(64), "approve");
+    expect(store.createRemoteThread).toHaveBeenCalledWith(expect.objectContaining({ id: "workspace-1" }), { disableSkills: true, loadLocalPlugins: true });
     expect(store.startThreadInBackground).toHaveBeenCalledWith("thread-remote");
   });
 

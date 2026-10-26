@@ -9,6 +9,8 @@ import { nextTick, ref, watch } from "vue";
 const appStore = useAppStore();
 const dialog = ref<HTMLElement | null>(null);
 const progressPanel = ref<HTMLElement | null>(null);
+const loadLocalSkills = ref(!appStore.remoteReconnectThread?.disableSkills);
+const loadLocalPlugins = ref(!!appStore.remoteReconnectThread?.loadLocalPlugins);
 
 function scrollProgress() {
   void nextTick(() => {
@@ -41,6 +43,9 @@ useModalFocus(dialog, close, { canClose: () => !appStore.remoteReconnectBusy });
           </div>
         </div>
         <p>{{ tr("remoteReconnect.description") }}</p>
+        <label class="checkbox-row"><input v-model="loadLocalSkills" type="checkbox" :disabled="appStore.remoteReconnectBusy" />{{ tr("newTask.sshLocalSkills") }}</label>
+        <label class="checkbox-row"><input v-model="loadLocalPlugins" type="checkbox" :disabled="appStore.remoteReconnectBusy" />{{ tr("newTask.sshLocalPlugins") }}</label>
+        <p class="form-warning">{{ tr("newTask.sshLocalResourcesHelp") }}</p>
         <div v-if="appStore.remoteReconnectProgress.length" ref="progressPanel" class="remote-setup-progress" role="status" aria-live="polite">
           <div v-for="step in appStore.remoteReconnectProgress" :key="step.id" class="remote-progress-step" :class="step.status" :aria-current="step.status === 'active' ? 'step' : undefined">
             <span class="remote-setup-marker" aria-hidden="true">{{ step.status === "complete" ? "✓" : step.status === "error" ? "!" : step.status === "active" ? "›" : "·" }}</span>
@@ -51,7 +56,7 @@ useModalFocus(dialog, close, { canClose: () => !appStore.remoteReconnectBusy });
       </div>
       <footer :class="ui.dialogFooter">
         <button class="text-button" :class="ui.button" type="button" :disabled="appStore.remoteReconnectBusy" @click="close">{{ tr("common.cancel") }}</button>
-        <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="appStore.remoteReconnectBusy" @click="void appStore.confirmRemoteReconnect()">
+        <button class="text-button primary" :class="ui.buttonPrimary" type="button" :disabled="appStore.remoteReconnectBusy" @click="void appStore.confirmRemoteReconnect({ disableSkills: !loadLocalSkills, loadLocalPlugins })">
           <LoaderCircle v-if="appStore.remoteReconnectBusy" :size="14" class="is-spinning" />
           {{ appStore.remoteReconnectBusy ? tr("remoteReconnect.connecting") : tr("remoteReconnect.connect") }}
         </button>

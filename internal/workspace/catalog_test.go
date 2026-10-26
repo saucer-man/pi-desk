@@ -134,6 +134,7 @@ func TestCatalogPersistsDesktopState(t *testing.T) {
 		ActiveThreadID: "thread-1",
 		Threads: []ThreadRecord{{
 			ID: "thread-1", Title: "Audit", WorkspacePath: workspaceRecord.Path, Trust: "deny", Status: "running", Draft: "continue", Unread: true,
+			DisableSkills: true, LoadLocalPlugins: true,
 		}},
 	}
 	if err := catalog.SaveDesktop(desktop); err != nil {
@@ -147,6 +148,9 @@ func TestCatalogPersistsDesktopState(t *testing.T) {
 	}
 	if loadedDesktop.ActiveThreadID != "thread-1" || len(loadedDesktop.Threads) != 1 || loadedDesktop.Threads[0].Draft != "continue" {
 		t.Fatalf("unexpected desktop state: %#v", loadedDesktop)
+	}
+	if !loadedDesktop.Threads[0].DisableSkills || !loadedDesktop.Threads[0].LoadLocalPlugins {
+		t.Fatalf("thread resource choices were not persisted: %#v", loadedDesktop.Threads[0])
 	}
 }
 

@@ -194,19 +194,21 @@ type SessionSummary struct {
 }
 
 type DesktopThreadState struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	WorkspaceID   string `json:"workspaceId,omitempty"`
-	WorkspacePath string `json:"workspacePath"`
-	Trust         string `json:"trust"`
-	Status        string `json:"status"`
-	SessionPath   string `json:"sessionPath,omitempty"`
-	Draft         string `json:"draft,omitempty"`
-	ComposerJSON  string `json:"composerJson,omitempty"`
-	CreatedAt     string `json:"createdAt,omitempty"`
-	UpdatedAt     string `json:"updatedAt,omitempty"`
-	Unread        bool   `json:"unread,omitempty"`
-	Archived      bool   `json:"archived,omitempty"`
+	DisableSkills    bool   `json:"disableSkills,omitempty"`
+	LoadLocalPlugins bool   `json:"loadLocalPlugins,omitempty"`
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	WorkspaceID      string `json:"workspaceId,omitempty"`
+	WorkspacePath    string `json:"workspacePath"`
+	Trust            string `json:"trust"`
+	Status           string `json:"status"`
+	SessionPath      string `json:"sessionPath,omitempty"`
+	Draft            string `json:"draft,omitempty"`
+	ComposerJSON     string `json:"composerJson,omitempty"`
+	CreatedAt        string `json:"createdAt,omitempty"`
+	UpdatedAt        string `json:"updatedAt,omitempty"`
+	Unread           bool   `json:"unread,omitempty"`
+	Archived         bool   `json:"archived,omitempty"`
 }
 
 type ScheduledTaskState struct {

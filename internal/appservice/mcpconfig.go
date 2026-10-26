@@ -344,6 +344,7 @@ func readMcpImportServers(path string, rootKey string) map[string]any {
 	if err != nil || len(content) > maxMcpConfigBytes {
 		return nil
 	}
+	content = bytes.TrimPrefix(content, []byte("\xef\xbb\xbf"))
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.UseNumber()
 	var root map[string]any
@@ -469,6 +470,7 @@ func readMcpConfig(path string) (map[string]any, map[string]any, error) {
 	if len(content) > maxMcpConfigBytes {
 		return nil, nil, fmt.Errorf("MCP config exceeds the %d MiB safety limit", maxMcpConfigBytes>>20)
 	}
+	content = bytes.TrimPrefix(content, []byte("\xef\xbb\xbf"))
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.UseNumber()
 	if err := decoder.Decode(&raw); err != nil {
