@@ -192,7 +192,7 @@ func TestUpsertModelCreatesOfficialPiShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertModel returned an error: %v", err)
 	}
-	if len(snapshot.Providers) != 1 || snapshot.Providers[0].APIKey != "sk-local-visible-key" || snapshot.Providers[0].Headers["User-Agent"] != "custom-agent" {
+	if len(snapshot.Providers) != 1 || snapshot.Providers[0].APIKey != "" || !snapshot.Providers[0].HasAPIKey || snapshot.Providers[0].Headers["User-Agent"] != "custom-agent" {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
 
@@ -325,8 +325,8 @@ func TestUpsertModelPreservesUnknownFieldsAndReturnsCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertModel returned an error: %v", err)
 	}
-	if snapshot.Providers[0].APIKey != "literal-secret-that-must-not-be-returned" || snapshot.Providers[0].Headers["X-Secret"] != "hidden" {
-		t.Fatalf("provider credentials or headers were not returned to the model editor: %#v", snapshot)
+	if snapshot.Providers[0].APIKey != "" || !snapshot.Providers[0].HasAPIKey || snapshot.Providers[0].Headers["X-Secret"] != "hidden" {
+		t.Fatal("model editor must receive key presence without its secret value")
 	}
 
 	data, err := os.ReadFile(path)

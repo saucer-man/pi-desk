@@ -91,13 +91,13 @@ func TestCheckRuntimeAllowsColdWindowsNPMShim(t *testing.T) {
 func TestCheckForUpdates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"tag_name":"1.3.1","html_url":"https://example.com/releases/1.3.1","body":"Bug fixes"}`))
+		_, _ = response.Write([]byte(`{"tag_name":"1.4.1","html_url":"https://example.com/releases/1.4.1","body":"Bug fixes"}`))
 	}))
 	defer server.Close()
 	service := NewDesktopService(fakeProber{}, nil)
 	service.updateURL = server.URL
 	result := service.CheckForUpdates()
-	if result.Status != "available" || result.LatestVersion != "1.3.1" || result.URL == "" {
+	if result.Status != "available" || result.LatestVersion != "1.4.1" || result.URL == "" {
 		t.Fatalf("unexpected available update: %#v", result)
 	}
 
@@ -131,7 +131,7 @@ func TestCheckForUpdatesUsesSemanticVersionOrdering(t *testing.T) {
 	if result := service.CheckForUpdates(); result.Status != "current" {
 		t.Fatalf("expected an older prerelease to be current, got %#v", result)
 	}
-	manifest = `{"version":"1.3.1-beta.1"}`
+	manifest = `{"version":"1.4.1-beta.1"}`
 	if result := service.CheckForUpdates(); result.Status != "available" {
 		t.Fatalf("expected a newer prerelease to be available, got %#v", result)
 	}

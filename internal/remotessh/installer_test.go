@@ -234,16 +234,12 @@ func connectedInstallerSupervisor(t *testing.T) (*ConnectionSupervisor, uint64) 
 func TestWaitForConcurrentCacheDirectory(t *testing.T) {
 	filesystem := newMemoryCacheFS()
 	directory := path.Join(filesystem.home, ".cache")
-	filesystem.nodes[directory] = &memoryCacheNode{entry: remoteCacheEntry{Mode: fs.ModeDir | 0o755, Owner: filesystem.owner}}
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		_ = filesystem.Chmod(directory, 0o700)
-	}()
-	if err := waitForConcurrentCacheDirectory(context.Background(), filesystem, directory, filesystem.owner, true); err != nil {
+	filesystem.nodes[directory] = &memoryCacheNode{entry: remoteCacheEntry{Mode: fs.ModeDir | 0o775, Owner: filesystem.owner}}
+	if err := waitForConcurrentCacheDirectory(context.Background(), filesystem, directory, filesystem.owner); err != nil {
 		t.Fatalf("concurrent directory did not become safe: %v", err)
 	}
 	filesystem.nodes[directory].entry.Owner++
-	if err := waitForConcurrentCacheDirectory(context.Background(), filesystem, directory, filesystem.owner, true); !errors.Is(err, ErrHelperCacheUnsafe) {
+	if err := waitForConcurrentCacheDirectory(context.Background(), filesystem, directory, filesystem.owner); !errors.Is(err, ErrHelperCacheUnsafe) {
 		t.Fatalf("unsafe concurrent directory error=%v", err)
 	}
 }
@@ -324,12 +320,6 @@ func TestHelperInstallerRejectsUnsafeCacheEntries(t *testing.T) {
 				filesystem.nodes["/home/test/.cache"] = &memoryCacheNode{entry: remoteCacheEntry{Mode: fs.ModeSymlink | 0o777, Owner: 1000}}
 			},
 		},
-		{
-			name: "group writable cache",
-			mutate: func(filesystem *memoryCacheFS) {
-				filesystem.nodes["/home/test/.cache"] = &memoryCacheNode{entry: remoteCacheEntry{Mode: fs.ModeDir | 0o770, Owner: 1000}}
-			},
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			filesystem := newMemoryCacheFS()
@@ -338,6 +328,39 @@ func TestHelperInstallerRejectsUnsafeCacheEntries(t *testing.T) {
 			installer, _ := newHelperInstaller(supervisor, func(context.Context, string) (remoteCacheFS, error) { return filesystem, nil })
 			if _, err := installer.Install(context.Background(), generation, artifact, content); !errors.Is(err, ErrHelperCacheUnsafe) {
 				t.Fatalf("Install error = %v, want ErrHelperCacheUnsafe", err)
+			}
+		})
+	}
+}
+
+func TestHelperInstallerAcceptsExistingCacheDirectoryPermissions(t *testing.T) {
+	content := []byte("immutable remote helper binary")
+	artifact := helperArtifactForTest("linux", "amd64", content)
+	for _, mode := range []fs.FileMode{0o700, 0o755, 0o770, 0o775, 0o777} {
+		t.Run(mode.String(), func(t *testing.T) {
+			filesystem := newMemoryCacheFS()
+			base := path.Join(filesystem.home, remoteHelperCacheRelative)
+			directories := []string{
+				path.Join(filesystem.home, ".cache"), path.Join(filesystem.home, ".cache", "pi-desk"),
+				base, path.Join(base, "1"), path.Join(base, "1", artifact.SHA256),
+			}
+			for _, directory := range directories {
+				filesystem.nodes[directory] = &memoryCacheNode{entry: remoteCacheEntry{Mode: fs.ModeDir | mode, Owner: filesystem.owner}}
+			}
+			supervisor, generation := connectedInstallerSupervisor(t)
+			installer, _ := newHelperInstaller(supervisor, func(context.Context, string) (remoteCacheFS, error) { return filesystem, nil })
+			if _, err := installer.Install(context.Background(), generation, artifact, content); err != nil {
+				t.Fatalf("install with directory permissions %o: %v", mode, err)
+			}
+			result, err := installer.Install(context.Background(), generation, artifact, content)
+			if err != nil || !result.Reused {
+				t.Fatalf("reuse with directory permissions %o: %#v, %v", mode, result, err)
+			}
+			for _, directory := range directories {
+				entry, err := filesystem.Lstat(directory)
+				if err != nil || entry.Mode.Perm() != mode {
+					t.Fatalf("existing directory permissions changed: %#v, %v", entry, err)
+				}
 			}
 		})
 	}

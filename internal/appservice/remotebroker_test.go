@@ -56,7 +56,7 @@ func TestRemoteBrokerFramingAndAdapterHaveNoLocalFallback(t *testing.T) {
 			t.Fatalf("remote adapter is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{`node:fs`, `child_process`, `createReadTool`, `createBashTool`, `details:`, `value?.trim()`} {
+	for _, forbidden := range []string{`child_process`, `createBashTool`, `details:`, `value?.trim()`} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("remote adapter contains local fallback %q", forbidden)
 		}

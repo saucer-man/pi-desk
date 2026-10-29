@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/modelconfig", () => ({ modelConfigService: mocks }));
+vi.mock("./ModelAccessPanel.vue", () => ({ default: { template: "<div />" } }));
 vi.mock("../services/agent", () => ({ agentService: {}, onPiEvent: () => () => undefined }));
 vi.mock("../services/catalog", () => ({ catalogService: {} }));
 vi.mock("../services/desktop", () => ({ getBootstrapState: vi.fn() }));
@@ -27,7 +28,7 @@ const configured = {
     id: "custom-openai",
     baseUrl: "https://gateway.example.com/v1",
     api: "openai-responses",
-    apiKey: "sk-visible-local-key",
+    hasApiKey: true,
     headers: { "User-Agent": "existing-agent", "X-Channel": "desktop" },
     compatJson: "",
     models: [{
@@ -50,6 +51,12 @@ const configured = {
     }],
   }],
 };
+
+async function mountEditor(options: { attachTo?: HTMLElement; global: { plugins: ReturnType<typeof createPinia>[] } }) {
+  const wrapper = mount(ModelManager, options);
+  await wrapper.get('[data-testid="model-custom-tab"]').trigger("click");
+  return wrapper;
+}
 
 describe("ModelManager", () => {
   let pinia: ReturnType<typeof createPinia>;
@@ -79,15 +86,17 @@ describe("ModelManager", () => {
     setActivePinia(pinia);
   });
 
-  it("shows the credential and saves editable provider fields", async () => {
+  it("keeps saved credentials hidden and saves replacement provider fields", async () => {
     const store = useAppStore();
     store.refreshModels = vi.fn().mockResolvedValue(undefined);
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     expect(wrapper.find(".settings-content-header").exists()).toBe(false);
     expect(wrapper.text()).toContain("GPT Test");
-    expect(wrapper.get('input[placeholder="sk-... / $API_KEY"]').element).toHaveProperty("value", "sk-visible-local-key");
+    expect(wrapper.get('input[placeholder="sk-... / $API_KEY"]').element).toHaveProperty("value", "");
+    expect(wrapper.get('input[placeholder="sk-... / $API_KEY"]').attributes("type")).toBe("password");
+    await wrapper.get('input[placeholder="sk-... / $API_KEY"]').setValue("replacement-key");
     expect(wrapper.findAll('[data-testid="provider-header-row"]')).toHaveLength(2);
     expect(wrapper.findAll('[data-testid="provider-header-name"]')[0].element).toHaveProperty("value", "User-Agent");
     expect(wrapper.findAll('[data-testid="provider-header-value"]')[0].element).toHaveProperty("value", "existing-agent");
@@ -105,7 +114,7 @@ describe("ModelManager", () => {
     expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({
       originalProviderId: "custom-openai",
       providerId: "renamed-provider",
-      apiKey: "sk-visible-local-key",
+      apiKey: "replacement-key",
       headers: { "User-Agent": "edited-agent", "X-Channel": "desktop" },
       modelId: "gpt-test",
       modelName: "GPT Test Updated",
@@ -118,7 +127,7 @@ describe("ModelManager", () => {
   });
 
   it("rejects invalid thinking level mappings before saving", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('[data-testid="thinking-level-map"]').setValue('{"turbo":"turbo"}');
@@ -130,7 +139,7 @@ describe("ModelManager", () => {
   });
 
   it("edits model compaction and image resize limits", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('[data-testid="model-runtime-limits"] summary').trigger("click");
@@ -153,7 +162,7 @@ describe("ModelManager", () => {
   });
 
   it("rejects invalid model runtime limits before saving", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('[data-testid="reserve-tokens"]').setValue("-1");
@@ -165,7 +174,7 @@ describe("ModelManager", () => {
   });
 
   it("tests an unchanged saved model through its native provider id", async () => {
-    const wrapper = mount(ModelManager, { attachTo: document.body, global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ attachTo: document.body, global: { plugins: [pinia] } });
     await flushPromises();
     const button = wrapper.findAll("button").find((item) => item.text() === "Test")!;
     await button.trigger("click");
@@ -181,7 +190,7 @@ describe("ModelManager", () => {
     store.refreshModels = vi.fn().mockResolvedValue(undefined);
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const wrapper = mount(ModelManager, { attachTo: host, global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ attachTo: host, global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('input[placeholder="sk-... / $API_KEY"]').setValue("sk-edited-key");
@@ -233,7 +242,7 @@ describe("ModelManager", () => {
     mocks.test.mockReturnValue(Object.assign(new Promise(() => undefined), { cancel }));
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const wrapper = mount(ModelManager, { attachTo: host, global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ attachTo: host, global: { plugins: [pinia] } });
     await flushPromises();
 
     const testButton = wrapper.findAll("button").find((button) => button.text() === "Test");
@@ -255,7 +264,7 @@ describe("ModelManager", () => {
   it("queries account quota in a provider-aware result dialog", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const wrapper = mount(ModelManager, { attachTo: host, global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ attachTo: host, global: { plugins: [pinia] } });
     await flushPromises();
 
     const quotaButton = wrapper.findAll("button").find((button) => button.text() === "Account quota");
@@ -266,7 +275,8 @@ describe("ModelManager", () => {
     expect(mocks.quota).toHaveBeenCalledWith({
       baseUrl: "https://gateway.example.com/v1",
       api: "openai-responses",
-      apiKey: "sk-visible-local-key",
+      apiKey: "",
+      credentialProviderId: "custom-openai",
       headers: { "User-Agent": "existing-agent", "X-Channel": "desktop" },
     });
     const dialog = document.body.querySelector<HTMLElement>(".model-quota-dialog");
@@ -284,7 +294,7 @@ describe("ModelManager", () => {
 
   it("defaults headers for a new provider and saves added custom headers", async () => {
     mocks.get.mockResolvedValue({ path: configured.path, providers: [] });
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     expect(wrapper.findAll('[data-testid="provider-header-row"]')).toHaveLength(1);
@@ -310,7 +320,7 @@ describe("ModelManager", () => {
 
   it("warns that the openai provider ID merges Pi's built-in and cached catalog", async () => {
     mocks.get.mockResolvedValue({ path: configured.path, providers: [] });
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     const providerID = wrapper.get('[data-testid="provider-id"]');
@@ -324,7 +334,7 @@ describe("ModelManager", () => {
 
   it("disables testing until a new model has the required identifiers", async () => {
     mocks.get.mockResolvedValue({ path: configured.path, providers: [] });
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     const testButton = wrapper.get(".model-editor-actions .text-button:not(.primary-button)");
@@ -343,7 +353,7 @@ describe("ModelManager", () => {
     let resolveNew!: (value: Discovery) => void;
     mocks.discover.mockImplementationOnce(() => new Promise<Discovery>((resolve, reject) => { resolveOld = resolve; rejectOld = reject; }))
       .mockImplementationOnce(() => new Promise<Discovery>(resolve => { resolveNew = resolve; }));
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
     const fetch = () => wrapper.findAll(".model-field-heading button").find(button => button.text() === "Fetch models")!;
     await fetch().trigger("click");
@@ -366,7 +376,7 @@ describe("ModelManager", () => {
   it("invalidates discovery when the endpoint is edited", async () => {
     let resolve!: (value: { endpoint: string; models: { id: string }[] }) => void;
     mocks.discover.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
     await wrapper.findAll(".model-field-heading button").find(button => button.text() === "Fetch models")!.trigger("click");
     await wrapper.get('input[placeholder="https://api.example.com/v1"]').setValue("https://changed.test/v1");
@@ -377,7 +387,7 @@ describe("ModelManager", () => {
   });
 
   it("fetches provider models and applies the selected model", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     const fetchButton = wrapper.findAll(".model-field-heading button").find((button) => button.text() === "Fetch models");
@@ -387,7 +397,8 @@ describe("ModelManager", () => {
     expect(mocks.discover).toHaveBeenCalledWith({
       baseUrl: "https://gateway.example.com/v1",
       api: "openai-responses",
-      apiKey: "sk-visible-local-key",
+      apiKey: "",
+      credentialProviderId: "custom-openai",
       headers: { "User-Agent": "existing-agent", "X-Channel": "desktop" },
     });
 
@@ -404,7 +415,7 @@ describe("ModelManager", () => {
     expect(mocks.addModels).toHaveBeenCalledWith(expect.objectContaining({
       providerId: "custom-openai",
       api: "openai-responses",
-      apiKey: "sk-visible-local-key",
+      apiKey: "",
       headers: { "User-Agent": "existing-agent", "X-Channel": "desktop" },
       models: [expect.objectContaining({
         id: "gpt-fetched",
@@ -415,7 +426,7 @@ describe("ModelManager", () => {
   });
 
   it("keeps manual compatibility fields without an automatic compat button", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get(".model-advanced summary").trigger("click");
@@ -425,7 +436,7 @@ describe("ModelManager", () => {
   });
 
   it("applies a verified model parameter suggestion", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('input[placeholder="gpt-5"]').setValue("gpt-5.6-sol");
@@ -436,11 +447,11 @@ describe("ModelManager", () => {
     const numericInputs = wrapper.findAll('input[type="number"]');
     expect(numericInputs[0].element).toHaveProperty("value", "272000");
     expect(numericInputs[1].element).toHaveProperty("value", "128000");
-    expect(wrapper.findAll('input[type="checkbox"]')[0].element).toHaveProperty("checked", true);
-    expect(wrapper.findAll('input[type="checkbox"]')[1].element).toHaveProperty("checked", true);
+    expect(wrapper.get('[data-testid="model-reasoning"]').element).toHaveProperty("checked", true);
+    expect(wrapper.get('[data-testid="model-images"]').element).toHaveProperty("checked", true);
   });
   it("fills provider fields from a preset selection", async () => {
-    const wrapper = mount(ModelManager, { global: { plugins: [pinia] } });
+    const wrapper = await mountEditor({ global: { plugins: [pinia] } });
     await flushPromises();
 
     await wrapper.get('button.model-config-add-row').trigger("click");

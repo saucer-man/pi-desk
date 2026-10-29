@@ -4578,10 +4578,15 @@
 
 .checkbox-row {
   display: flex !important;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   margin: 14px 0 0 !important;
   line-height: 1.4;
+}
+
+.checkbox-row > input {
+  flex-shrink: 0;
+  margin: 0;
 }
 
 .form-warning,
@@ -5465,6 +5470,14 @@
   min-height: 0;
   flex: 1;
   grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.model-management-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .prompt-manager-layout {

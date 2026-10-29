@@ -1042,6 +1042,13 @@
 }
 
 .settings-main {
+  --bg-settings: var(--bg-card);
+  --bg-panel: var(--bg-card);
+  --bg-app: var(--bg-card);
+  --bg-raised: var(--bg-card);
+  --bg-sidebar: var(--bg-card);
+  --bg-workspace: var(--bg-card);
+  --bg-code: var(--bg-card);
   display: grid;
   min-width: 0;
   min-height: 0;

@@ -37,8 +37,32 @@ export function GetConfiguredModels(): $CancellablePromise<domain$0.SelectableMo
     return $Call.ByID(2299936945);
 }
 
+export function GetModelCatalog(refresh: boolean): $CancellablePromise<domain$0.ModelCatalogSnapshot> {
+    return $Call.ByID(4103221823, refresh);
+}
+
 export function GetModelsConfig(): $CancellablePromise<domain$0.ModelConfigSnapshot> {
     return $Call.ByID(1396541851);
+}
+
+export function LoginModelProvider(request: domain$0.ModelAuthRequest): $CancellablePromise<domain$0.ModelCatalogSnapshot> {
+    return $Call.ByID(2525026914, request);
+}
+
+export function LogoutModelProvider(providerID: string): $CancellablePromise<domain$0.ModelCatalogSnapshot> {
+    return $Call.ByID(113427857, providerID);
+}
+
+export function ReplyModelLogin(request: domain$0.ModelAuthReply): $CancellablePromise<void> {
+    return $Call.ByID(2314678741, request);
+}
+
+export function SaveModelAPIKey(request: domain$0.ModelAuthRequest): $CancellablePromise<domain$0.ModelCatalogSnapshot> {
+    return $Call.ByID(2876442642, request);
+}
+
+export function SetDefaultModel(request: domain$0.DefaultModelRequest): $CancellablePromise<domain$0.ModelCatalogSnapshot> {
+    return $Call.ByID(3197180877, request);
 }
 
 export function TestModel(request: domain$0.TestModelConfigRequest): $CancellablePromise<domain$0.ModelTestResult> {

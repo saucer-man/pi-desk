@@ -264,6 +264,7 @@ export interface PiModel {
   provider: string;
   contextWindow?: number;
   reasoning?: boolean;
+  source?: string;
   promptCache?: { short?: number; long?: number };
 }
 
@@ -406,6 +407,12 @@ function mergeModels(...sources: PiModel[][]): PiModel[] {
     }
   }
   return [...models.values()];
+}
+
+function mergeModelCatalog(runtime: PiModel[], configured: PiModel[], current: PiModel | undefined, accountProviders: string[]): PiModel[] {
+  const restricted = new Set([...accountProviders, ...configured.filter(model => model.source === "account").map(model => model.provider)]);
+  const available = new Set(configured.map(modelKey));
+  return mergeModels(runtime.filter(model => !restricted.has(model.provider) || available.has(modelKey(model))), configured, current ? [current] : []);
 }
 
 let unsubscribePiEvents: (() => void) | undefined;
@@ -951,6 +958,7 @@ export const useAppStore = defineStore("app", {
     latestCompactionEstimateByThread: {} as Record<string, number | undefined>,
     modelsByThread: {} as Record<string, PiModel[]>,
     configuredModels: [] as PiModel[],
+    accountModelProviders: [] as string[],
     knownRuntimeModels: [] as PiModel[],
     pendingModelByThread: {} as Record<string, PiModel | undefined>,
     modelSelectionGenerationByThread: {} as Record<string, number>,
@@ -1042,18 +1050,20 @@ export const useAppStore = defineStore("app", {
       const thread = state.threads.find((candidate) => candidate.id === state.activeThreadId);
       if (!thread) return [];
       const current = state.sessionStateByThread[state.activeThreadId]?.model;
-      return mergeModels(
+      return mergeModelCatalog(
         thread.started ? state.modelsByThread[state.activeThreadId] ?? [] : state.knownRuntimeModels,
         state.configuredModels,
-        current ? [current] : [],
+        current,
+        state.accountModelProviders,
       );
     },
     scheduledTaskModels(state): PiModel[] {
       const current = state.sessionStateByThread[state.activeThreadId]?.model;
-      return mergeModels(
+      return mergeModelCatalog(
         state.knownRuntimeModels,
         state.configuredModels,
-        current ? [current] : [],
+        current,
+        state.accountModelProviders,
       );
     },
     activeModelPending(state): boolean {
@@ -1527,7 +1537,10 @@ export const useAppStore = defineStore("app", {
     async connectRemoteWorkspace(id: string) {
       const workspace = this.workspaces.find((item) => item.id === id);
       if (!workspace?.targetId || workspace.kind !== "ssh") throw new Error("Remote workspace not found");
+      const epoch = this.remoteTargetEpoch(workspace.targetId);
       const resumed = await remoteWorkspaceService.resume(id);
+      this.assertRemoteTargetEpoch(workspace.targetId, epoch);
+      if (!this.workspaces.some((item) => item.id === id)) throw new Error("Remote workspace no longer exists");
       this.recordRemoteWorkspace(resumed, true);
     },
     async removeWorkspace(id: string, deleteSessions = false) {
@@ -1645,7 +1658,10 @@ export const useAppStore = defineStore("app", {
         remoteRoot: current.remoteRoot, trust: "approve", addedAt: current.addedAt ?? new Date().toISOString(), lastOpenedAt: current.lastOpenedAt ?? new Date().toISOString(),
       };
       if (!this.remoteReadyByWorkspace[current.id]) {
+        const epoch = this.remoteTargetEpoch(current.targetId);
         workspace = await remoteWorkspaceService.resume(current.id);
+        this.assertRemoteTargetEpoch(current.targetId, epoch);
+        if (!this.workspaces.some((item) => item.id === current.id)) throw new Error("Remote workspace no longer exists");
         this.recordRemoteWorkspace(workspace, true);
       }
       await this.createRemoteThread(workspace);
@@ -3234,6 +3250,11 @@ export const useAppStore = defineStore("app", {
     async refreshConfiguredModels(throwOnError = false) {
       try {
         this.configuredModels = (await modelConfigService.selectable()).map((model) => ({ ...model }));
+        const present = new Set(this.configuredModels.map(model => model.provider));
+        this.accountModelProviders = [...new Set([
+          ...this.accountModelProviders.filter(provider => !present.has(provider)),
+          ...this.configuredModels.filter(model => model.source === "account").map(model => model.provider),
+        ])];
         this.modelCatalogError = "";
       } catch (error) {
         this.modelCatalogError = errorMessage(error);

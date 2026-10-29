@@ -1,6 +1,7 @@
 import net from "node:net";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { realpath } from "node:fs/promises";
+import { createReadTool, truncateTail, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const socketPath = process.env.PI_DESK_REMOTE_SOCKET;
@@ -113,6 +114,26 @@ const lsParameters = Type.Object({ path: Type.Optional(Type.String()), limit: Ty
 const bashParameters = Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number()) });
 
 export default function (pi: ExtensionAPI) {
+	const localSkillsEnabled = process.env.PI_DESK_REMOTE_LOCAL_SKILLS === "true";
+	const localRead = createReadTool(process.cwd());
+	const containsFile = (directory: string, file: string) => {
+		const relative = path.relative(directory, file);
+		return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+	};
+	async function localSkillPath(input: string): Promise<string | undefined> {
+		if (!localSkillsEnabled || !path.isAbsolute(input) || /[\p{Cc}\p{Cf}]/u.test(input)) return;
+		const file = path.resolve(input);
+		for (const command of pi.getCommands()) {
+			if (command.source !== "skill") continue;
+			const skill = command.sourceInfo?.path || (command as { path?: string }).path;
+			if (!skill || !path.isAbsolute(skill)) continue;
+			const directory = path.dirname(skill);
+			if (!containsFile(directory, file)) continue;
+			const [root, resolved] = await Promise.all([realpath(directory), realpath(file)]);
+			if (!containsFile(root, resolved)) throw new Error("Local skill path is outside the loaded skill directory");
+			return resolved;
+		}
+	}
 	pi.on("project_trust", () => ({ trusted: "yes", remember: false }));
 	pi.on("session_start", async (_event, ctx) => {
 		await call("hello", { protocol, coverage });
@@ -126,6 +147,7 @@ export default function (pi: ExtensionAPI) {
 			`- The actual workspace root is: ${root}`,
 			`- Pi's local process cwd is: ${localCwd}`,
 			"- Use the registered remote tools for workspace files and commands; do not treat the local cwd or anchor path as the remote workspace.",
+			"- When local skills are enabled, read can also open files in loaded local skill directories. These paths are local; bash still runs remotely.",
 			"",
 			"<remote-project-context>",
 			remoteContext.content,
@@ -136,9 +158,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerTool({
 		name: "read", label: "read",
-		description: "Read a remote workspace file. Supports text and images. Text output is limited to 2000 lines or 50KB.",
+		description: "Read a remote workspace file or an enabled local skill file and its references. Supports text and images. Text output is limited to 2000 lines or 50KB.",
 		promptSnippet: "Read remote file contents", parameters: readParameters,
-		async execute(_id, params, signal) {
+		async execute(_id, params, signal, onUpdate) {
+			const local = await localSkillPath(params.path);
+			if (local) return localRead.execute(_id, { ...params, path: local }, signal, onUpdate);
 			const offset = Number.isInteger(params.offset) ? params.offset! : 1;
 			const limit = Number.isInteger(params.limit) ? params.limit! : 2000;
 			const result = await call<any>("read", { path: logicalPath(params.path, false), offset, limit }, signal);
@@ -214,12 +238,13 @@ export default function (pi: ExtensionAPI) {
 		name: "bash", label: "bash", description: "Execute a command in the remote workspace with bounded output and timeout.",
 		promptSnippet: "Execute remote shell commands", parameters: bashParameters, executionMode: "sequential",
 		async execute(_id, params, signal, onUpdate) {
-			const chunks: Buffer[] = [];
 			const result = await call<any>("bash", { content: params.command, timeout: Math.min(120, Math.max(1, Math.ceil(params.timeout || 120))) }, signal);
-			if (result.output) chunks.push(Buffer.from(result.output, "utf8"));
-			const text = Buffer.concat(chunks).toString("utf8") || `(command exited with code ${result.exitCode})`;
+			const output = truncateTail(result.output);
+			let text = output.content || "(no output)";
+			if (output.truncated) text += "\n\n[Output truncated; showing the end of the command output.]";
+			if (result.exitCode !== 0) text += `\n\nCommand exited with code ${result.exitCode}`;
 			onUpdate?.({ content: [{ type: "text" as const, text }] });
-			return { content: [{ type: "text" as const, text }] };
+			return { content: [{ type: "text" as const, text }], isError: result.exitCode !== 0 };
 		},
 	});
 	pi.on("user_bash", () => ({ operations: bashOperations }));

@@ -52,6 +52,11 @@ func (service *ModelConfigService) DiscoverModels(request domain.DiscoverModelsR
 	request.BaseURL = strings.TrimSpace(request.BaseURL)
 	request.API = strings.TrimSpace(request.API)
 	request.APIKey = strings.TrimSpace(request.APIKey)
+	key, err := service.probeCredential(request.CredentialProviderID, request.APIKey)
+	if err != nil {
+		return domain.ModelDiscoveryResult{}, err
+	}
+	request.APIKey = key
 	headers, err := normalizeProviderHeaders(request.Headers)
 	if err != nil {
 		return domain.ModelDiscoveryResult{}, err
@@ -126,6 +131,11 @@ func (service *ModelConfigService) TestModel(parent context.Context, request dom
 	if request.ProviderID != "" {
 		return service.testSavedModel(parent, request)
 	}
+	key, err := service.probeCredential(request.CredentialProviderID, request.APIKey)
+	if err != nil {
+		return domain.ModelTestResult{}, err
+	}
+	request.APIKey = key
 	headers, err := normalizeProviderHeaders(request.Headers)
 	if err != nil {
 		return domain.ModelTestResult{}, err
@@ -263,6 +273,11 @@ func (service *ModelConfigService) GetAccountQuota(request domain.ModelQuotaRequ
 	request.BaseURL = strings.TrimSpace(request.BaseURL)
 	request.API = strings.TrimSpace(request.API)
 	request.APIKey = strings.TrimSpace(request.APIKey)
+	key, err := service.probeCredential(request.CredentialProviderID, request.APIKey)
+	if err != nil {
+		return domain.ModelQuotaResult{}, err
+	}
+	request.APIKey = key
 	headers, err := normalizeProviderHeaders(request.Headers)
 	if err != nil {
 		return domain.ModelQuotaResult{}, err
@@ -429,6 +444,34 @@ func validateProbeProvider(baseURL, api, configuredKey string) (string, error) {
 		return "", errors.New("select a supported API type before testing or fetching models")
 	}
 	return resolveProbeAPIKey(configuredKey)
+}
+
+// Resolve saved models.json credentials inside the backend, never via a UI round trip.
+func (service *ModelConfigService) probeCredential(providerID, supplied string) (string, error) {
+	if supplied != "" || providerID == "" {
+		return supplied, nil
+	}
+	if err := validateIdentifier("credential provider id", providerID); err != nil {
+		return "", err
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	root, err := service.readDocument()
+	if err != nil {
+		return "", err
+	}
+	providers, err := providersObject(root)
+	if err != nil {
+		return "", err
+	}
+	provider, exists, err := objectValue(providers, providerID)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", errors.New("credential provider was not found")
+	}
+	return stringValue(provider["apiKey"]), nil
 }
 
 func resolveProbeAPIKey(value string) (string, error) {

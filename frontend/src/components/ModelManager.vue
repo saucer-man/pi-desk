@@ -18,11 +18,12 @@ import { modelConfigService, type DiscoveredModel, type ManagedModel, type Manag
 import { useAppStore } from "../stores/app";
 import ModelQuotaDialog from "./ModelQuotaDialog.vue";
 import ModelTestDialog from "./ModelTestDialog.vue";
+import ModelAccessPanel from "./ModelAccessPanel.vue";
 
 const apiOptions = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
 const providerPresetPrefix = "preset:";
 const providerPresets = [
-  { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", api: "openai-completions" },
+  { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", api: "openai-responses" },
   { id: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com", api: "anthropic-messages" },
   { id: "google", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", api: "google-generative-ai" },
   { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", api: "openai-completions" },
@@ -48,6 +49,7 @@ type ProviderHeaderEntry = {
 };
 type OptionalNumber = number | "";
 const appStore = useAppStore();
+const section = ref("access");
 const snapshot = ref<ModelConfigSnapshot>();
 const loading = ref(true);
 const saving = ref(false);
@@ -93,6 +95,7 @@ const editor = reactive({
   baseUrl: "",
   api: "",
   apiKey: "",
+  clearAPIKey: false,
   headers: [] as ProviderHeaderEntry[],
   providerCompatJson: "",
   modelId: "",
@@ -121,6 +124,7 @@ const fingerprint = computed(() => JSON.stringify({
   baseUrl: editor.baseUrl,
   api: editor.api,
   apiKey: editor.apiKey,
+  clearAPIKey: editor.clearAPIKey,
   headers: editor.headers.map(({ name, value }) => ({ name, value })),
   providerCompatJson: editor.providerCompatJson,
   modelId: editor.modelId,
@@ -141,6 +145,8 @@ const fingerprint = computed(() => JSON.stringify({
 const dirty = computed(() => fingerprint.value !== savedFingerprint.value);
 const hasRequiredProbeFields = computed(() => Boolean(editor.modelId.trim() && ((isExisting.value && !dirty.value) || (editor.baseUrl.trim() && editor.api))));
 const hasRequiredQuotaFields = computed(() => Boolean(editor.baseUrl.trim() && editor.api));
+const hasSavedAPIKey = computed(() => Boolean(providerById(editor.providerChoice)?.hasApiKey || providerById(editor.originalProviderId)?.hasApiKey));
+const credentialProviderId = computed(() => hasSavedAPIKey.value && !editor.apiKey && !editor.clearAPIKey ? (editor.originalProviderId || editor.providerId) : undefined);
 const availableDiscoveredModels = computed(() => discoveredModels.value.filter((model) => !findModel(editor.providerId.trim(), model.id)));
 const modelDefaults = computed(() => defaultsForModel(editor.modelId));
 const usesBuiltInOpenAIProvider = computed(() => editor.providerId.trim().toLocaleLowerCase() === "openai");
@@ -187,6 +193,7 @@ function setProviderFields(provider?: ManagedModelProvider, useDefaultHeaders = 
   editor.baseUrl = provider?.baseUrl ?? "";
   editor.api = provider?.api ?? "";
   editor.apiKey = provider?.apiKey ?? "";
+  editor.clearAPIKey = false;
   editor.headers = provider ? headerEntries(provider.headers) : useDefaultHeaders ? [newHeaderEntry("User-Agent", defaultProviderUserAgent)] : [];
   editor.providerCompatJson = provider?.compatJson ?? "";
 }
@@ -399,6 +406,7 @@ async function saveModel(showNotice = true): Promise<boolean> {
       baseUrl: editor.baseUrl,
       api: editor.api,
       apiKey: editor.apiKey,
+      clearApiKey: editor.clearAPIKey,
       headers: headersForRequest(),
       providerCompatJson: editor.providerCompatJson,
       modelId: editor.modelId,
@@ -457,6 +465,7 @@ async function testModel() {
     baseUrl: editor.baseUrl,
     api: editor.api,
     apiKey: editor.apiKey,
+    credentialProviderId: credentialProviderId.value,
     headers: headersForRequest(),
     modelId: editor.modelId,
     prompt: testPrompt.value,
@@ -496,6 +505,7 @@ async function queryAccountQuota() {
       baseUrl: editor.baseUrl,
       api: editor.api,
       apiKey: editor.apiKey,
+      credentialProviderId: credentialProviderId.value,
       headers: headersForRequest(),
     });
   } catch (cause) {
@@ -521,6 +531,7 @@ async function discoverModels() {
       baseUrl: editor.baseUrl,
       api: editor.api,
       apiKey: editor.apiKey,
+      credentialProviderId: credentialProviderId.value,
       headers: headersForRequest(),
     });
     if (generation !== discoveryGeneration) return;
@@ -583,6 +594,7 @@ async function addDiscoveredModels() {
       baseUrl: editor.baseUrl,
       api: editor.api,
       apiKey: editor.apiKey,
+      clearApiKey: editor.clearAPIKey,
       headers: headersForRequest(),
       providerCompatJson: editor.providerCompatJson,
       models,
@@ -689,6 +701,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="settings-content model-config-content" :class="ui.settingsContent">
+    <div class="model-management-tabs" role="tablist" :aria-label="tr('settings.models')">
+      <button type="button" role="tab" :class="ui.tab" :aria-selected="section === 'access'" @click="section = 'access'">{{ tr("settings.modelAccessTitle") }}</button>
+      <button type="button" role="tab" :class="ui.tab" :aria-selected="section === 'custom'" data-testid="model-custom-tab" @click="section = 'custom'">{{ tr("settings.modelCustomTitle") }}</button>
+    </div>
+    <ModelAccessPanel v-if="section === 'access'" @changed="void refreshModelChoices()" />
+    <template v-else>
     <div v-if="loading" class="settings-empty" :class="ui.empty"><RefreshCw :size="18" class="is-spinning" /><span>{{ tr("settings.loadingModelsConfig") }}</span></div>
     <div v-else-if="loadError" class="settings-empty is-error" :class="ui.empty"><XCircle :size="18" /><span>{{ loadError }}</span></div>
     <div v-else class="model-manager-layout" :class="ui.managerLayout">
@@ -766,7 +784,9 @@ onBeforeUnmount(() => {
           </label>
           <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.apiKey") }}</span>
-            <input :class="ui.input" v-model="editor.apiKey" type="text" spellcheck="false" autocomplete="off" placeholder="sk-... / $API_KEY" />
+            <input :class="ui.input" v-model="editor.apiKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-... / $API_KEY" />
+            <small v-if="hasSavedAPIKey">{{ tr("settings.modelKeyPreserve") }}</small>
+            <label v-if="hasSavedAPIKey" class="checkbox-field"><input v-model="editor.clearAPIKey" type="checkbox" />{{ tr("settings.modelKeyRemove") }}</label>
             <small>{{ tr("settings.apiKeyHelp") }}</small>
           </label>
         </div>
@@ -862,11 +882,11 @@ onBeforeUnmount(() => {
           </label>
           <label class="model-check-row">
             <span><strong>{{ tr("settings.supportsReasoning") }}</strong><small>{{ tr("settings.supportsReasoningHelp") }}</small></span>
-            <input v-model="editor.reasoning" type="checkbox" />
+            <input v-model="editor.reasoning" type="checkbox" data-testid="model-reasoning" />
           </label>
           <label class="model-check-row">
             <span><strong>{{ tr("settings.supportsImages") }}</strong><small>{{ tr("settings.supportsImagesHelp") }}</small></span>
-            <input v-model="editor.imageInput" type="checkbox" />
+            <input v-model="editor.imageInput" type="checkbox" data-testid="model-images" />
           </label>
           <label class="model-field model-field-wide" :class="ui.field">
             <span>{{ tr("settings.thinkingLevelMap") }}</span>
@@ -951,6 +971,7 @@ onBeforeUnmount(() => {
         </footer>
       </form>
     </div>
+    </template>
     <ModelQuotaDialog
       v-if="quotaDialogOpen"
       :provider-name="editor.providerId"

@@ -218,7 +218,7 @@ func processEnvironment(config StartConfig) ([]string, error) {
 		if strings.HasPrefix(strings.ToUpper(key), "PI_DESK_BROWSER_") || strings.EqualFold(key, "PI_CODING_AGENT_DIR") {
 			continue
 		}
-		if !strings.EqualFold(key, "PI_DESK_REMOTE_SOCKET") && !strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") && !strings.EqualFold(key, "PI_DESK_REMOTE_ROOT") {
+		if !strings.EqualFold(key, "PI_DESK_REMOTE_SOCKET") && !strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") && !strings.EqualFold(key, "PI_DESK_REMOTE_ROOT") && !strings.EqualFold(key, "PI_DESK_REMOTE_LOCAL_SKILLS") {
 			environment = append(environment, entry)
 		}
 	}
@@ -237,6 +237,7 @@ func processEnvironment(config StartConfig) ([]string, error) {
 			"PI_DESK_REMOTE_SOCKET="+config.RemoteSocket,
 			"PI_DESK_REMOTE_TOKEN="+config.RemoteToken,
 			"PI_DESK_REMOTE_ROOT="+config.RemoteRoot,
+			fmt.Sprintf("PI_DESK_REMOTE_LOCAL_SKILLS=%t", !config.DisableSkills),
 		)
 	} else {
 		environment = append(environment, browser.AgentEnvironment(config.ThreadID)...)

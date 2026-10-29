@@ -49,6 +49,7 @@ const remoteProgressDefinitions: RemoteProgressStep[] = [
 ];
 
 const remoteBusy = computed(() => creating.value || browsing.value);
+const remoteIdentityLocked = computed(() => remoteBusy.value || !!candidate.value);
 
 function defaultRemoteName() {
   const alias = remoteAlias.value.trim();
@@ -62,7 +63,7 @@ function syncRemoteName() {
 }
 
 function openRemoteAliasPicker() {
-  if (remoteBusy.value) return;
+  if (remoteIdentityLocked.value) return;
   remoteAliasOpen.value = true;
   const selectedIndex = remoteAliases.value.findIndex((alias) => alias.name === remoteAlias.value);
   remoteAliasActiveIndex.value = selectedIndex >= 0 ? selectedIndex : (remoteAliases.value.length ? 0 : -1);
@@ -79,6 +80,7 @@ function toggleRemoteAliasPicker() {
 }
 
 function chooseRemoteAlias(alias: RemoteAliasSummary) {
+  if (remoteIdentityLocked.value) return;
   remoteAlias.value = alias.name;
   closeRemoteAliasPicker();
 }
@@ -342,6 +344,7 @@ async function create() {
               class="remote-alias-input"
               type="button"
               role="combobox"
+              :disabled="remoteIdentityLocked"
               :aria-expanded="remoteAliasOpen"
               aria-controls="remote-alias-options"
               :aria-activedescendant="remoteAliasActiveIndex >= 0 ? `remote-alias-option-${remoteAliasActiveIndex}` : undefined"
@@ -359,6 +362,7 @@ async function create() {
                 :class="[ui.menuItem, { 'is-active': index === remoteAliasActiveIndex, 'is-risky': alias.risky }]"
                 type="button"
                 role="option"
+                :disabled="remoteIdentityLocked"
                 :aria-selected="alias.name === remoteAlias"
                 @mouseenter="remoteAliasActiveIndex = index"
                 @click="chooseRemoteAlias(alias)"
@@ -369,9 +373,9 @@ async function create() {
             </div>
           </div>
           <label for="remote-root">{{ tr("newTask.sshRoot") }}</label>
-          <input :class="ui.input" id="remote-root" v-model="remoteRoot" spellcheck="false" placeholder="/home/me/project" />
+          <input :class="ui.input" id="remote-root" v-model="remoteRoot" :disabled="remoteIdentityLocked" spellcheck="false" placeholder="/home/me/project" />
           <label for="remote-name">{{ tr("newTask.sshName") }}</label>
-          <input :class="ui.input" id="remote-name" v-model="remoteName" maxlength="100" @input="remoteNameCustomized = true" />
+          <input :class="ui.input" id="remote-name" v-model="remoteName" :disabled="remoteIdentityLocked" maxlength="100" @input="remoteNameCustomized = true" />
           <label class="checkbox-row"><input v-model="loadLocalSkills" type="checkbox" :disabled="remoteBusy" />{{ tr("newTask.sshLocalSkills") }}</label>
           <label class="checkbox-row"><input v-model="loadLocalPlugins" type="checkbox" :disabled="remoteBusy" />{{ tr("newTask.sshLocalPlugins") }}</label>
           <p class="form-warning">{{ tr("newTask.sshLocalResourcesHelp") }}</p>

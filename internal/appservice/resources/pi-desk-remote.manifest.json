@@ -1,8 +1,8 @@
 {
   "format": 1,
   "protocol": "pi-desk.remote-tools.v1",
-  "size": 12442,
-  "sha256": "7e001a61ab9e96477ebcb5921f2009e552139daed71f4daf8b4da7d137018920",
+  "size": 14084,
+  "sha256": "b9f443b52465c8145d4b17033712fc87830e2a484e02a39eb072f97849ac0aee",
   "piCompatibility": {
     "minInclusive": "0.84.2"
   },

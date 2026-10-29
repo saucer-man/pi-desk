@@ -2,6 +2,7 @@ package appservice
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,7 +54,12 @@ type ModelConfigService struct {
 	pathErr      error
 	client       httpDoer
 
-	mu sync.Mutex
+	mu              sync.Mutex
+	authMu          sync.Mutex
+	authOperationID string
+	authInput       io.WriteCloser
+	authCancel      func()
+	emitAuth        func(domain.ModelAuthEvent)
 }
 
 func NewModelConfigService() *ModelConfigService {
@@ -91,6 +97,8 @@ func (service *ModelConfigService) GetModelsConfig() (domain.ModelConfigSnapshot
 }
 
 func (service *ModelConfigService) GetConfiguredModels() ([]domain.SelectableModel, error) {
+	// Native catalog includes authorized built-ins even when models.json is absent.
+	catalog, _ := service.GetModelCatalog(context.Background(), false)
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	root, err := service.readDocument()
@@ -101,9 +109,23 @@ func (service *ModelConfigService) GetConfiguredModels() ([]domain.SelectableMod
 	if err != nil {
 		return nil, err
 	}
-	models := make([]domain.SelectableModel, 0)
+	models := append([]domain.SelectableModel{}, catalog.Models...)
+	seen := make(map[string]bool)
+	restricted := make(map[string]bool)
+	for _, provider := range catalog.Providers {
+		restricted[provider.ID] = provider.CatalogRestricted
+	}
+	for _, model := range models {
+		seen[modelKey(model.Provider, model.ID)] = true
+	}
 	for _, provider := range snapshot.Providers {
 		for _, model := range provider.Models {
+			if restricted[provider.ID] {
+				continue
+			}
+			if seen[modelKey(provider.ID, model.ID)] {
+				continue
+			}
 			models = append(models, domain.SelectableModel{
 				ID: model.ID, Name: model.Name, Provider: provider.ID,
 				ContextWindow: model.ContextWindow, Reasoning: model.Reasoning,
@@ -116,7 +138,7 @@ func (service *ModelConfigService) GetConfiguredModels() ([]domain.SelectableMod
 // rebindModelProvider renames the original provider when requested, then
 // get-or-creates the target provider and applies the shared provider fields.
 // headers is the raw request value; headerKeys the normalized map to persist.
-func rebindModelProvider(providers map[string]any, originalProviderID, providerID, baseURL, api, apiKey string, providerCompat map[string]any, headers map[string]string, headerKeys map[string]string) (map[string]any, error) {
+func rebindModelProvider(providers map[string]any, originalProviderID, providerID, baseURL, api, apiKey string, clearAPIKey bool, providerCompat map[string]any, headers map[string]string, headerKeys map[string]string) (map[string]any, error) {
 	if originalProviderID != "" && originalProviderID != providerID {
 		provider, exists, err := objectValue(providers, originalProviderID)
 		if err != nil {
@@ -143,7 +165,9 @@ func rebindModelProvider(providers map[string]any, originalProviderID, providerI
 	setOptionalString(provider, "baseUrl", baseURL)
 	setOptionalString(provider, "api", api)
 	setOptionalObject(provider, "compat", providerCompat)
-	setOptionalString(provider, "apiKey", apiKey)
+	if apiKey != "" || clearAPIKey {
+		setOptionalString(provider, "apiKey", apiKey)
+	}
 	if headers != nil {
 		setOptionalStringMap(provider, "headers", headerKeys)
 	} else if providerWasCreated {
@@ -173,7 +197,7 @@ func (service *ModelConfigService) UpsertModel(request domain.UpsertModelConfigR
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
-	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, providerCompat, request.Headers, providerHeaders)
+	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, request.ClearAPIKey, providerCompat, request.Headers, providerHeaders)
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
@@ -308,7 +332,7 @@ func (service *ModelConfigService) AddModels(request domain.AddModelsConfigReque
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
-	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, providerCompat, request.Headers, providerHeaders)
+	provider, err := rebindModelProvider(providers, request.OriginalProviderID, request.ProviderID, request.BaseURL, request.API, request.APIKey, request.ClearAPIKey, providerCompat, request.Headers, providerHeaders)
 	if err != nil {
 		return domain.ModelConfigSnapshot{}, err
 	}
@@ -937,7 +961,7 @@ func (service *ModelConfigService) snapshot(root map[string]any) (domain.ModelCo
 			ID:         id,
 			BaseURL:    stringValue(provider["baseUrl"]),
 			API:        stringValue(provider["api"]),
-			APIKey:     stringValue(provider["apiKey"]),
+			HasAPIKey:  stringValue(provider["apiKey"]) != "",
 			Headers:    headers,
 			CompatJSON: objectJSON(provider["compat"]),
 			Models:     make([]domain.ManagedModel, 0, len(models)),

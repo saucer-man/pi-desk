@@ -136,6 +136,7 @@ describe("NewTaskDialog", () => {
 
     await vi.waitFor(() => expect(wrapper.text()).toContain("/srv/repo"));
     expect(store.createRemoteThread).not.toHaveBeenCalled();
+    for (const field of ["#remote-alias", "#remote-root", "#remote-name"]) expect(wrapper.get(field).element).toHaveProperty("disabled", true);
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(store.createRemoteThread).toHaveBeenCalled());
     expect(remoteWorkspaceService.connectNew).toHaveBeenCalledWith("repo", "work");
@@ -161,6 +162,7 @@ describe("NewTaskDialog", () => {
     await wrapper.get("footer .primary").trigger("click");
 
     await vi.waitFor(() => expect(wrapper.text()).toContain("root probe failed"));
+    for (const field of ["#remote-alias", "#remote-root", "#remote-name"]) expect(wrapper.get(field).element).toHaveProperty("disabled", false);
     expect(disconnect).toHaveBeenCalledWith("target-1");
     expect(remoteWorkspaceService.disconnect).toHaveBeenCalledWith("target-1");
   });
@@ -269,6 +271,7 @@ describe("NewTaskDialog", () => {
     await wrapper.get("#remote-root").setValue("/srv/repo");
     await wrapper.get("footer .primary").trigger("click");
     await vi.waitFor(() => expect(remoteWorkspaceService.connectNew).toHaveBeenCalled());
+    for (const field of ["#remote-alias", "#remote-root", "#remote-name"]) expect(wrapper.get(field).element).toHaveProperty("disabled", true);
     store.markRemoteTargetStale("target-2");
     finishConnect("target-1");
 

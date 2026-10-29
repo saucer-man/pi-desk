@@ -3,6 +3,7 @@ package piruntime
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,6 +81,10 @@ func TestBuildPiArgsForRemoteAdapterDisablesLocalToolFallback(t *testing.T) {
 			if slices.Contains(args, "--no-skills") != disableSkills || slices.Contains(args, "--no-extensions") != disablePlugins {
 				t.Fatalf("remote resource choices were ignored: skills=%v plugins=%v args=%#v", disableSkills, disablePlugins, args)
 			}
+			environment, err := processEnvironment(config)
+			if err != nil || !slices.Contains(environment, fmt.Sprintf("PI_DESK_REMOTE_LOCAL_SKILLS=%t", !disableSkills)) {
+				t.Fatalf("remote local skill permission does not match the choice: %#v err=%v", environment, err)
+			}
 			for _, required := range []string{"--no-builtin-tools", "--no-context-files", "--extension", adapter} {
 				if !slices.Contains(args, required) {
 					t.Fatalf("remote routing lost %q: %#v", required, args)
@@ -120,13 +125,14 @@ func TestValidateWorkspaceCanonicalizesAndRejectsFiles(t *testing.T) {
 
 func TestProcessEnvironmentStripsRemoteCapabilitiesCaseInsensitively(t *testing.T) {
 	t.Setenv("pi_desk_remote_token", "stale-secret")
+	t.Setenv("pi_desk_remote_local_skills", "true")
 	environment, err := processEnvironment(StartConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range environment {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") {
+		if strings.EqualFold(key, "PI_DESK_REMOTE_TOKEN") || strings.EqualFold(key, "PI_DESK_REMOTE_LOCAL_SKILLS") {
 			t.Fatalf("local Pi inherited a remote capability: %q", entry)
 		}
 	}

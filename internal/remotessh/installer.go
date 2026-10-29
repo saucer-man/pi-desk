@@ -254,7 +254,7 @@ func installHelperContent(ctx context.Context, filesystem remoteCacheFS, artifac
 }
 
 func ensureCacheParents(ctx context.Context, filesystem remoteCacheFS, home string, owner uint32, cachePaths ...string) error {
-	if err := ensureRemoteDirectory(ctx, filesystem, path.Join(home, ".cache"), owner, false); err != nil {
+	if err := ensureRemoteDirectory(ctx, filesystem, path.Join(home, ".cache"), owner); err != nil {
 		return fmt.Errorf("ensure base cache: %w", err)
 	}
 	privatePaths := append([]string{
@@ -262,40 +262,33 @@ func ensureCacheParents(ctx context.Context, filesystem remoteCacheFS, home stri
 		path.Join(home, remoteHelperCacheRelative),
 	}, cachePaths...)
 	for index, cachePath := range privatePaths {
-		if err := ensureRemoteDirectory(ctx, filesystem, cachePath, owner, true); err != nil {
+		if err := ensureRemoteDirectory(ctx, filesystem, cachePath, owner); err != nil {
 			return fmt.Errorf("ensure private cache level %d: %w", index+1, err)
 		}
 	}
 	return nil
 }
 
-func ensureRemoteDirectory(ctx context.Context, filesystem remoteCacheFS, directory string, owner uint32, private bool) error {
+func ensureRemoteDirectory(ctx context.Context, filesystem remoteCacheFS, directory string, owner uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	entry, err := filesystem.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := filesystem.Mkdir(directory); err != nil {
-			return waitForConcurrentCacheDirectory(ctx, filesystem, directory, owner, private)
-		}
-		if err := filesystem.Chmod(directory, 0o700); err != nil {
-			return fmt.Errorf("%w: protect cache directory", ErrHelperInstall)
+			return waitForConcurrentCacheDirectory(ctx, filesystem, directory, owner)
 		}
 		entry, err = filesystem.Lstat(directory)
 	}
-	validationErr := validateRemoteCacheDirectory(entry, err, owner, private)
-	if validationErr != nil && err == nil && private && entry.isDir() && entry.Owner == owner {
-		return waitForConcurrentCacheDirectory(ctx, filesystem, directory, owner, private)
-	}
-	return validationErr
+	return validateRemoteCacheDirectory(entry, err, owner)
 }
 
-func waitForConcurrentCacheDirectory(ctx context.Context, filesystem remoteCacheFS, directory string, owner uint32, private bool) error {
+func waitForConcurrentCacheDirectory(ctx context.Context, filesystem remoteCacheFS, directory string, owner uint32) error {
 	deadline := time.Now().Add(concurrentCacheCreateWait)
 	for {
 		entry, err := filesystem.Lstat(directory)
 		if err == nil {
-			if validationErr := validateRemoteCacheDirectory(entry, nil, owner, private); validationErr == nil {
+			if validationErr := validateRemoteCacheDirectory(entry, nil, owner); validationErr == nil {
 				return nil
 			} else if !entry.isDir() || entry.Owner != owner {
 				return validationErr
@@ -314,12 +307,8 @@ func waitForConcurrentCacheDirectory(ctx context.Context, filesystem remoteCache
 	}
 }
 
-func validateRemoteCacheDirectory(entry remoteCacheEntry, err error, owner uint32, private bool) error {
+func validateRemoteCacheDirectory(entry remoteCacheEntry, err error, owner uint32) error {
 	if err != nil || !entry.isDir() || entry.Owner != owner {
-		return ErrHelperCacheUnsafe
-	}
-	permissions := entry.Mode.Perm()
-	if permissions&0o022 != 0 || private && permissions != 0o700 {
 		return ErrHelperCacheUnsafe
 	}
 	return nil

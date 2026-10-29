@@ -727,6 +727,38 @@ describe("app store", () => {
     });
   });
 
+  it.each([
+    ["connect", "disconnect"], ["newTask", "disconnect"],
+    ["connect", "remove"], ["newTask", "remove"],
+    ["connect", "forgotten"], ["newTask", "forgotten"],
+    ["connect", "reconnected"], ["newTask", "reconnected"],
+  ])("rejects a delayed remote %s result after the workspace is %s", async (action, reason) => {
+    const store = useAppStore();
+    const remote = {
+      id: "workspace-review", name: "Remote", path: "", kind: "ssh", targetId: "target-review",
+      remoteRoot: "/srv/repo", trust: "approve" as const, addedAt: "", lastOpenedAt: "",
+    };
+    store.workspaces = [remote];
+    let finish!: (workspace: typeof remote) => void;
+    mocks.resumeRemoteWorkspace.mockReturnValueOnce(new Promise<typeof remote>((resolve) => { finish = resolve; }));
+    const operation = action === "connect" ? store.connectRemoteWorkspace(remote.id) : store.createRemoteTaskInWorkspace(remote.id);
+    const rejected = expect(operation).rejects.toThrow(/revoked|no longer exists/);
+    await vi.waitFor(() => expect(mocks.resumeRemoteWorkspace).toHaveBeenCalled());
+
+    if (reason === "remove") await store.removeWorkspace(remote.id);
+    else if (reason === "forgotten") store.workspaces = [];
+    else await store.disconnectRemoteTarget(remote.targetId);
+    if (reason === "reconnected") store.recordRemoteWorkspace(remote, true);
+    finish(remote);
+    await rejected;
+
+    expect(store.threads).toHaveLength(0);
+    if (reason === "reconnected") expect(store.remoteReadyByWorkspace[remote.id]).toBe(true);
+    else expect(store.remoteReadyByWorkspace[remote.id]).not.toBe(true);
+    expect(store.workspaces.some((workspace) => workspace.id === remote.id)).toBe(reason !== "remove" && reason !== "forgotten");
+    expect(mocks.disconnectRemoteTarget).toHaveBeenCalledTimes(reason === "disconnect" || reason === "reconnected" ? 1 : 0);
+  });
+
   it("selecting a persisted remote thread stays offline until explicit reconnect", async () => {
     const store = useAppStore();
     store.catalogReady = true;
@@ -1636,6 +1668,31 @@ describe("app store", () => {
     expect(store.configuredModels).toEqual([
       { provider: "custom", id: "deepseek-v3", name: "DeepSeek V3", contextWindow: 128000, reasoning: true },
     ]);
+  });
+
+  it("filters old runtime models through the account catalog while keeping the session model visible", () => {
+    const store = useAppStore();
+    const allowed = { provider: "openai", id: "allowed", source: "account" };
+    const previous = { provider: "openai", id: "previous" };
+    store.$patch({
+      threads: [{ id: "account-models", title: "Models", workspace: "repo", workspacePath: "D:\\repo", trust: "approve", status: "idle", started: true, generation: 1 }],
+      activeThreadId: "account-models",
+      configuredModels: [allowed],
+      modelsByThread: { "account-models": [allowed, previous, { provider: "openai", id: "not-in-account" }] },
+      sessionStateByThread: { "account-models": { model: previous } },
+    });
+    expect(store.activeModels.map(model => model.id)).toEqual(["allowed", "previous"]);
+  });
+
+  it("removes a logged-out provider from cached runtime choices", async () => {
+    const store = useAppStore();
+    const model = { provider: "openai", id: "allowed", source: "account" };
+    mocks.getConfiguredModels.mockResolvedValueOnce([model]).mockResolvedValueOnce([]);
+    await store.refreshConfiguredModels();
+    store.knownRuntimeModels = [model];
+    expect(store.scheduledTaskModels).toEqual([model]);
+    await store.refreshConfiguredModels();
+    expect(store.scheduledTaskModels).toEqual([]);
   });
 
   it("fails a required configured-model refresh without clearing the previous catalog", async () => {

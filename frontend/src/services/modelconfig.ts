@@ -1,4 +1,5 @@
 import { ModelConfigService } from "../../bindings/pi-desk/internal/appservice";
+import { Browser, Events } from "@wailsio/runtime";
 import type { CancellablePromise } from "@wailsio/runtime";
 import type {
   AddModelsConfigRequest,
@@ -12,9 +13,20 @@ import type {
   SelectableModel,
   TestModelConfigRequest,
   UpsertModelConfigRequest,
+  ModelAuthRequest, ModelAuthReply, ModelCatalogSnapshot, DefaultModelRequest,
 } from "../../bindings/pi-desk/internal/domain";
 
 export const modelConfigService = {
+  catalog(refresh = false): Promise<ModelCatalogSnapshot> { return ModelConfigService.GetModelCatalog(refresh); },
+  login(request: ModelAuthRequest) { return ModelConfigService.LoginModelProvider(request); },
+  replyLogin(request: ModelAuthReply) { return ModelConfigService.ReplyModelLogin(request); },
+  saveAPIKey(request: ModelAuthRequest) { return ModelConfigService.SaveModelAPIKey(request); },
+  logout(providerId: string) { return ModelConfigService.LogoutModelProvider(providerId); },
+  setDefault(request: DefaultModelRequest) { return ModelConfigService.SetDefaultModel(request); },
+  openAuthURL(url: string) {
+    if (new URL(url).protocol !== "https:") return Promise.reject(new Error("Invalid authorization URL"));
+    return Browser.OpenURL(url);
+  },
   async selectable(): Promise<SelectableModel[]> {
     return (await ModelConfigService.GetConfiguredModels()) ?? [];
   },
@@ -44,6 +56,24 @@ export const modelConfigService = {
   },
 };
 
+export function onModelAuthEvent(callback: (event: ModelAuthEvent) => void): () => void {
+  return Events.On("models:auth", event => callback(event.data as ModelAuthEvent));
+}
+
+export interface ModelAuthEvent {
+  operationId: string;
+  type: string;
+  url?: string;
+  verificationUri?: string;
+  userCode?: string;
+  message?: string;
+  instructions?: string;
+  promptId?: number;
+  promptType?: string;
+  placeholder?: string;
+  options?: Array<{ id: string; label: string }>;
+}
+
 export type {
   AddModelsConfigRequest,
   DiscoveredModel,
@@ -55,4 +85,5 @@ export type {
   ModelTestResult,
   SelectableModel,
   UpsertModelConfigRequest,
+  ModelAuthProvider, ModelCatalogSnapshot,
 } from "../../bindings/pi-desk/internal/domain";
