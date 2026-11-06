@@ -6,11 +6,6 @@ on:
     tags: ["*"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      publish_npm:
-        description: Publish the verified package to npm (requires npm trusted publisher)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -59,7 +54,7 @@ jobs:
             }
           }
           NODE
-      - name: Pack and verify npm executable outside the checkout
+      - name: Pack and verify npx executable outside the checkout
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -69,11 +64,11 @@ jobs:
           cd "$(mktemp -d)"
           npm exec --yes --package "${packages[0]}" -- pi-desk --version
           npm exec --yes --package "${packages[0]}" -- pi-desk web --help
-      - name: Upload npm package
+      - name: Upload executable package
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: pi-desk-npm
+          name: pi-desk-package
           path: build/npm/*.tgz
           if-no-files-found: error
           retention-days: 7
@@ -100,26 +95,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish-npm:
+  release:
     needs: node-web
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm)
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
+      contents: write
     steps:
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          registry-url: https://registry.npmjs.org
+          node-version: '22.19.0'
       - uses: actions/download-artifact@v4
         with:
-          name: pi-desk-npm
+          name: pi-desk-package
           path: package
       - name: Check release tag matches package version
-        if: startsWith(github.ref, 'refs/tags/v')
+        id: version
         run: |
           version=$(tar -xOf package/*.tgz package/package.json | node --input-type=module -e 'let text="";for await(const chunk of process.stdin)text+=chunk;console.log(JSON.parse(text).version)')
           test "$GITHUB_REF_NAME" = "v$version"
-      - name: Publish verified tarball through npm trusted publishing
-        run: npm publish package/*.tgz --access public --tag latest --provenance
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish verified package to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cp package/*.tgz package/pi-desk.tgz
+          (cd package && sha256sum pi-desk.tgz > SHA256SUMS)
+          printf 'Requires Node.js 22.19+ and Git. No Go or npm account needed.\n\n```sh\nnpx https://github.com/%s/releases/download/%s/pi-desk.tgz web\n```\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > release-notes.md
+          flags=()
+          if [[ "$PACKAGE_VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" package/pi-desk.tgz package/SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --title "Pi Desk $GITHUB_REF_NAME" --notes-file release-notes.md "${flags[@]}"

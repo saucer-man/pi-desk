@@ -13,7 +13,7 @@ import { parseArgs } from "node:util";
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
 if (values.help || values.version) {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  console.log(values.version ? pkg.version : `Pi Desk\n\nUsage: npx ${pkg.name} [web] [options]\n\n  --port <number>  Port (default: 30140)\n  --no-open        Do not open a browser\n  -h, --help       Show help\n  -v, --version    Show version`);
+  console.log(values.version ? pkg.version : `Pi Desk\n\nUsage: pi-desk [web] [options]\n\n  --port <number>  Port (default: 30140)\n  --no-open        Do not open a browser\n  -h, --help       Show help\n  -v, --version    Show version`);
   process.exit(0);
 }
 if (positionals.length && (positionals.length !== 1 || positionals[0] !== "web")) throw new Error("仅支持 web 命令，使用 --help 查看用法");

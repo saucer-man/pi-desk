@@ -20,7 +20,7 @@ test("CLI: help, version and invalid commands do not create user state",async()=
   const options={env:{...process.env,PI_DESK_DIR:desk,PI_CODING_AGENT_DIR:join(temp,"agent")},timeout:30000,windowsHide:true};
   const pkg=JSON.parse(await readFile("package.json","utf8"));
   assert.equal((await run(process.execPath,[resolve("dist/server.js"),"--version"],options)).stdout.trim(),pkg.version);
-  assert.match((await run(process.execPath,[resolve("dist/server.js"),"web","--help"],options)).stdout,/Usage: npx .* \[web\]/);
+  assert.match((await run(process.execPath,[resolve("dist/server.js"),"web","--help"],options)).stdout,/Usage: pi-desk \[web\]/);
   for(const args of [["unknown"],["web","--unknown"],["web","--port"],["web","--port=bad"],["web","--port=65536"]])await assert.rejects(run(process.execPath,[resolve("dist/server.js"),...args],options));
   await assert.rejects(access(desk));
 });
