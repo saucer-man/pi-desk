@@ -1038,6 +1038,7 @@ macOS 已具备 CI 中的服务、SDK、PTY 和浏览器集成运行证据，替
 - [x] 本机 `npm run check` 完成生产构建、类型检查、Go 测试及 11 项 Node 测试；CLI 错误参数不创建用户状态。在源码之外通过实际 npm 包执行 `npx ... web`，验证页面 / 设置、原生会话、read 工具及内置扩展，控制台无错误 / 告警，未调用真实模型。
 - [x] 现有 `verify.yml` 增加 npm 打包、目录外命令验证、tarball 上传及发布任务；仅全部平台通过后，版本标签或手动勾选 `publish_npm` 才发布。标签必须与包版本一致，发布使用 npm OIDC / provenance，不存放长期 token。
 - [ ] GitHub 三平台新增流程验收，完成后补充运行链接。
+- [x] 首轮新增流程中 Windows / Ubuntu 通过，Ubuntu 已完成 tarball 的目录外执行验证；macOS 暴露终端异步初始化期间丢失首条输入的问题。通过现有 WebSocket 暂停 / 恢复能力统一保护本机与 SSH 终端，不延时重试测试，也不移除 PTY 验证；补充延迟 SSH 挂载的首条输入回归，修复后本机生产构建和既有 11 项测试通过，新增回归单独通过。
 - [ ] 首次正式发布：本机尚未登录 npm，需用户确认包名并在终端完成 `npm login`，然后发布已验证的 tarball：`npm publish build/npm/pi-desk-web-2.0.0-dev.2.tgz --access public --tag latest`。未执行未认证的正式发布，未宣称 registry 中的 `npx pi-desk-web@latest web` 已可用。
 - [ ] 首次发布后，在 npm 包设置中添加 Trusted Publisher：GitHub owner `saucer-man`、repository `pi-desk`、workflow `verify.yml`，允许直接 `npm publish`；随后可用版本标签或手动触发发布。确认 registry 安装和启动成功后，移除 README 的待发布提示。
 

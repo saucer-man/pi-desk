@@ -340,6 +340,18 @@ test("message file links: native paths, Markdown bases, safe protocols and code 
   assert.doesNotMatch(renderMarkdown("[`README.md`](https://example.com)",base),/data-file-path/);
 });
 
+test("terminal startup: early input survives asynchronous SSH attachment",{timeout:10000},async t=>{
+  const {attachTerminals}=await import("./terminals.ts"),server=createServer();
+  let attach!:()=>void;const ready=new Promise<void>(resolve=>attach=resolve);
+  const runtime={store:{state:{workspaces:[{id:"fixture",remote:{target:"fixture"}}]}},remote:{async terminal(_workspace:unknown,socket:WebSocket){await ready;socket.on("message",raw=>socket.send(raw.toString()));}}} as unknown as import("./runtime.ts").Runtime;
+  const close=attachTerminals(server,runtime,()=>true);t.after(()=>{close();server.close();server.closeAllConnections();});
+  server.listen(0,"127.0.0.1");await once(server,"listening");
+  const socket=new WebSocket(`ws://127.0.0.1:${(server.address() as {port:number}).port}/api/terminal/fixture`);await once(socket,"open");
+  const echoed=once(socket,"message");socket.send(JSON.stringify({type:"input",data:"first command\r"}));
+  await new Promise(resolve=>setTimeout(resolve,100));attach();
+  assert.equal(JSON.parse(String((await echoed)[0])).data,"first command\r");socket.close();
+});
+
 test("composer IME guard: composing, late confirmation, key release, blur and cleanup",async()=>{
   const {observeComposition}=await import("../frontend/src/web/dsh/keyboard-composition.ts");
   // Node's EventTarget needs an options object to remove capture listeners; match browser semantics.

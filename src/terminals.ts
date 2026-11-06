@@ -13,6 +13,8 @@ const starting = new Map<string, Promise<void>>();
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 server.on("upgrade", (req, socket, head) => { if (!allowed(req) || !req.url?.startsWith("/api/terminal/")) { socket.destroy(); return; } sockets.handleUpgrade(req, socket, head, ws => sockets.emit("connection", ws, req)); });
 sockets.on("connection", async (ws, req) => {
+  // Hold early keystrokes until local or SSH startup has installed its handlers.
+  ws.pause();
   const id = new URL(req.url!, "http://127.0.0.1").pathname.split("/")[3];
   try {
     const w = workspace(runtime, id);
@@ -41,6 +43,7 @@ sockets.on("connection", async (ws, req) => {
     ws.on("message", message => { try { const data = JSON.parse(message.toString()); if (data.type === "input" && typeof data.data === "string") terminal.pty.write(data.data); if (data.type === "resize" && Number.isInteger(data.cols) && Number.isInteger(data.rows)) terminal.pty.resize(Math.max(2, Math.min(500, data.cols)), Math.max(2, Math.min(300, data.rows))); if (data.type === "close") terminal.pty.kill(); } catch { ws.close(1008); } });
     ws.on("close", () => terminal.clients.delete(ws));
   } catch (error) { ws.send(JSON.stringify({ type: "error", message: safeError(error) })); ws.close(); }
+  finally { ws.resume(); }
 });
 
 return ()=>{for(const terminal of terminals.values())terminal.pty.kill();for(const client of sockets.clients)client.terminate();sockets.close();};
