@@ -4,7 +4,7 @@ import {spawn,execFile} from "node:child_process";
 import {promisify} from "node:util";
 import {createServer} from "node:http";
 import {once} from "node:events";
-import {mkdtemp,mkdir,writeFile,readFile,rm} from "node:fs/promises";
+import {mkdtemp, realpath,mkdir,writeFile,readFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join,resolve,posix} from "node:path";
 import {createHash,randomUUID} from "node:crypto";
@@ -14,7 +14,7 @@ const exec=promisify(execFile),hash=(value:Buffer|string)=>createHash("sha256").
 const linuxPath=(path:string)=>"/mnt/"+path[0].toLowerCase()+path.slice(2).replaceAll("\\","/");
 test("Go helper with local Pi SDK: history, remote tools, parallel subagents, worktrees, cancel and isolation",{timeout:180000},async t=>{
   if(process.platform==="win32")try{await exec("wsl.exe",["-d","Ubuntu-24.04","--","true"],{timeout:10000,windowsHide:true});}catch{t.skip("Native helper integration runs on Linux/macOS; Windows requires the optional Ubuntu WSL fixture");return;}
-  const folder=await mkdtemp(join(tmpdir(),"pi-desk-ssh-sdk-")),project=join(folder,"project"),home=join(folder,"remote-home"),agent=join(folder,"local-agent");
+  const folder=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-ssh-sdk-"))),project=join(folder,"project"),home=join(folder,"remote-home"),agent=join(folder,"local-agent");
   await Promise.all([mkdir(project),mkdir(home),mkdir(agent)]);
   process.env.PI_CODING_AGENT_DIR=agent;process.env.PI_DESK_DIR=join(folder,"desk");
   const windows=process.platform==="win32",remoteRoot=windows?linuxPath(project):project,remoteHome=windows?linuxPath(home):home;

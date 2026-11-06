@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, access, unlink } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, writeFile, readFile, access, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 
 test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents, worktrees and cancellation", { timeout: 120000 }, async t => {
-  const temp = await mkdtemp(join(tmpdir(), "pi-desk-sdk-"));
+  const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-sdk-")));
   process.env.PI_CODING_AGENT_DIR = join(temp, "agent"); process.env.PI_DESK_DIR = join(temp, "desk");
   const cwd = join(temp, "project"); await mkdir(join(cwd, ".pi", "extensions"), { recursive: true }); await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   let active = 0, peak = 0; const seenTools: string[][] = []; const seenUsers: string[] = []; const seenContexts:string[]=[];

@@ -2,14 +2,14 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {createServer} from "node:http";
 import {once} from "node:events";
-import {mkdtemp,mkdir,writeFile} from "node:fs/promises";
+import {mkdtemp, realpath,mkdir,writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import type {Runtime} from "./runtime.ts";
 import type {ScheduledTask} from "./types.ts";
 
 test("scheduled SDK tasks: exact model, slot claims, restart recovery and diagnostic whitelist",{timeout:120000},async t=>{
-  const root=await mkdtemp(join(tmpdir(),"pi-desk-phase4-")),agent=join(root,"agent"),project=join(root,"project");await mkdir(agent);await mkdir(project);process.env.PI_CODING_AGENT_DIR=agent;process.env.PI_DESK_DIR=join(root,"desk");let requests=0;
+  const root=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-phase4-"))),agent=join(root,"agent"),project=join(root,"project");await mkdir(agent);await mkdir(project);process.env.PI_CODING_AGENT_DIR=agent;process.env.PI_DESK_DIR=join(root,"desk");let requests=0;
   const model=createServer(async(req,res)=>{if(req.url==="/site"){res.setHeader("Content-Type","text/html");res.end('<title>Managed browser fixture</title><label>Name<input aria-label="Name"></label><button onclick="this.nextElementSibling.textContent=String.fromCharCode(99,108,105,99,107,101,100)">Apply</button><p>ready</p>');return;}if(req.method==="GET"){res.writeHead(404).end();return;}const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const body=JSON.parse(Buffer.concat(chunks).toString());requests++;const text=JSON.stringify(body.messages.at(-1));if(text.includes("slow-fixture")){await new Promise<void>(resolve=>res.once("close",resolve));return;}res.writeHead(200,{"Content-Type":"text/event-stream"});res.end('data: '+JSON.stringify({id:"schedule-fixture",object:"chat.completion.chunk",choices:[{index:0,delta:{role:"assistant",content:"schedule complete"},finish_reason:"stop"}]})+'\n\ndata: '+JSON.stringify({choices:[],usage:{prompt_tokens:5,completion_tokens:2,total_tokens:7}})+'\n\ndata: [DONE]\n\n');});model.listen(0,"127.0.0.1");await once(model,"listening");
   await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as {port:number}).port}/v1`,apiKey:"DIAGNOSTIC_SECRET_KEY",models:[{id:"mock",contextWindow:100000,maxTokens:1000}]}}}));await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"mock",defaultModel:"mock",retry:{enabled:false},compaction:{enabled:false}}));
   t.after(()=>{model.close();model.closeAllConnections();});const {Runtime}=await import("./runtime.ts");const {nextRun}=await import("./schedules.ts");const {diagnostics}=await import("./maintenance.ts");const runtime=new Runtime();let recovered:InstanceType<typeof Runtime>|undefined;t.after(async()=>{await recovered?.shutdown();await runtime.shutdown();model.close();model.closeAllConnections();});runtime.store.state.workspaces.push({id:"fixture",name:"SECRET_WORKSPACE_NAME",path:project,trusted:true});runtime.changed();

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -9,7 +9,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
 
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
-  const temp = await mkdtemp(join(tmpdir(), "pi-desk-web-")); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
+  const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-web-"))); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
   await mkdir(cwd); await mkdir(agent); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
   const mock = createServer(async (req, res) => { for await (const _ of req) {} res.writeHead(200, { "Content-Type": "text/event-stream" }); await new Promise(resolve => setTimeout(resolve, 250));
     for (const chunk of [{ choices: [{ index: 0, delta: { role: "assistant", content: "HTTP SDK verified" }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, { choices: [], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }]) res.write(`data: ${JSON.stringify({ id: "http", object: "chat.completion.chunk", created: 1, model: "mock", ...chunk })}\n\n`);
@@ -269,7 +269,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
 });
 
 test("development HTTP: native Vite config, transformed React entry and isolated state", {timeout:45000}, async t=>{
-  const temp=await mkdtemp(join(tmpdir(),"pi-desk-dev-")),agent=join(temp,"agent");await mkdir(agent);
+  const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-dev-"))),agent=join(temp,"agent");await mkdir(agent);
   const child=spawn(process.execPath,[resolve("src/server.ts"),"--dev","--port","0","--no-open"],{cwd:process.cwd(),windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions"),PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
   t.after(async()=>{if(child.exitCode===null){const exit=once(child,"exit");child.kill();await exit;}});
   let output="",errors="";child.stderr.on("data",chunk=>{errors+=String(chunk);});
@@ -287,7 +287,7 @@ test("development HTTP: native Vite config, transformed React entry and isolated
 
 test("Windows open-with: installed apps, visible launch, PowerShell cwd and startup errors", {skip:process.platform!=="win32"}, async()=>{
   const {api}=await import("./api.ts"),{default:cp}=await import("node:child_process"),{syncBuiltinESMExports}=await import("node:module"),{promisify}=await import("node:util"),{EventEmitter}=await import("node:events"),{Readable}=await import("node:stream");
-  const root=await mkdtemp(join(tmpdir(),"pi-desk-open-")),cwd=join(root,"项目 & 'quoted',=100%"),programs=join(root,"Programs"),system=join(root,"Windows");await mkdir(cwd);
+  const root=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-open-"))),cwd=join(root,"项目 & 'quoted',=100%"),programs=join(root,"Programs"),system=join(root,"Windows");await mkdir(cwd);
   const paths=[join(system,"explorer.exe"),join(programs,"Cursor/Cursor.exe"),join(programs,"Git/git-bash.exe"),join(programs,"PowerShell/7/pwsh.exe")];
   for(const path of paths){await mkdir(resolve(path,".."),{recursive:true});await writeFile(path,"");}
   const keys=["PATH","LOCALAPPDATA","ProgramFiles","ProgramFiles(x86)","SystemRoot","ELECTRON_RUN_AS_NODE","NODE_OPTIONS","VSCODE_IPC_HOOK_CLI"],before=keys.map(key=>[key,process.env[key]] as const),originalSpawn=cp.spawn,originalExec=cp.execFile;let outcome="ok";const launches:any[]=[];
