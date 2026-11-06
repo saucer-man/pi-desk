@@ -1049,6 +1049,7 @@ macOS 已具备 CI 中的服务、SDK、PTY 和浏览器集成运行证据，替
 
 - [x] 按用户决定仅通过 GitHub 分发，包名恢复 `pi-desk` 并设为 private，移除 npm 发布权限、账号配置和发布任务。保留 npm pack / npx 作为通用打包与执行工具，不向 npm registry 发布应用。
 - [x] 现有 workflow 在版本标签触发且三平台检查通过后，将同一已验证 tarball 作为 `pi-desk.tgz` 上传至 GitHub Release，并附 SHA-256 清单；标签必须与包版本一致，开发版本标为 prerelease。普通 main push / 手动检查不创建 Release。
-- [x] README 改为 `npx https://github.com/saucer-man/pi-desk/releases/download/v2.0.0-dev.2/pi-desk.tgz web`，保留源码运行和截图。CLI 帮助统一显示可执行文件用法，避免指向同名的其他 npm 项目。
+- [x] README 改为 `npx https://github.com/saucer-man/pi-desk/releases/download/v2.0.0-dev.3/pi-desk.tgz web`，保留源码运行和截图。CLI 帮助统一显示可执行文件用法，避免指向同名的其他 npm 项目。
+- [x] `dev.2` 标签构建的 Linux MCP 取消测试触及原先 3 秒等待窗口；SDK 关闭流程允许 500 ms 宽限加 2 秒终止，将测试截止时间改为 10 秒，仍验证进程真实退出。原标签保留，后续发布版本改为 `dev.3`，不覆盖标签或 Release。
 - [ ] 完成本机构建 / 测试、推送版本标签、GitHub 三平台检查和首个 Release 发布。
 - [ ] 使用公开 Release URL 实际执行 npx，验证版本、生产页面与会话，完成后记录链接。
