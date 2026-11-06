@@ -1018,3 +1018,14 @@ M6 收尾证据：`.cache/ssh-production-check.json`（隔离服务及远端 fix
 - [x] 用户手动重启为 PID 24508 后正式验收通过。8 个工作区均默认可用；原报错的 SSH 会话正文正常显示，轨迹显示 84 条记录，无信任按钮或错误提示；新建表单无信任复选框，离线文件面板显示连接提示且不自动建立连接。验收前后两个 SSH 工作区均保持断开，控制台无错误 / 告警，原选中会话与对话视图已恢复，临时验收页面已关闭。此前自动审批拒绝重启的阻塞已解除，无需再次重启。
 
 证据在 bak/cleanup-20261105-165446/checks/：offline-trust-check.log、offline-trust-build.log、offline-trust-before.json、offline-trust-ui.json、offline-trust-preview.jpg，以及正式验收的 offline-trust-formal-start.json、offline-trust-formal-ui.json、offline-trust-formal-final.json 和 offline-trust-formal.jpg。保留 21 个会话 / 8 个工作区及偏好；16 份原生历史中 15 份字节完全一致，1 份在验收期间新增对话条目，已逐行计算前缀校验值确认原始字节完整保留。上述信任相关的新决定替代历史阶段记录中的信任交互描述；本次收尾仅更新文档，不改动应用代码或 Pi SDK，沿用已通过的构建与 10 项回归结果。
+
+### GitHub 推送与三平台构建（2026-11-06，已完成）
+
+- [x] Node.js / Web 版本已推送至 `saucer-man/pi-desk` 的 `main`；旧 Wails 备份、依赖目录、用户认证与会话数据不进入构建包。
+- [x] README 精简为项目介绍、构建包与源码运行方法、两张真实界面的演示截图和许可说明；GitHub 页面文字、图片均已核验。
+- [x] [Actions #47](https://github.com/saucer-man/pi-desk/actions/runs/42204151793) 在提交 `fe816a7` 上完成 Windows、Ubuntu、macOS Intel 的生产构建、Go 测试及全部 10 项 Node 测试，三个任务均成功，各上传约 7.2 MB 构建包，保留 7 天。构建包不包含 Node.js 与依赖，解压后运行 `npm ci --omit=dev`、`npm start`。
+- [x] 修复 CI 暴露的临时目录规范化、macOS PTY helper 执行权限和隔离 HTTP / Vite 测试服务退出问题。本机完整检查与 Node 22.19 针对性测试通过；独立目录中的生产依赖安装、服务启动、会话接口与内置插件 smoke 通过。
+
+macOS 已具备 CI 中的服务、SDK、PTY 和浏览器集成运行证据，替代此前“尚无 macOS 运行证据”的状态；真实 OAuth、原生 IME 等人工验收仍按原记录保留，不以 CI 代替。此次提供 Actions 构建产物，未创建 GitHub Release 或安装包；文档收尾提交不重复运行 CI，应用代码与上述成功构建相同。
+
+本机证据位于 `bak/cleanup-20261105-165446/checks/`：`github-macos-fix-check.log`、`github-teardown-tests.log`、`github-package-smoke.json`、`github-readme-published.jpg` 和 `github-actions-success.jpg`。
