@@ -1,5 +1,4 @@
 # Local project data
-/docs/
 /temp/
 /agent.md
 /AGENT.md
@@ -10,12 +9,12 @@
 /.cache/
 
 # Build output and dependencies
+/node_modules/
+/dist/
+/bak/
 /bin/
 /frontend/dist/
 /frontend/node_modules/
-/build/linux/desktop
-/build/linux/appimage/build/
-/build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 /build/remote-helper/artifacts/helper-*
 /build/remote-helper/artifacts/manifest.json
 /build/remote-helper/artifacts/*.tmp

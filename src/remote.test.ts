@@ -1,0 +1,95 @@
+import {test} from "node:test";
+import assert from "node:assert/strict";
+import {spawn,execFile} from "node:child_process";
+import {promisify} from "node:util";
+import {createServer} from "node:http";
+import {once} from "node:events";
+import {mkdtemp,mkdir,writeFile,readFile,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join,resolve,posix} from "node:path";
+import {createHash,randomUUID} from "node:crypto";
+import type {Workspace,SessionRecord} from "./types.ts";
+
+const exec=promisify(execFile),hash=(value:Buffer|string)=>createHash("sha256").update(value).digest("hex");
+const linuxPath=(path:string)=>"/mnt/"+path[0].toLowerCase()+path.slice(2).replaceAll("\\","/");
+test("Go helper with local Pi SDK: history, remote tools, parallel subagents, worktrees, cancel and isolation",{timeout:180000},async t=>{
+  if(process.platform==="win32")try{await exec("wsl.exe",["-d","Ubuntu-24.04","--","true"],{timeout:10000,windowsHide:true});}catch{t.skip("Native helper integration runs on Linux/macOS; Windows requires the optional Ubuntu WSL fixture");return;}
+  const folder=await mkdtemp(join(tmpdir(),"pi-desk-ssh-sdk-")),project=join(folder,"project"),home=join(folder,"remote-home"),agent=join(folder,"local-agent");
+  await Promise.all([mkdir(project),mkdir(home),mkdir(agent)]);
+  process.env.PI_CODING_AGENT_DIR=agent;process.env.PI_DESK_DIR=join(folder,"desk");
+  const windows=process.platform==="win32",remoteRoot=windows?linuxPath(project):project,remoteHome=windows?linuxPath(home):home;
+  const artifact=resolve(`build/remote-helper/artifacts/helper-${process.platform==="darwin"?"darwin":"linux"}-${process.arch==="arm64"?"arm64":"amd64"}`);
+  const launch=()=>windows?spawn("wsl.exe",["-d","Ubuntu-24.04","--",linuxPath(artifact),"serve-stdio"],{windowsHide:true}):spawn(artifact,["serve-stdio"]);
+  const {HelperConnection}=await import("./remote.ts"),{Runtime}=await import("./runtime.ts"),{importRemoteHistory}=await import("./remote-history.ts");
+  const {remoteTools}=await import("./remote-tools.ts"),{delegate}=await import("./subagents.ts");
+  const connection=new HelperConnection(launch());t.after(()=>connection.close());
+  const hello=await connection.call("system.hello",{nonce:randomUUID(),clientVersion:"fixture"});assert.ok(hello.value.capabilities.includes("file.write"));
+  const cap=await connection.root(remoteRoot);assert.equal(cap.canonicalPath,remoteRoot);
+  const oldId=randomUUID(),id="fixture."+oldId,oldFolder=join(home,".pi","desk","remote",hash(remoteRoot)),oldSession=join(home,".pi","agent","sessions","old","history.jsonl");
+  await mkdir(join(oldSession,".."),{recursive:true});await mkdir(join(oldFolder,"traces"),{recursive:true});await mkdir(join(oldFolder,"composer-images"));
+  const image=Buffer.from("image-fixture"),cacheKey=hash(image);await writeFile(join(oldFolder,"composer-images",cacheKey),image);
+  const header={type:"session",version:3,id:oldId,timestamp:new Date().toISOString(),cwd:remoteRoot};
+  const bytes=Buffer.from([header,{type:"message",id:"old-user",parentId:null,timestamp:new Date().toISOString(),message:{role:"user",content:[{type:"text",text:"preserved old question"}],timestamp:Date.now()}},{type:"message",id:"old-answer",parentId:"old-user",timestamp:new Date().toISOString(),message:{role:"assistant",content:[{type:"text",text:"preserved answer"}],api:"openai-completions",provider:"fixture",model:"fixture",usage:{input:2,output:2,cacheRead:0,cacheWrite:0,totalTokens:4,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:"stop",timestamp:Date.now()}}].map(JSON.stringify).join("\n")+"\n");await writeFile(oldSession,bytes);
+  const sourcePath=windows?linuxPath(oldSession):oldSession;
+  const source:SessionRecord={id:oldId,title:"Old remote session",workspaceId:"old",cwd:remoteRoot,sessionPath:sourcePath,mode:"minimal",status:"idle",depth:0,draft:"remote draft",pinned:true,archived:false,createdAt:header.timestamp,updatedAt:header.timestamp,draftImages:[{type:"image",id:"image",name:"image.png",mimeType:"image/png",cacheKey}],pending:[{id:"pending",text:"never replay",behavior:"followUp",paused:false,images:[]}]};
+  await writeFile(join(oldFolder,"state.json"),JSON.stringify({version:1,workspaces:[{id:"old",path:remoteRoot}],sessions:[source]}));
+  await writeFile(join(oldFolder,"traces",oldId+".jsonl"),JSON.stringify({id:"trace",sessionId:oldId,runId:"run",type:"settled",label:"old completed",at:header.timestamp,data:{durationMs:500}})+"\n");
+  await writeFile(join(project,"AGENTS.md"),"REMOTE_PROJECT_CONTEXT_FIXTURE");
+  const model=createServer(async(req,res)=>{
+    const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const request=JSON.parse(Buffer.concat(chunks).toString());
+    requests.push(request);const content=JSON.stringify(request.messages),last=request.messages.at(-1);
+    let delta:any={role:"assistant",content:"local SDK completed"},finish="stop";
+    if(last.role==="user"&&content.includes("write-fixture")){delta={role:"assistant",tool_calls:[{index:0,id:"write-call",type:"function",function:{name:"write",arguments:JSON.stringify({path:"from-sdk.txt",content:"written via local SDK"})}}]};finish="tool_calls";}
+    res.writeHead(200,{"Content-Type":"text/event-stream"});res.end("data: "+JSON.stringify({id:"fixture",object:"chat.completion.chunk",choices:[{index:0,delta,finish_reason:finish}]})+"\n\ndata: "+JSON.stringify({choices:[],usage:{prompt_tokens:5,completion_tokens:3,total_tokens:8}})+"\n\ndata: [DONE]\n\n");
+  });const requests:any[]=[];model.listen(0,"127.0.0.1");await once(model,"listening");t.after(()=>{model.close();model.closeAllConnections();});
+  await writeFile(join(agent,"models.json"),JSON.stringify({providers:{fixture:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as any).port}/v1`,apiKey:"fixture",models:[{id:"fixture",contextWindow:100000,maxTokens:1000}]}}}));await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"fixture",defaultModel:"fixture",retry:{enabled:false},compaction:{enabled:false}}));
+  const runtime=new Runtime();t.after(()=>runtime.shutdown());
+  const w:Workspace={id:"fixture",name:"SSH fixture",path:remoteRoot,trusted:true,remote:{target:"fixture"}};runtime.store.state.workspaces.push(w);runtime.changed();
+  await importRemoteHistory(runtime,w,connection,remoteHome);
+  const imported=runtime.store.record(id);assert.equal(imported.draft,"remote draft");assert.ok(imported.pinned);assert.ok(imported.pending?.[0].paused);assert.equal(imported.remoteHistory?.sourcePath,sourcePath);assert.deepEqual(await readFile(imported.sessionPath!),bytes);assert.deepEqual(runtime.traces(id),[]);await assert.rejects(readFile(join(folder,"desk","traces",id+".jsonl")));assert.equal(runtime.store.images(imported.draftImages)[0].data,image.toString("base64"));
+  await importRemoteHistory(runtime,w,connection,remoteHome);assert.equal(runtime.store.state.sessions.length,1);assert.deepEqual(await readFile(oldSession),bytes);
+  const before=JSON.stringify(runtime.store.state),bad={...source,id:randomUUID(),sessionPath:posix.join(posix.dirname(sourcePath),"broken.jsonl")};
+  for(const corrupt of [false,true]){
+    if(corrupt)await writeFile(join(oldSession,"../broken.jsonl"),"{broken-json\n");
+    await writeFile(join(oldFolder,"state.json"),JSON.stringify({workspaces:[{id:"old",path:remoteRoot}],sessions:[source,bad]}));
+    await assert.rejects(importRemoteHistory(runtime,w,connection,remoteHome));assert.equal(JSON.stringify(runtime.store.state),before);
+  }
+  await rm(join(oldSession,"../broken.jsonl"));await writeFile(join(oldFolder,"state.json"),JSON.stringify({workspaces:[{id:"old",path:remoteRoot}],sessions:[source]}));
+  // Connect the same production transport directly to a local native helper for deterministic checks.
+  (runtime.remote as any).connected.set(w.id,connection);(runtime.remote as any).homes.set(w.id,remoteHome);w.remote!.execution="local-sdk";
+  const connect=runtime.remote.connect.bind(runtime.remote);let attempted=0;runtime.remote.connect=async()=>{attempted++;throw Error("offline fixture");};w.trusted=false;w.remote!.historyImported=false;
+  const offlineBefore=await runtime.snapshot(id);assert.ok(JSON.stringify(offlineBefore.messages).includes("preserved answer"));assert.equal(attempted,0);assert.ok(runtime.traces(id).length===0);await assert.rejects(runtime.preparePrompt(id),/offline fixture/);assert.equal(attempted,1);runtime.remote.connect=connect;w.remote!.historyImported=true;
+  const snapshot=await runtime.snapshot(id);assert.ok(JSON.stringify(snapshot.messages).includes("preserved answer"));assert.equal(requests.length,0);assert.deepEqual(snapshot.tools.slice().sort(),["bash","edit","read","write"]);
+  const record=runtime.create(w.id,"minimal"),anchor=await runtime.remote.anchor(w),tools=remoteTools(runtime,w,record,anchor,()=>[]).tools;
+  const invoke=async(name:string,args:any)=>tools.find(tool=>tool.name===name)!.execute("fixture",args,undefined,undefined,{} as any);
+  assert.ok(!JSON.stringify(await invoke("write",{path:"nested/hello.txt",content:"hello remote"})).includes(anchor));await invoke("edit",{path:"nested/hello.txt",edits:[{oldText:"hello",newText:"HELLO"}]});assert.match(JSON.stringify(await invoke("read",{path:posix.join(remoteRoot,"nested/hello.txt")})),/HELLO remote/);
+  await assert.rejects(invoke("read",{path:"../outside"}),/\u8d85\u51fa/);await assert.rejects(invoke("write",{path:"/tmp/outside",content:"no"}),/\u8d85\u51fa/);
+  assert.match(JSON.stringify(await invoke("find",{pattern:"*.txt"})),/hello.txt/);assert.match(JSON.stringify(await invoke("grep",{pattern:"HELLO"})),/hello.txt/);
+  assert.ok((await runtime.remote.files(w,"nested/hello.txt") as any).text.includes("HELLO"));assert.ok((await runtime.remote.files(w,".") as any).entries.some((entry:any)=>entry.name==="nested"));
+  assert.match(JSON.stringify(await invoke("bash",{command:"sleep 0.1; printf timeout-seconds-ok",timeout:2})),/timeout-seconds-ok/);
+  await runtime.prompt(record.id,"write-fixture");assert.equal(await readFile(join(project,"from-sdk.txt"),"utf8"),"written via local SDK");assert.ok(requests.some(request=>JSON.stringify(request.messages).includes("REMOTE_PROJECT_CONTEXT_FIXTURE")));assert.ok(runtime.store.record(record.id).sessionPath!.startsWith(join(agent,"sessions")));assert.ok(runtime.traces(record.id).some(trace=>trace.type==="tool_end"));
+  const chunks:string[]=[];const a=await runtime.remote.shell(w,"printf 'stream-one'; sleep 0.05; printf 'stream-two'",{onData:data=>chunks.push(data.toString())});
+  assert.equal(a.output,"stream-onestream-two");assert.ok(chunks.length);
+  const bursts=await Promise.all(Array.from({length:24},(_,index)=>runtime.remote.shell(w,"printf burst-"+index)));assert.equal(bursts.length,24);assert.equal(bursts[23].output,"burst-23");
+  for(let index=0;index<36;index++){const cwd=posix.join(remoteRoot,"nested");await connection.usingRoot(cwd,async root=>{const reply=await connection.call("file.stat",{rootHandle:root.handle,path:"hello.txt"});assert.equal(reply.value.kind,"file");});}assert.ok(connection.roots.size<8);
+  const cancel=new AbortController(),running=runtime.remote.shell(w,"sleep 20",{signal:cancel.signal});setTimeout(()=>cancel.abort(),100);await assert.rejects(running,/CANCELLED|\u53d6\u6d88/);
+  const git=await runtime.remote.shell(w,"git init -q && git add . && git -c user.name=Fixture -c user.email=fixture@localhost commit -qm initial");assert.equal(git.exitCode,0);
+  const parent=runtime.create(w.id,"standard"),children=await delegate(runtime,parent,{mode:"parallel",tasks:[{task:"read child A",access:"read"},{task:"read child B",access:"read"}]});assert.equal((children as any[]).length,2);for(const child of children as any[])assert.equal(runtime.store.record(child.id).workspaceId,w.id);
+  const written=await delegate(runtime,parent,{task:"write-fixture isolated child",access:"write"}) as any[];assert.ok(written[0].cwd.startsWith(remoteHome));await delegate(runtime,parent,{action:"integrate",id:written[0].id});
+  assert.ok(runtime.store.record(written[0].id).worktree?.integrated);
+  const other:Workspace={id:"other",path:posix.join(remoteRoot,"nested"),name:"Other",trusted:true,remote:{target:"fixture",historyImported:true}};runtime.store.state.workspaces.push(other);(runtime.remote as any).connected.set(other.id,connection);assert.equal(runtime.remote.workspaceFor(parent.id)?.id,w.id);await assert.rejects(runtime.remote.content(other,"../from-sdk.txt"),/\u8d85\u51fa/);
+  const {attachTerminals}=await import("./terminals.ts"),{WebSocket}=await import("ws");const closeTerminals=attachTerminals(model,runtime,()=>true);t.after(closeTerminals);
+  const clients=[new WebSocket(`ws://127.0.0.1:${(model.address() as any).port}/api/terminal/${w.id}`),new WebSocket(`ws://127.0.0.1:${(model.address() as any).port}/api/terminal/${w.id}`)];
+  const output=["",""];clients.forEach((client,index)=>{client.on("message",raw=>{const message=JSON.parse(raw.toString());if(message.type==="data")output[index]+=message.data;});});await Promise.all(clients.map(client=>once(client,"open")));
+  clients[0].send(JSON.stringify({type:"input",data:"printf 'terminal-fixture-ok\\n'\n"}));const deadline=Date.now()+5000;while(!output.every(text=>text.includes("terminal-fixture-ok"))){if(Date.now()>deadline)throw Error("remote terminal fixture timed out");await new Promise(resolve=>setTimeout(resolve,10));}
+  clients[0].close();clients[1].send(JSON.stringify({type:"close"}));await once(clients[1],"close");
+  const child=runtime.store.state.sessions.find(record=>record.parentId===parent.id&&record.readOnly)!;
+  const grandchildren=await delegate(runtime,child,{task:"nested read",access:"read"}) as any[];assert.equal(runtime.store.record(grandchildren[0].id).depth,2);await assert.rejects(delegate(runtime,runtime.store.record(grandchildren[0].id),{task:"too deep"}));
+  await delegate(runtime,parent,{mode:"chain",tasks:[{task:"chain first",access:"read"},{task:"chain second",access:"read"}]});
+  assert.ok(requests.some(request=>JSON.stringify(request.messages.at(-1)).includes("chain second")));
+  w.remote!.connected=true;w.remote!.error="old connection hint";await runtime.remote.disconnect(w.id);assert.equal(connection.closed,true);assert.equal(w.remote!.connected,false);assert.equal(w.remote!.error,undefined);assert.ok(!(runtime.remote as any).connected.has(w.id));
+  const reconnected=new HelperConnection(launch());await reconnected.call("system.hello",{nonce:randomUUID(),clientVersion:"fixture"});(runtime.remote as any).connected.set(w.id,reconnected);w.remote!.connected=true;assert.equal((await runtime.remote.shell(w,"printf reconnected-helper")).output,"reconnected-helper");(runtime.remote as any).connected.delete(w.id);(runtime.remote as any).starting.set(w.id,new Promise(resolve=>setTimeout(()=>{(runtime.remote as any).connected.set(w.id,reconnected);resolve(reconnected);},10)));await runtime.remote.disconnect(w.id);(runtime.remote as any).starting.delete(w.id);assert.equal(w.remote!.connected,false);assert.equal(reconnected.closed,true);(runtime.remote as any).closing=true;
+  const offline=await runtime.reload(id);assert.ok(JSON.stringify(offline.messages).includes("preserved answer"));
+  await assert.rejects(runtime.remote.shell(w,"echo must-not-replay"),/fixture|SSH|\u8fde\u63a5|Could not|resolve|hostname/);
+  assert.deepEqual(await readFile(oldSession),bytes);console.log("SSH fixtures:",folder,"local model requests:",requests.length);
+});

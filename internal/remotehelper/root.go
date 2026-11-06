@@ -16,6 +16,7 @@ import (
 
 const (
 	MethodRootOpen      = "root.open"
+	MethodRootClose     = "root.close"
 	maxRootPathBytes    = 4096
 	maxRootCapabilities = 32
 )
@@ -29,6 +30,22 @@ var (
 
 type RootOpenRequest struct {
 	Path string `json:"path"`
+}
+
+type RootCloseRequest struct {
+	RootHandle string `json:"rootHandle"`
+}
+
+func (manager *rootManager) Release(handle string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	capability := manager.byHandle[handle]
+	if capability == nil {
+		return ErrRootInvalid
+	}
+	delete(manager.byHandle, handle)
+	delete(manager.byID, capability.identity)
+	return capability.root.Close()
 }
 
 type RootOpenResponse struct {

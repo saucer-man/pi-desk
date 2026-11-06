@@ -283,6 +283,13 @@ func (server *Server) handleRequest(request *helperRequest, frame remoteprotocol
 			code = "REMOTE_RESOURCE_LIMIT"
 		}
 		return requestTerminal{code: code, message: err.Error()}
+	case MethodRootClose:
+		var input RootCloseRequest
+		manager, ok := server.roots.(*rootManager)
+		if !ok || len(frame.Blob) != 0 || remoteprotocol.DecodePayload(envelope.Payload, &input) != nil || manager.Release(input.RootHandle) != nil {
+			return requestTerminal{code: "REMOTE_INVALID_REQUEST", message: ErrRootInvalid.Error()}
+		}
+		return requestTerminal{value: struct{}{}}
 	case MethodFileMkdir:
 		if len(frame.Blob) != 0 {
 			return fileErrorTerminal(ErrFileInvalidPath)
@@ -674,7 +681,7 @@ func (server *Server) handleHello(envelope remoteprotocol.Envelope, blob []byte)
 		Architecture:    runtime.GOARCH,
 		Capabilities: []string{
 			MethodFileContent, MethodFileHash, MethodFileImage, MethodFileList, MethodFileMkdir, MethodFileRead, MethodFileStat, MethodFileWrite,
-			MethodBashRun, MethodGitRead, MethodTerminalRun, MethodPing, MethodRootOpen, MethodSearchFind, MethodSearchGrep, MethodShutdown,
+			MethodBashRun, MethodGitRead, MethodTerminalRun, MethodPing, MethodRootOpen, MethodRootClose, MethodSearchFind, MethodSearchGrep, MethodShutdown,
 		},
 	})
 }

@@ -161,7 +161,7 @@ func TestServerHelloPingAndShutdown(t *testing.T) {
 	if response.Nonce != testNonce || response.ProtocolVersion != remoteprotocol.Version || response.BuildHash != "test-build" {
 		t.Fatalf("unexpected hello response: %#v", response)
 	}
-	if response.OS == "" || response.Architecture == "" || !slices.Equal(response.Capabilities, []string{MethodFileContent, MethodFileHash, MethodFileImage, MethodFileList, MethodFileMkdir, MethodFileRead, MethodFileStat, MethodFileWrite, MethodBashRun, MethodGitRead, MethodTerminalRun, MethodPing, MethodRootOpen, MethodSearchFind, MethodSearchGrep, MethodShutdown}) {
+	if response.OS == "" || response.Architecture == "" || !slices.Equal(response.Capabilities, []string{MethodFileContent, MethodFileHash, MethodFileImage, MethodFileList, MethodFileMkdir, MethodFileRead, MethodFileStat, MethodFileWrite, MethodBashRun, MethodGitRead, MethodTerminalRun, MethodPing, MethodRootOpen, MethodRootClose, MethodSearchFind, MethodSearchGrep, MethodShutdown}) {
 		t.Fatalf("incomplete helper capabilities: %#v", response)
 	}
 

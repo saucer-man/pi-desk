@@ -1,46 +1,29 @@
 {
   "name": "@pi-desk/frontend",
   "private": true,
-  "version": "1.4.0",
+  "version": "2.0.0-dev.2",
   "type": "module",
   "scripts": {
-    "dev": "vite --configLoader native",
-    "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run --configLoader native --pool threads",
-    "build:dev": "npm run typecheck && vite build --configLoader native --minify false --mode development",
-    "build": "npm run typecheck && vite build --configLoader native --mode production",
-    "smoke:dist": "node scripts/smoke-dist.mjs",
-    "check": "npm run typecheck && npm run test && npm run build && npm run smoke:dist",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@codemirror/language-data": "6.5.2",
-    "@lezer/highlight": "1.2.3",
-    "@milkdown/core": "7.22.1",
-    "@milkdown/preset-commonmark": "7.22.1",
-    "@milkdown/preset-gfm": "7.22.1",
-    "@milkdown/utils": "7.22.1",
-    "@milkdown/vue": "7.22.1",
-    "@tanstack/vue-virtual": "3.13.35",
-    "@wailsio/runtime": "3.0.0-beta.16",
-    "@xterm/addon-fit": "0.11.0",
-    "@xterm/xterm": "6.0.0",
-    "lucide-vue-next": "1.0.0",
-    "markdown-it": "15.0.0",
-    "pinia": "4.0.2",
-    "vue": "3.5.41",
-    "vue-i18n": "11.4.8"
+    "@lexical/history": "0.49.0",
+    "@lexical/plain-text": "0.49.0",
+    "clsx": "2.1.1",
+    "highlight.js": "10.7.3",
+    "lexical": "0.49.0",
+    "markdown-it": "15.0.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.3.3",
     "@types/markdown-it": "14.1.2",
-    "@vitejs/plugin-vue": "6.0.8",
-    "@vue/test-utils": "2.4.11",
-    "happy-dom": "20.11.2",
-    "tailwindcss": "4.3.3",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.7.0",
     "typescript": "6.0.3",
-    "vite": "8.0.5",
-    "vitest": "4.1.10",
-    "vue-tsc": "3.3.9"
+    "vite": "6.4.5"
   }
 }

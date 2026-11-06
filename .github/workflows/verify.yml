@@ -11,214 +11,51 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.19.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci --ignore-scripts
-
-      - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
-
-      - name: Build Windows desktop executable
-        run: wails3 build
-
-      - name: Smoke test packaged Windows application
-        shell: pwsh
-        run: ./test/smoke/windows-app.ps1
-
-      - name: Upload Windows smoke screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-smoke-screenshot
-          path: bin/pi-desk-smoke.png
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Archive Windows executable
-        shell: pwsh
-        run: Compress-Archive -Path bin/pi-desk.exe -DestinationPath bin/pi-desk-windows-amd64.zip
-
-      - name: Upload Windows archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-desk-windows-amd64
-          path: bin/pi-desk-windows-amd64.zip
-          if-no-files-found: error
-          retention-days: 14
-
-  macos:
-    runs-on: macos-14
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.19.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci --ignore-scripts
-
-      - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
-
-      - name: Build macOS application bundle
-        run: wails3 task darwin:package
-
-      - name: Archive macOS application bundle
-        run: tar -C bin -czf bin/pi-desk-macos.tar.gz pi-desk.app
-
-      - name: Upload macOS application bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-desk-macos
-          path: bin/pi-desk-macos.tar.gz
-          if-no-files-found: error
-          retention-days: 14
-
-  linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Linux desktop dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y gcc libgtk-4-dev libwebkitgtk-6.0-dev
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.19.0
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci --ignore-scripts
-
-      - name: Check frontend
-        working-directory: frontend
-        run: npm run check
-
-      - name: Test and vet Go
-        run: |
-          go test ./...
-          go vet ./...
-
-      - name: Race remote protocol and helper
-        env:
-          CGO_ENABLED: "1"
-        run: go test -race -count=1 ./internal/remoteprotocol ./internal/remotehelper
-
-      - name: Fuzz remote trust boundaries
-        run: |
-          go test ./internal/remoteprotocol -run '^$' -fuzz '^FuzzReaderNeverPanics$' -fuzztime=10s
-          go test ./internal/remotehelper -run '^$' -fuzz '^FuzzValidateRelativePath$' -fuzztime=10s
-          go test ./internal/remotessh -run '^$' -fuzz '^FuzzParseHostKeyEvidence$' -fuzztime=10s
-
-      - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
-
-      - name: Build Linux desktop executable
-        run: wails3 build
-
-      - name: Archive Linux executable
-        run: tar -C bin -czf bin/pi-desk-linux-amd64.tar.gz pi-desk
-
-      - name: Upload Linux executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-desk-linux-amd64
-          path: bin/pi-desk-linux-amd64.tar.gz
-          if-no-files-found: error
-          retention-days: 14
-
-  ssh-live:
-    runs-on: ubuntu-24.04
+  node-web:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Linux desktop dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y gcc libgtk-4-dev libwebkitgtk-6.0-dev
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+          go-version: '1.26.5'
+      - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
-
-      - name: Run isolated SSH acceptance matrix
-        run: sh test/sshfixture/verify.sh
-
-  release:
-    if: github.ref_type == 'tag'
-    needs: [windows, macos, linux, ssh-live]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: pi-desk-*
-          path: release-artifacts
-          merge-multiple: true
-
-      - name: Create GitHub Release
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install browser for isolated browser checks
+        shell: bash
         run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
-          fi
-          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node --input-type=module -e 'import { chromium } from "playwright-core"; import { appendFileSync } from "node:fs"; appendFileSync(process.env.GITHUB_ENV, `PI_DESK_BROWSER_EXECUTABLE=${chromium.executablePath()}\n`);'
+      - name: Build and verify isolated SDK, HTTP and PTY flows
+        run: npm run check
+      - name: Upload Web production resources
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-desk-web-${{ matrix.os }}
+          path: |
+            dist/
+            build/remote-helper/artifacts/
+            frontend/dist/
+            package.json
+            package-lock.json
+            frontend/package.json
+            frontend/src/web/dsh/LICENSE.txt
+            frontend/src/web/dsh/Montserrat-OFL.txt
+            README.md
+            REFACTOR_PLAN.md
+            docs/
+            LICENSE
+            internal/workspaceapp/assets/
+            internal/appservice/resources/pi-desk-todo.ts
+            internal/appservice/resources/pi-desk-goal.ts
+          if-no-files-found: error
+          retention-days: 7

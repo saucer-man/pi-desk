@@ -348,3 +348,27 @@ func TestRootManagerRejectsFilesAndCapsResources(t *testing.T) {
 		t.Fatalf("root limit error = %v", err)
 	}
 }
+
+func TestReleasedRootsDoNotExhaustLongLivedHelper(t *testing.T) {
+	manager := newRootManager()
+	defer manager.Close()
+	for index := range maxRootCapabilities * 2 {
+		directory := filepath.Join(t.TempDir(), fmt.Sprintf("root-%d", index))
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		root, err := manager.Open(context.Background(), directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Release(root.Handle); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.Stat(context.Background(), root.Handle, "."); err == nil {
+			t.Fatal("released capability remained usable")
+		}
+	}
+	if len(manager.byHandle) != 0 || len(manager.byID) != 0 {
+		t.Fatal("root capabilities leaked")
+	}
+}

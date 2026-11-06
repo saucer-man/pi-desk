@@ -1,0 +1,36 @@
+{
+  "name": "pi-desk",
+  "version": "2.0.0-dev.2",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "node src/build-helper.ts && node --watch src/server.ts --dev",
+    "build": "node src/build-helper.ts && npm run build --workspace frontend && tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "npm run build && go test ./internal/remotehelper ./internal/remoteprotocol && node --test src/*.test.ts",
+    "check": "npm test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "node-pty": "1.1.0",
+    "playwright-core": "1.64.1",
+    "typebox": "1.3.27",
+    "ws": "8.22.1",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "6.0.3",
+    "vite": "6.4.5"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
+}

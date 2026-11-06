@@ -1,0 +1,56 @@
+// Native React primitives adapted to DeepSeek Harness; see dsh/LICENSE.txt.
+import { Children, isValidElement, createContext, forwardRef, useContext, useId, useLayoutEffect, useRef, useState, type ReactNode, type HTMLAttributes, type ButtonHTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { createPortal } from "react-dom";
+import clsx from "clsx";
+import { useModalLayer, isBehindModal } from "./dsh/useModalLayer";
+import { X, Check, ChevronDown, ArrowLeft } from "./icons";
+import css from "./ui.module.css";
+
+export const Button=forwardRef<HTMLButtonElement,ButtonHTMLAttributes<HTMLButtonElement>&{variant?:"default"|"ghost"|"outline"|"secondary"|"destructive";size?:"default"|"sm"|"icon"}>(function Button({variant="default",size="default",className,...props},ref){return <button type="button" ref={ref} data-slot="button" className={clsx(css.button,css[variant],size==="default"?undefined:css[size],className)} {...props}/>;});
+export const Input=forwardRef<HTMLInputElement,InputHTMLAttributes<HTMLInputElement>>(function Input({className,...props},ref){return <input ref={ref} className={clsx(css.input,className)} {...props}/>;});
+export const Textarea=forwardRef<HTMLTextAreaElement,TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea({className,...props},ref){return <textarea ref={ref} className={clsx(css.input,css.textarea,className)} {...props}/>;});
+export function Badge({className,variant:_,...props}:HTMLAttributes<HTMLSpanElement>&{variant?:string}){return <span className={clsx(css.badge,className)} {...props}/>;}
+const DialogContext=createContext({open:false,onOpenChange:(_value:boolean)=>{},titleId:"",descriptionId:""});
+export function Dialog({open,onOpenChange,children}:{open:boolean;onOpenChange:(open:boolean)=>void;children:ReactNode}){const id=useId();return <DialogContext.Provider value={{open,onOpenChange,titleId:id+"-title",descriptionId:id+"-description"}}>{children}</DialogContext.Provider>;}
+export function DialogContent({className,children,...props}:HTMLAttributes<HTMLDivElement>){const d=useContext(DialogContext);const ref=useRef<HTMLDivElement>(null);useModalLayer(ref,d.open,()=>d.onOpenChange(false));if(!d.open)return null;return createPortal(<div className={css.overlay}><div className={css.mask} onClick={()=>d.onOpenChange(false)}/><div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={d.titleId} aria-describedby={d.descriptionId} className={clsx(css.dialog,className)} {...props}><button className={css.close} aria-label="关闭" onClick={()=>d.onOpenChange(false)}><X size={16}/></button>{children}</div></div>,document.body);}
+export function DialogHeader(props:HTMLAttributes<HTMLDivElement>){return <div {...props} className={clsx(css.dialogHeader,props.className)}/>;}
+export function DialogTitle(props:HTMLAttributes<HTMLHeadingElement>){const d=useContext(DialogContext);return <h2 {...props} id={d.titleId}/>;}
+export function DialogDescription(props:HTMLAttributes<HTMLParagraphElement>){const d=useContext(DialogContext);return <p {...props} id={d.descriptionId} className={clsx(css.description,props.className)}/>;}
+export function DialogFooter(props:HTMLAttributes<HTMLDivElement>){return <div {...props} className={clsx(css.footer,props.className)}/>;}
+
+const MenuContext=createContext({close:(_restore=true)=>{},path:"",anchor:null as HTMLButtonElement|null});
+export function Menu({label,trigger,children,className,panelClassName,role="menu",buttonProps}:{label:string;trigger?:ReactNode;children:ReactNode;className?:string;panelClassName?:string;role?:"menu"|"listbox"|"dialog";buttonProps?:ButtonHTMLAttributes<HTMLButtonElement>}) {
+  const parent=useContext(MenuContext);const nested=Boolean(parent.path);
+  const [open,setOpen]=useState(false);const [point,setPoint]=useState<{left:number;top:number;label:string}>();const triggerRef=useRef<HTMLButtonElement>(null);const menu=useRef<HTMLDivElement>(null);const id=useId();const typed=useRef({text:"",at:0});const select=role==="listbox";
+  const closeAll=(restore=true)=>{setOpen(false);parent.close(restore);if(!nested&&restore)requestAnimationFrame(()=>{const anchor=triggerRef.current;if(anchor&&!isBehindModal(anchor))anchor.focus({preventScroll:true});});};
+  const items=()=>[...menu.current!.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not(:disabled),button[role="option"]:not(:disabled)')];
+  useModalLayer(menu,open,()=>setOpen(false));
+  useLayoutEffect(()=>{
+    if(!open)return;const anchor=triggerRef.current!,popup=menu.current!,positionAnchor=nested?parent.anchor!:anchor,rect=positionAnchor.getBoundingClientRect();
+    if(select){popup.style.minWidth=Math.min(rect.width,innerWidth-16)+"px";popup.style.maxHeight=Math.min(320,Math.max(80,rect.top-14,innerHeight-rect.bottom-14))+"px";}
+    if(nested)popup.style.minWidth=Math.min(anchor.closest('[data-menu-path]')!.getBoundingClientRect().width,innerWidth-16)+"px";
+    const box=popup.getBoundingClientRect(),left=Math.max(8,Math.min(rect.left,innerWidth-box.width-8)),top=rect.bottom+box.height+8<innerHeight?rect.bottom+6:Math.max(8,rect.top-box.height-6);
+    setPoint({left,top,label:select?buttonProps?.["aria-label"]||[...anchor.labels||[]].map(l=>l.textContent).join(" ")||label:label});
+    const close=(e:PointerEvent)=>{const path=(e.target as Element).closest?.('[data-menu-path]')?.getAttribute('data-menu-path')?.split(' ');if(!popup.contains(e.target as Node)&&!anchor.contains(e.target as Node)&&!path?.includes(id))setOpen(false);};const resize=()=>setOpen(false);const scroll=(e:Event)=>{if(popup.contains(e.target as Node))return;const current=positionAnchor.getBoundingClientRect();if(Math.abs(current.top-rect.top)>1||Math.abs(current.left-rect.left)>1)setOpen(false);};
+    document.addEventListener("pointerdown",close);document.addEventListener("scroll",scroll,true);window.addEventListener("resize",resize);return()=>{document.removeEventListener("pointerdown",close);document.removeEventListener("scroll",scroll,true);window.removeEventListener("resize",resize);};
+  },[open]);
+  useLayoutEffect(()=>{if(open&&point){const preferred=select||nested?menu.current?.querySelector<HTMLButtonElement>(select?'[aria-selected="true"]:not(:disabled)':'[aria-checked="true"]:not(:disabled)'):undefined;const target=preferred||items()[0];target?.focus({preventScroll:true});target?.scrollIntoView({block:"nearest"});}},[open,point]);
+  return <><button {...buttonProps} ref={triggerRef} type="button" role={select?"combobox":nested?"menuitem":undefined} aria-label={select?buttonProps?.["aria-label"]:label} title={buttonProps?.title||(select?undefined:label)} aria-haspopup={role} aria-controls={open?id:undefined} aria-expanded={open} className={clsx(css.menuTrigger,nested&&css.submenuTrigger,className)} onKeyDown={e=>{buttonProps?.onKeyDown?.(e);if(!e.defaultPrevented&&((!nested||select)&&["ArrowDown","ArrowUp"].includes(e.key)||nested&&e.key==="ArrowRight")){e.preventDefault();if(open)return;setPoint(undefined);typed.current={text:"",at:0};setOpen(true);}}} onClick={()=>{if(open){if(!nested)closeAll();return;}setPoint(undefined);typed.current={text:"",at:0};setOpen(true);}}>{trigger||<><span>{label}</span><ChevronDown size={12}/></>}</button>{open&&createPortal(<MenuContext.Provider value={{close:closeAll,path:(parent.path+" "+id).trim(),anchor:parent.anchor||triggerRef.current}}><div ref={menu} id={id} role={role} tabIndex={-1} data-menu-path={(parent.path+" "+id).trim()} aria-label={point?.label||label} className={clsx(css.menu,select&&css.selectMenu,nested&&css.submenu,panelClassName)} style={{left:point?.left,top:point?.top,visibility:point?"visible":"hidden"}} onKeyDown={e=>{
+    if(e.defaultPrevented)return;if(nested)e.stopPropagation();
+    if(e.nativeEvent.isComposing||e.keyCode===229){e.preventDefault();return;}
+    if(nested&&["ArrowLeft","Escape"].includes(e.key)){e.preventDefault();setOpen(false);return;}
+    if(e.key==="Tab"){e.stopPropagation();(parent.anchor||triggerRef.current)?.focus({preventScroll:true});closeAll(false);return;}
+    if(role==="dialog")return;
+    const options=items(),index=options.indexOf(document.activeElement as HTMLButtonElement);
+    if(["ArrowDown","ArrowUp","Home","End"].includes(e.key)){e.preventDefault();const next=options[e.key==="Home"?0:e.key==="End"?options.length-1:(index+(e.key==="ArrowDown"?1:-1)+options.length)%options.length];next?.focus({preventScroll:true});next?.scrollIntoView({block:"nearest"});}
+    else if(select&&e.key.length===1&&e.key!==" "&&!e.ctrlKey&&!e.altKey&&!e.metaKey){e.preventDefault();const text=(Date.now()-typed.current.at<700?typed.current.text:"")+e.key.toLocaleLowerCase();typed.current={text,at:Date.now()};const prefix=[...text].every(c=>c===text[0])?text[0]:text;const next=[...options.slice(index+1),...options.slice(0,index+1)].find(o=>o.textContent?.trim().toLocaleLowerCase().startsWith(prefix));next?.focus({preventScroll:true});next?.scrollIntoView({block:"nearest"});}
+  }}>{nested&&<button type="button" role="menuitem" className={css.menuItem} onClick={()=>setOpen(false)}><ArrowLeft size={15}/>返回上级菜单</button>}{children}</div></MenuContext.Provider>,document.body)}</>;
+}
+export function MenuItem({children,selected,onClick,role,...props}:ButtonHTMLAttributes<HTMLButtonElement>&{selected?:boolean}){const {close}=useContext(MenuContext);return <button type="button" role={role||(selected===undefined?"menuitem":"menuitemradio")} aria-checked={role==="option"?undefined:selected} aria-selected={role==="option"?selected:undefined} className={css.menuItem} {...props} onClick={e=>{onClick?.(e);close();}}>{children}{selected&&<span className={css.menuCheck}><Check size={16}/></span>}</button>;}
+export function Select({value,onValueChange,children,className,...props}:Omit<ButtonHTMLAttributes<HTMLButtonElement>,"value"|"onChange"|"children">&{value:string|number;onValueChange?:(value:string)=>void;children:ReactNode}) {
+  const options=Children.toArray(children).flatMap(child=>isValidElement<{value:string|number;children:ReactNode;disabled?:boolean}>(child)&&child.type==="option"?[child]:[]);
+  const selected=options.find(option=>String(option.props.value)===String(value))||options[0];
+  return <Menu label={props["aria-label"]||"选择选项"} role="listbox" className={clsx(css.select,className)} buttonProps={{...props,value:String(value),"data-slot":"select"} as ButtonHTMLAttributes<HTMLButtonElement>} trigger={<><span className={css.selectValue}>{selected?.props.children}</span><ChevronDown size={14}/></>}>{options.map(option=><MenuItem role="option" value={String(option.props.value)} key={String(option.props.value)} selected={String(option.props.value)===String(value)} disabled={option.props.disabled} onClick={()=>{if(String(option.props.value)!==String(value))onValueChange?.(String(option.props.value));}}>{option.props.children}</MenuItem>)}</Menu>;
+}
+export function MenuLabel({children}:{children:ReactNode}){return <div className={css.menuLabel}>{children}</div>;}
+export function MenuSeparator(){return <div className={css.menuSeparator} role="separator"/>;}

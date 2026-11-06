@@ -1,0 +1,340 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer, request as httpRequest } from "node:http";
+import { WebSocket } from "ws";
+
+test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-desk-web-")); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
+  await mkdir(cwd); await mkdir(agent); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
+  const mock = createServer(async (req, res) => { for await (const _ of req) {} res.writeHead(200, { "Content-Type": "text/event-stream" }); await new Promise(resolve => setTimeout(resolve, 250));
+    for (const chunk of [{ choices: [{ index: 0, delta: { role: "assistant", content: "HTTP SDK verified" }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, { choices: [], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }]) res.write(`data: ${JSON.stringify({ id: "http", object: "chat.completion.chunk", created: 1, model: "mock", ...chunk })}\n\n`);
+    res.end("data: [DONE]\n\n"); });
+  mock.listen(0, "127.0.0.1"); await once(mock, "listening"); const modelPort = (mock.address() as { port: number }).port;
+  await writeFile(join(agent, "models.json"), JSON.stringify({ providers: { mock: { api: "openai-completions", baseUrl: `http://127.0.0.1:${modelPort}/v1`, apiKey: "local-test", models: [{ id: "mock", contextWindow: 100000, maxTokens: 1000 }] } } }));
+  await writeFile(join(agent, "settings.json"), JSON.stringify({ defaultProvider: "mock", defaultModel: "mock", retry: { enabled: false }, skills:[join(temp,"explicit-skill")], packages:["npm:@pi-desk/fixture-never-installed"] }));
+  const skillFixtures=[
+    [join(agent,"skills","pi-desk-shared"),"pi-desk-shared","User description"],
+    [join(cwd,".pi","skills","pi-desk-shared"),"pi-desk-shared","Project description"],
+    [join(cwd,".agents","skills","pi-desk-agents"),"pi-desk-agents","Agents directory description"],
+    [join(temp,"explicit-skill"),"pi-desk-explicit","Configured description"],
+  ];
+  for(const [dir,name,description] of skillFixtures){await mkdir(dir,{recursive:true});await writeFile(join(dir,"SKILL.md"),`---\nname: ${name}\ndescription: ${description}\n---\n# Skill details\n\nFull body fixture: <script>window.skillExecuted=true</script>\n`);}
+  const skillExtensionMarker=join(temp,"skill-list-must-not-execute-extensions");await mkdir(join(cwd,".pi","extensions"),{recursive:true});await writeFile(join(cwd,".pi","extensions","skill-probe.ts"),`import {writeFileSync} from 'node:fs';export default function(){writeFileSync(${JSON.stringify(skillExtensionMarker)},'executed');}`);
+  const openerBin=join(temp,"opener-bin"),openerArgs=join(temp,"opener-args"),openerCwd=join(temp,"opener-cwd");
+  if(process.platform==="linux") { await mkdir(openerBin); await writeFile(join(openerBin,"xdg-open"),'#!/bin/sh\nprintf "%s\\n" "$@" > "$PI_DESK_OPEN_TEST_ARGS"\npwd > "$PI_DESK_OPEN_TEST_CWD"\n',{mode:0o755}); }
+  await mkdir(join(temp,"desk"));await writeFile(join(temp,"desk","state.json"),JSON.stringify({version:1,preferences:{theme:"light"},sessions:[],workspaces:[{id:"ssh-menu",name:"SSH menu fixture",path:"/srv/fixture",trusted:false,remote:{target:"fixture@127.0.0.1",port:2222,historyImported:true}}]}));
+  const child = spawn(process.execPath, [resolve("dist/server.js"), "--port", "0", "--no-open"], { cwd: process.cwd(), windowsHide: true, env: { ...process.env, ...(process.platform==="linux"?{PATH:openerBin+":"+process.env.PATH,PI_DESK_OPEN_TEST_ARGS:openerArgs,PI_DESK_OPEN_TEST_CWD:openerCwd}:{}), PI_CODING_AGENT_DIR: agent, PI_DESK_DIR: join(temp, "desk") }, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { child.kill(); mock.close(); mock.closeAllConnections(); });
+  let output = ""; let errors = ""; child.stderr.on("data", chunk => { errors += chunk.toString(); });
+  const origin = await new Promise<string>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("service did not start: " + errors)), 30000); child.stdout.on("data", chunk => { output += chunk.toString(); const match = /http:\/\/127\.0\.0\.1:\d+/.exec(output); if (match) { clearTimeout(timer); resolve(match[0]); } }); child.once("exit", code => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${errors}`)); }); });
+  const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await fetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
+  assert.equal((await fetch(origin)).status, 200);
+  const sshInfo=await request("/workspaces/ssh-menu/ssh-info");assert.equal(sshInfo.status,200);assert.equal(sshInfo.data.hostname,"127.0.0.1");assert.equal(sshInfo.data.user,"fixture");assert.equal(sshInfo.data.port,2222);assert.ok(!("identityfile" in sshInfo.data));assert.equal((await request("/state")).data.workspaces[0].remote.connected,false);
+assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
+  assert.equal((await fetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);
+  assert.equal((await fetch(origin + "/api/state", { headers: { "Sec-Fetch-Site": "cross-site" } })).status, 403);
+  const navigation = await new Promise<number>(resolve => { httpRequest(origin, { headers: { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" } }, response => { response.resume(); resolve(response.statusCode!); }).end(); }); assert.equal(navigation, 200);
+  const w = (await request("/workspaces", { path: cwd, trusted: false })).data;
+  assert.equal(w.trusted,true);
+  for(const resource of ["skills","plugins","mcp"])assert.equal((await request(`/${resource}/${w.id}`)).status,200);
+  const session = (await request("/sessions", { workspaceId: w.id, mode: "minimal" })).data;
+  const pluginList=await request(`/plugins/${w.id}`);assert.equal(pluginList.status,200);
+  const plugin=pluginList.data.find((p:any)=>p.name==="skill-probe");assert.ok(plugin&&plugin.type==="项目插件"&&plugin.enabled);
+  assert.match((await request(`/plugins/${w.id}?id=${encodeURIComponent(plugin.id)}`)).data.text,/skill-list-must-not-execute/);await assert.rejects(access(skillExtensionMarker));
+  assert.equal((await request(`/plugins/${w.id}?id=${encodeURIComponent(join(temp,"outside.txt"))}`)).status,400);
+  assert.equal((await request(`/plugins/${w.id}`,{id:plugin.id,enabled:"false"})).status,400);
+  assert.equal((await request(`/plugins/${w.id}`,{id:plugin.id,enabled:false})).data.plugins.find((p:any)=>p.id===plugin.id).enabled,false);
+  assert.equal((await request("/state")).data.preferences.pluginOverrides[plugin.id],false);await assert.rejects(access(skillExtensionMarker));
+  assert.equal((await request(`/plugins/${w.id}`,{id:plugin.id,enabled:true})).status,200);
+  const apps=await request("/applications"); assert.equal(apps.status,200); assert.ok(apps.data.every((a:any)=>["file-manager","cursor","vscode","gitbash","powershell"].includes(a.id)&&!("command" in a)));
+  assert.equal((await request(`/workspaces/${w.id}/open`,{applicationId:"file-manager;echo bad"})).status,400);
+  if(process.platform==="linux") {
+    assert.ok(apps.data.some((a:any)=>a.id==="file-manager"));
+    assert.equal((await request(`/workspaces/${w.id}/open`,{applicationId:"file-manager",sessionId:session.id})).status,200);
+    for(let i=0;i<20;i++){try{await access(openerArgs);break;}catch{await new Promise(resolve=>setTimeout(resolve,25));}}
+    assert.equal(await readFile(openerArgs,"utf8"),cwd+"\n");assert.equal((await readFile(openerCwd,"utf8")).trim(),cwd);
+  }
+  assert.equal((await request(`/sessions/${session.id}`,{pinned:true},"PATCH")).data.pinned,true);
+  assert.equal((await request("/state")).data.sessions.find((r:any)=>r.id===session.id).pinned,true);
+  assert.equal(JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).sessions.find((r:any)=>r.id===session.id).pinned,true);
+  assert.equal((await request(`/sessions/${session.id}`,{pinned:"yes"},"PATCH")).status,400);
+  assert.equal((await request(`/sessions/${session.id}`,{pinned:false},"PATCH")).data.pinned,false);
+  const draftImage = { type: "image", id: "draft", name: "saved.png", mimeType: "image/png", data: Buffer.from("saved image").toString("base64") };
+  await request(`/sessions/${session.id}`, { draft: "**Markdown** draft", draftImages: [draftImage] }, "PATCH");
+  const composer = (await request(`/sessions/${session.id}/composer`)).data;
+  assert.equal(composer.text, "**Markdown** draft"); assert.equal(composer.images[0].data, draftImage.data);
+  assert.ok(!("data" in (await request("/state")).data.sessions.find((r: any) => r.id === session.id).draftImages[0]));
+  const missing = (await request("/sessions", { workspaceId: w.id, mode: "minimal", model: "mock/removed-model" })).data;
+  await request(`/sessions/${missing.id}`, { draft: "preserve this draft" }, "PATCH");
+  assert.equal((await request(`/sessions/${missing.id}/prompt`, { text: "preserve this draft" })).status, 400);
+  assert.equal((await request(`/sessions/${missing.id}`)).data.record.draft, "preserve this draft");
+  assert.equal((await request(`/files/${w.id}?path=hello.txt`)).data.text, "workspace preview");
+  const traversal = await request(`/files/${w.id}?path=../outside.txt`); assert.equal(traversal.status, 400); assert.ok(!JSON.stringify(traversal.data).includes("outside-workspace"));
+  const externalPreview=await request(`/files/${w.id}/preview`,{path:join(temp,"outside.txt")});assert.equal(externalPreview.status,200);assert.equal(externalPreview.data.text,"outside-workspace");
+  assert.equal((await request(`/files/${w.id}/preview`,{path:temp})).status,400);
+  await writeFile(join(cwd,"unsupported.bin"),Buffer.from([0xff,0,1]));assert.match((await request(`/files/${w.id}/preview`,{path:"unsupported.bin"})).data.unsupported,/暂不支持/);
+  await writeFile(join(cwd,"sample.pdf"),"%PDF-1.4\npreview fixture");assert.equal(Buffer.from((await request(`/files/${w.id}/preview`,{path:"sample.pdf"})).data.pdf,"base64").toString(),"%PDF-1.4\npreview fixture");
+  await writeFile(join(cwd,"large.txt"),Buffer.alloc(2*1024*1024+1,97));assert.match((await request(`/files/${w.id}?path=large.txt`)).data.unsupported,/2 MiB/);
+  for(const url of ["file:///tmp/secret","javascript:alert(1)","https://user:secret@example.com/"])assert.equal((await request("/open-url",{url})).status,400);
+  assert.ok((await request(`/files/${w.id}?search=hltxt`)).data.matches.includes("hello.txt"));
+  const { git } = await import("./subagents.ts"); await git(cwd,["init","-b","main"]); await git(cwd,["config","user.name","Test"]); await git(cwd,["config","user.email","test@localhost"]); await git(cwd,["add","."]); await git(cwd,["commit","-m","fixture"]);
+  await writeFile(join(cwd,"hello.txt"),"staged line\n"); await git(cwd,["add","hello.txt"]); await writeFile(join(cwd,"hello.txt"),"unstaged line\n");
+  const diffs=(await request(`/git/${w.id}`)).data; assert.match(diffs.staged,/\+staged line/); assert.match(diffs.unstaged,/\+unstaged line/);
+  const authSave=await request("/models",{operation:"api_key",provider:"mock",key:"local-test-auth"}); assert.equal(authSave.status,200); assert.ok(!JSON.stringify(authSave.data).includes("local-test-auth")); assert.match(await readFile(join(agent,"auth.json"),"utf8"),/local-test-auth/);
+  assert.equal((await request("/models",{operation:"logout",provider:"mock"})).status,200);
+  // Model CRUD stays in Pi's native files, keeps secrets private, and defaults affect new sessions.
+  const configUrl = "/model-config";
+  const nativeModels = JSON.parse(await readFile(join(agent,"models.json"),"utf8")); nativeModels.customRoot = {preserve:true};
+  await writeFile(join(agent,"models.json"),JSON.stringify(nativeModels));
+  const provider = {id:"custom",api:"openai-completions",baseUrl:`http://127.0.0.1:${modelPort}/v1`,apiKey:"model-config-secret",headers:{"X-Private":"header-config-secret"},compat:{supportsStore:false},customProvider:true};
+  const modelConfig = {id:"alpha",name:"Alpha",contextWindow:64000,maxTokens:1000,reasoning:true,input:["text","image"],thinkingLevelMap:{high:"high"},inputLimits:{images:{resize:{maxWidth:1200}}},cost:{input:1,output:2,cacheRead:0,cacheWrite:0},customModel:true};
+  const added = await request(configUrl,{operation:"save",createProvider:true,provider,model:modelConfig,compaction:{reserveTokens:0,keepRecentTokens:300}});
+  assert.equal(added.status,200,JSON.stringify(added.data)); assert.ok(added.data.catalog.models.some((m:any)=>m.provider==="custom"&&m.id==="alpha"));
+  assert.ok(!JSON.stringify(added.data).includes("model-config-secret")); assert.ok(!JSON.stringify(added.data).includes("header-config-secret"));
+  const managed=added.data.providers.find((p:any)=>p.id==="custom"); assert.equal(managed.hasApiKey,true); assert.equal(managed.headers["X-Private"],"[已保存]");
+  assert.equal((await request(configUrl,{operation:"default",provider:"custom",model:"alpha"})).status,200);
+  const newSession=(await request("/sessions",{workspaceId:w.id,mode:"minimal"})).data;
+  assert.equal((await request(`/sessions/${newSession.id}`)).data.model,"custom/alpha");
+  assert.equal((await request(`/sessions/${session.id}`)).data.model,"mock/mock");
+  const modelEdited=await request(configUrl,{operation:"save",originalProvider:"custom",originalModel:"alpha",provider:{...managed,id:"renamed"},model:{...managed.models[0],id:"beta",name:"Beta"},compaction:{reserveTokens:0,keepRecentTokens:400}});
+  assert.equal(modelEdited.status,200,JSON.stringify(modelEdited.data)); assert.equal(modelEdited.data.catalog.defaultProvider,"renamed"); assert.equal(modelEdited.data.catalog.defaultModel,"beta");
+  let document=JSON.parse(await readFile(join(agent,"models.json"),"utf8")), settings=JSON.parse(await readFile(join(agent,"settings.json"),"utf8"));
+  assert.equal(document.customRoot.preserve,true); assert.equal(document.providers.renamed.apiKey,"model-config-secret"); assert.equal(document.providers.renamed.headers["X-Private"],"header-config-secret");
+  assert.equal(document.providers.renamed.models[0].cost.output,2); assert.equal(document.providers.renamed.models[0].customModel,true); assert.equal(document.providers.renamed.models[0].inputLimits.images.resize.maxWidth,1200);
+  assert.equal(settings.retry.enabled,false); assert.deepEqual(settings.compaction.modelOverrides["renamed/beta"],{reserveTokens:0,keepRecentTokens:400}); assert.ok(!settings.compaction.modelOverrides["custom/alpha"]);
+  const beforeInvalid=await readFile(join(agent,"models.json"),"utf8");
+  assert.equal((await request(configUrl,{operation:"save",createProvider:true,provider:{...provider,id:"renamed"},model:{...modelConfig,id:"new-model"}})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",createProvider:true,provider:{...provider,id:"anthropic"},model:modelConfig})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",provider:{...provider,id:"renamed"},model:{...modelConfig,id:"beta"}})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",provider:{...provider,id:"bad"},model:{...modelConfig,maxTokens:64001}})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",provider:{...provider,id:"bad",baseUrl:"file:///bad"},model:modelConfig})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",provider:{...provider,id:"__proto__"},model:modelConfig})).status,400);
+  assert.equal((await request(configUrl,{operation:"save",provider:{...provider,id:"bad"},model:{...modelConfig,inputLimits:{images:{resize:{maxWidth:-1}}}}})).status,400);
+  assert.equal((await request(configUrl,{operation:"default",provider:"missing",model:"missing"})).status,400);
+  assert.equal(await readFile(join(agent,"models.json"),"utf8"),beforeInvalid);
+  const renamedProvider=modelEdited.data.providers.find((p:any)=>p.id==="renamed");
+  const second=await request(configUrl,{operation:"save",provider:renamedProvider,model:{...modelConfig,id:"gamma"},compaction:{reserveTokens:200}}); assert.equal(second.status,200);
+  assert.equal(second.data.providers.find((p:any)=>p.id==="renamed").models.length,2);
+  assert.equal((await request(configUrl,{operation:"delete_model",provider:"renamed",model:"beta"})).status,200);
+  settings=JSON.parse(await readFile(join(agent,"settings.json"),"utf8")); assert.equal(settings.defaultModel,undefined); assert.equal(settings.defaultProvider,undefined); assert.ok(!settings.compaction.modelOverrides["renamed/beta"]);
+  assert.equal((await request(`/sessions/${newSession.id}/prompt`,{text:"deleted model must not run"})).status,400);
+  let currentProvider=(await request(configUrl)).data.providers.find((p:any)=>p.id==="renamed");
+  assert.deepEqual(currentProvider.models.map((m:any)=>m.id),["gamma"]);
+  assert.equal((await request(configUrl,{operation:"save",originalProvider:"renamed",originalModel:"gamma",provider:currentProvider,model:currentProvider.models[0],clearApiKey:true})).status,200);
+  assert.equal(JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers.renamed.apiKey,undefined);
+  currentProvider=(await request(configUrl)).data.providers.find((p:any)=>p.id==="renamed");
+  assert.equal((await request(configUrl,{operation:"save",originalProvider:"renamed",originalModel:"gamma",provider:{...currentProvider,apiKey:"replacement-secret"},model:currentProvider.models[0],compaction:{reserveTokens:200}})).status,200);
+  assert.equal((await request(configUrl,{operation:"default",provider:"renamed",model:"gamma"})).status,200);
+  assert.equal((await request(configUrl,{operation:"delete_provider",provider:"renamed"})).status,200);
+  settings=JSON.parse(await readFile(join(agent,"settings.json"),"utf8")); assert.equal(settings.defaultProvider,undefined); assert.equal(settings.defaultModel,undefined); assert.ok(!settings.compaction.modelOverrides["renamed/gamma"]);
+
+  assert.equal((await request(configUrl)).data.providers.some((p:any)=>p.id==="renamed"),false);
+  const noAuth=await request(configUrl,{operation:"save",provider:{id:"unconfigured",api:"openai-completions",baseUrl:provider.baseUrl},model:modelConfig}); assert.equal(noAuth.status,200);
+  assert.ok(noAuth.data.providers.some((p:any)=>p.id==="unconfigured")); assert.ok(!noAuth.data.catalog.models.some((m:any)=>m.provider==="unconfigured"));
+  assert.equal((await request(configUrl,{operation:"default",provider:"unconfigured",model:"alpha"})).status,400);
+  assert.equal((await request(configUrl,{operation:"delete_provider",provider:"unconfigured"})).status,200);
+  const settingsBeforeCorruption=await readFile(join(agent,"settings.json"),"utf8"), modelsBeforeCorruption=await readFile(join(agent,"models.json"),"utf8");
+  await writeFile(join(agent,"settings.json"),JSON.stringify({compaction:[]}));
+  assert.equal((await request(configUrl,{operation:"delete_provider",provider:"mock"})).status,400); assert.equal(await readFile(join(agent,"models.json"),"utf8"),modelsBeforeCorruption);
+  await writeFile(join(agent,"settings.json"),settingsBeforeCorruption);
+  await writeFile(join(agent,"models.json"),JSON.stringify({providers:null}));
+  assert.equal((await request(configUrl,{operation:"delete_provider",provider:"mock"})).status,400); assert.equal(await readFile(join(agent,"models.json"),"utf8"),JSON.stringify({providers:null}));
+  await writeFile(join(agent,"models.json"),modelsBeforeCorruption);
+  const preserved=await readFile(join(agent,"models.json"),"utf8"); await writeFile(join(agent,"models.json"),"{ invalid source");
+  assert.equal((await request(configUrl,{operation:"delete_provider",provider:"mock"})).status,400); assert.equal(await readFile(join(agent,"models.json"),"utf8"),"{ invalid source");
+  await writeFile(join(agent,"models.json"),"// Pi supports JSON comments and trailing commas\n"+preserved.replace(/}\s*$/,",}"));
+  assert.equal((await request(configUrl)).status,200); await writeFile(join(agent,"models.json"),preserved);
+  assert.equal((await request(configUrl,{operation:"default",provider:"mock",model:"mock"})).status,200);
+  const resourceUrl=`/resources/${w.id}?scope=project`;
+  const skillsUrl=`/skills/${w.id}`, skillList=await request(skillsUrl);assert.equal(skillList.status,200);
+  for(const [,name] of skillFixtures)assert.ok(skillList.data.some((s:any)=>s.name===name));
+  const shared=skillList.data.filter((s:any)=>s.name==="pi-desk-shared");assert.equal(shared.length,1);assert.equal(shared[0].description,"Project description");
+  assert.equal(shared[0].path,join(cwd,".pi","skills","pi-desk-shared","SKILL.md"));assert.ok(!JSON.stringify(skillList.data).includes("Full body fixture"));
+  const skillDetail=await request(skillsUrl+`?path=${encodeURIComponent(shared[0].path)}`);assert.equal(skillDetail.status,200);assert.equal(skillDetail.data.text,await readFile(shared[0].path,"utf8"));
+  assert.equal((await request(skillsUrl+`?path=${encodeURIComponent(join(agent,"auth.json"))}`)).status,400);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"skills/new/SKILL.md",text:"must not create"})).status,400);
+  assert.equal((await request(resourceUrl,{operation:"delete",path:"skills/pi-desk-shared/SKILL.md"})).status,400);assert.equal(await readFile(shared[0].path,"utf8"),skillDetail.data.text);
+  assert.ok(skillList.data.every((s:any)=>s.enabled===true));
+  const disabledSkill=await request(skillsUrl,{operation:"toggle",path:shared[0].path,enabled:false});assert.equal(disabledSkill.status,200);assert.equal(disabledSkill.data.skills.find((s:any)=>s.name==="pi-desk-shared").enabled,false);
+  assert.ok((await request("/state")).data.preferences.disabledSkills.includes("pi-desk-shared"));
+  assert.ok(JSON.parse(await readFile(join(temp,"desk","state.json"),"utf8")).preferences.disabledSkills.includes("pi-desk-shared"));
+  assert.equal((await request(skillsUrl+`?path=${encodeURIComponent(shared[0].path)}`)).status,200);
+  assert.equal((await request(skillsUrl,{operation:"toggle",path:shared[0].path,enabled:"false"})).status,400);
+  assert.equal((await request(skillsUrl,{operation:"delete",path:join(agent,"auth.json")})).status,400);
+  assert.equal((await request(skillsUrl,{operation:"toggle",path:join(agent,"auth.json"),enabled:false})).status,400);
+  const enabledSkill=await request(skillsUrl,{operation:"toggle",path:shared[0].path,enabled:true});assert.equal(enabledSkill.status,200);assert.equal(enabledSkill.data.skills.find((s:any)=>s.name==="pi-desk-shared").enabled,true);
+  const deletedSkill=await request(skillsUrl,{operation:"delete",path:shared[0].path});assert.equal(deletedSkill.status,200);await assert.rejects(access(shared[0].path));
+  const fallbackSkill=deletedSkill.data.skills.find((s:any)=>s.name==="pi-desk-shared");assert.equal(fallbackSkill.path,join(agent,"skills","pi-desk-shared","SKILL.md"));await access(fallbackSkill.path);
+  await assert.rejects(access(skillExtensionMarker));
+
+  assert.equal((await request(resourceUrl,{operation:"save",path:"prompts/review.md",text:"Review this change"})).status,200);
+  assert.equal((await request(resourceUrl+"&path=prompts/review.md")).data.text,"Review this change");
+  assert.equal((await request(resourceUrl,{operation:"save",path:"prompts/../../outside.md",text:"bad"})).status,400);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"prompts/review.md",text:"overwrite"})).status,400);
+  await request(resourceUrl,{operation:"mcp",config:{mcpServers:{probe:{command:"echo",env:{TOKEN:"secret-test-value"}}}}});
+  const resourceList=(await request(resourceUrl)).data; assert.equal(resourceList.mcp.mcpServers.probe.env.TOKEN,"[已保存]"); assert.ok(!JSON.stringify(resourceList).includes("secret-test-value"));
+  await request(resourceUrl,{operation:"mcp",config:resourceList.mcp}); assert.equal(JSON.parse(await readFile(join(cwd,".pi","mcp.json"),"utf8")).mcpServers.probe.env.TOKEN,"secret-test-value");
+  {
+  const mcpUrl=`/mcp/${w.id}`,mcpFile=join(agent,"mcp.json"),mcpProcess=join(temp,"mcp-manager.pid"),mcpCalled=join(temp,"mcp-manager.called"),mcpScript=join(temp,"mcp-manager.mjs");
+  await writeFile(mcpScript,`import {createInterface} from 'node:readline';import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(mcpProcess)},String(process.pid));const lines=createInterface({input:process.stdin});lines.on('close',()=>process.exit());if(process.argv[2]==='fail'){console.error(process.env.TOKEN);process.exit(1);}lines.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined||process.argv[2]==='hang')return;const result=m.method==='initialize'?{protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'manager-fixture',version:'1.0'},instructions:'Local MCP manager fixture instructions'}:m.method==='tools/list'?(m.params?.cursor?{tools:[{name:'second',description:'Second page',inputSchema:{type:'object',properties:{}}}]}:{tools:[{name:'echo',description:'Echo fixture',inputSchema:{type:'object',properties:{message:{type:'string'}},required:['message']}}],nextCursor:'second-page'}):{};if(m.method==='tools/call')writeFileSync(${JSON.stringify(mcpCalled)},'unexpected');process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`);
+  const mcpConfig={command:process.execPath,args:[mcpScript],description:"Manager fixture",env:{TOKEN:"mcp-manager-secret-value"}};
+  assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"manager",definition:mcpConfig})).status,200);
+  await mkdir(join(temp,".pi"),{recursive:true});await writeFile(join(temp,".pi","mcp.json"),JSON.stringify({mcpServers:{parent:{command:"must-not-start"}}}));
+  const emptyMcpProject=join(temp,"no-mcp-files");await mkdir(emptyMcpProject);const emptyMcpWorkspace=(await request("/workspaces",{path:emptyMcpProject,trusted:true})).data;assert.equal((await request(`/mcp/${emptyMcpWorkspace.id}`)).status,200);await assert.rejects(access(join(emptyMcpProject,".pi")));
+  let managed=(await request(mcpUrl)).data;assert.ok(!managed.servers.some((s:any)=>s.name==="parent"));assert.equal(managed.servers.find((s:any)=>s.name==="manager").enabled,true);await assert.rejects(access(mcpProcess));
+  let definition=(await request(mcpUrl+"?scope=global&name=manager")).data;assert.equal(definition.definition.env.TOKEN,"[已保存]");assert.ok(!JSON.stringify(managed).includes("mcp-manager-secret-value"));
+  assert.equal((await request(mcpUrl,{operation:"save",scope:"project",name:"manager",definition:{enabled:false}})).status,200);
+  managed=(await request(mcpUrl)).data;assert.equal(managed.servers.find((s:any)=>s.name==="manager").enabled,false);assert.equal(managed.servers.find((s:any)=>s.name==="manager").overridden,true);
+  assert.equal((await request(mcpUrl+"?scope=global")).data.servers.find((s:any)=>s.name==="manager").enabled,true);
+  await request(mcpUrl,{operation:"toggle",scope:"global",name:"manager",enabled:false});await request(mcpUrl,{operation:"toggle",scope:"project",name:"manager",enabled:true});assert.equal((await request(mcpUrl)).data.servers.find((s:any)=>s.name==="manager").enabled,true);
+  await request(mcpUrl,{operation:"delete",scope:"project",name:"manager"});assert.equal((await request(mcpUrl)).data.servers.find((s:any)=>s.name==="manager").enabled,false);
+  definition=(await request(mcpUrl+"?scope=global&name=manager")).data;const beforeDebug=await readFile(mcpFile,"utf8");
+  const debugged=await request(mcpUrl,{operation:"debug",scope:"global",name:"manager",original:"manager",revision:definition.revision,definition:{...definition.definition,description:"Unsaved debug content"}});assert.equal(debugged.status,200);assert.equal(debugged.data.state,"connected");assert.match(debugged.data.instructions,/manager fixture/);assert.deepEqual(debugged.data.tools.map((t:any)=>t.name),["echo","second"]);assert.ok(debugged.data.tools[0].inputSchema.properties.message);assert.equal(await readFile(mcpFile,"utf8"),beforeDebug);await assert.rejects(access(mcpCalled));
+  const waitFor=async(predicate:()=>Promise<boolean>)=>{for(let i=0;i<100;i++){if(await predicate())return;await new Promise(r=>setTimeout(r,30));}throw new Error("MCP fixture cleanup timed out");};const gone=(pid:number)=>{try{process.kill(pid,0);return false;}catch{return true;}};let probePid=Number(await readFile(mcpProcess,"utf8"));await waitFor(async()=>gone(probePid));
+  const failed=await request(mcpUrl,{operation:"debug",scope:"global",name:"manager",original:"manager",definition:{...definition.definition,args:[mcpScript,"fail"]}});assert.ok(failed.data.error);assert.ok(!JSON.stringify(failed.data).includes("mcp-manager-secret-value"));
+  const mcpHttp=createServer(async(req,res)=>{if(req.method!=="POST"){res.writeHead(405).end();return;}if(req.headers.authorization!=="Bearer mcp-http-secret"){res.writeHead(401).end();return;}const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const message=JSON.parse(Buffer.concat(chunks).toString());if(message.id===undefined){res.writeHead(202).end();return;}const result=message.method==="initialize"?{protocolVersion:message.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:"HTTP fixture",version:"1"},instructions:"Streamable HTTP fixture instructions"}:{tools:[{name:"http_echo",description:"HTTP echo",inputSchema:{type:"object",properties:{}}}]};res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({jsonrpc:"2.0",id:message.id,result}));});mcpHttp.listen(0,"127.0.0.1");await once(mcpHttp,"listening");t.after(()=>{mcpHttp.close();mcpHttp.closeAllConnections();});
+  await request(mcpUrl,{operation:"save",scope:"global",name:"http-manager",definition:{url:`http://127.0.0.1:${(mcpHttp.address() as {port:number}).port}/mcp`,headers:{Authorization:"Bearer mcp-http-secret"},enabled:false}});const httpDefinition=(await request(mcpUrl+"?scope=global&name=http-manager")).data;assert.equal(httpDefinition.definition.headers.Authorization,"[已保存]");const httpDebug=await request(mcpUrl,{operation:"debug",scope:"global",name:"http-manager",original:"http-manager",definition:httpDefinition.definition});assert.equal(httpDebug.data.state,"connected");assert.equal(httpDebug.data.tools[0].name,"http_echo");assert.match(httpDebug.data.instructions,/HTTP fixture/);assert.ok(!JSON.stringify(httpDebug).includes("mcp-http-secret"));
+  probePid=Number(await readFile(mcpProcess,"utf8"));const cancelDebug=new AbortController();const cancelled=fetch(origin+"/api"+mcpUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation:"debug",scope:"global",name:"manager",original:"manager",definition:{...definition.definition,args:[mcpScript,"hang"]}}),signal:cancelDebug.signal});await waitFor(async()=>Number(await readFile(mcpProcess,"utf8"))!==probePid);const hangingPid=Number(await readFile(mcpProcess,"utf8"));cancelDebug.abort();await assert.rejects(cancelled);await waitFor(async()=>gone(hangingPid));
+  const beforeInvalid=await readFile(mcpFile,"utf8");assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"broken",definition:{command:123}})).status,400);assert.equal(await readFile(mcpFile,"utf8"),beforeInvalid);assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"sse",definition:{type:"sse",url:"http://127.0.0.1/mcp"}})).status,400);
+  assert.equal((await request(mcpUrl,{operation:"save",scope:"project",name:"override",definition:{enabled:false}})).status,400);
+  assert.equal((await request(mcpUrl,{operation:"save",scope:"project",name:"auth",definition:{url:"http://127.0.0.1/mcp",auth:{provider:"mock"}}})).status,400);
+  await request(mcpUrl,{operation:"save",scope:"global",name:"another",definition:{command:"not-started"}});assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"manager",original:"manager",revision:definition.revision,definition:definition.definition})).status,400);
+  const toggles=await Promise.all(["manager","another"].map(name=>request(mcpUrl,{operation:"toggle",scope:"global",name,enabled:false})));assert.ok(toggles.every(r=>r.status===200));assert.ok((await request(mcpUrl+"?scope=global")).data.servers.every((s:any)=>!s.enabled));
+  await writeFile(mcpFile,"\uFEFF"+await readFile(mcpFile,"utf8"));assert.ok((await request(mcpUrl)).data.servers.some((s:any)=>s.name==="manager"));
+  definition=(await request(mcpUrl+"?scope=global&name=manager")).data;assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"renamed",original:"manager",revision:definition.revision,definition:definition.definition})).status,200);assert.equal(JSON.parse(await readFile(mcpFile,"utf8")).mcpServers.renamed.env.TOKEN,"mcp-manager-secret-value");
+  await request(mcpUrl,{operation:"save",scope:"global",name:"constructor",definition:{command:"not-started",enabled:false}});assert.ok((await request(mcpUrl+"?scope=global")).data.servers.some((s:any)=>s.name==="constructor"));
+  await request(mcpUrl,{operation:"delete",scope:"global",name:"renamed"});assert.ok(!(await request(mcpUrl)).data.servers.some((s:any)=>s.name==="renamed"));
+  }
+  const localPackage=join(temp,"local-package"); await mkdir(localPackage); await writeFile(join(localPackage,"package.json"),JSON.stringify({name:"pi-desk-test-resource",version:"1.0.0",pi:{extensions:["extension.ts"],skills:["skills"]}})); await writeFile(join(localPackage,"extension.ts"),"export default function () {}\n");
+  await mkdir(join(localPackage,"skills","pi-desk-package"),{recursive:true});await writeFile(join(localPackage,"skills","pi-desk-package","SKILL.md"),"---\nname: pi-desk-package\ndescription: Installed package skill\n---\nPackage body\n");
+  assert.equal((await request(resourceUrl,{operation:"package_install",source:localPackage})).status,200);
+  assert.ok((await request(skillsUrl)).data.some((s:any)=>s.name==="pi-desk-package"));
+  assert.equal((await request(resourceUrl)).data.packages.length,1);
+  assert.equal((await request(resourceUrl,{operation:"package_remove",source:localPackage})).status,200); await access(localPackage);
+  assert.equal((await request(resourceUrl,{operation:"delete",path:"prompts/review.md"})).status,200);
+  const abort = new AbortController(); const stream = await fetch(origin + "/api/events", { signal: abort.signal }); const reader = stream.body!.getReader(); assert.match(new TextDecoder().decode((await reader.read()).value), /"type":"state"/);
+  assert.equal((await request(`/sessions/${session.id}/prompt`, { text: "background test" })).status, 202); abort.abort();
+  let snapshot;
+  for (let i = 0; i < 60; i++) { snapshot = (await request(`/sessions/${session.id}`)).data; if (snapshot.record.status === "idle" && snapshot.stats.assistantMessages > 0) break; await new Promise(resolve => setTimeout(resolve, 100)); }
+  assert.equal(snapshot.stats.tokens.output, 3); assert.equal(snapshot.record.status, "idle"); assert.ok(!("cost" in snapshot.stats));
+  const traces=(await request(`/sessions/${session.id}/traces`)).data;
+  assert.ok(traces.some((entry:any)=>entry.type==="assistant"&&entry.data.messageTimestamp===snapshot.messages.at(-1).timestamp));
+  assert.ok(traces.some((entry:any)=>entry.type==="settled"));
+  const sessionEntries=(await readFile(snapshot.record.sessionPath,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+  assert.equal(sessionEntries.filter(entry=>entry.type==="custom"&&entry.customType==="pi-desk-event").length,traces.length);
+  await assert.rejects(access(join(temp,"desk","traces")));
+  await request(`/sessions/${session.id}/queue`,{operation:"replace",pending:[{id:"lost",text:"preserve queued text",behavior:"followUp",images:[{type:"image",id:"lost",name:"lost.png",mimeType:"image/png",cacheKey:"f".repeat(64)}]}]});
+  assert.equal((await request(`/sessions/${session.id}/queue`,{operation:"send",id:"lost"})).status,400);
+  assert.equal((await request(`/sessions/${session.id}/composer`)).data.pending[0].text,"preserve queued text");
+  await request(`/sessions/${session.id}/queue`,{operation:"replace",pending:[{id:"resumed",text:"resumed queue test",behavior:"followUp",images:[]}]});
+  assert.equal((await request(`/sessions/${session.id}/queue`,{operation:"send",id:"resumed"})).status,202);
+  for(let i=0;i<60;i++){const state=(await request(`/sessions/${session.id}`)).data;if(state.record.status==="idle"&&state.stats.assistantMessages===2)break;await new Promise(resolve=>setTimeout(resolve,100));}
+  assert.equal((await request(`/sessions/${session.id}/composer`)).data.pending.length,0);
+  assert.equal((await request(`/sessions/${session.id}`, {thinking:"off"}, "PATCH")).status, 200);
+  assert.equal((await request(`/sessions/${session.id}`, {thinking:"high"}, "PATCH")).status, 400);
+  for(const [action,method] of [["tree","GET"],["navigate","POST"],["compact","POST"],["export","GET"]]) assert.equal((await request(`/sessions/${session.id}/${action}`,method==="POST"?{}:undefined,method)).status,404);
+  const userEntry=(await request(`/sessions/${session.id}`)).data.messages.find((m:any)=>m.role==="user");
+  const historicalFork=(await request(`/sessions/${session.id}/fork`,{entryId:userEntry.entryId})).data;
+  const historicalSnapshot=(await request(`/sessions/${historicalFork.id}`)).data;
+  assert.equal(historicalSnapshot.messages.at(-1).entryId,userEntry.entryId);assert.equal(historicalSnapshot.messages.filter((m:any)=>m.role==="user").length,1);
+  const fork = (await request(`/sessions/${session.id}/fork`, {})).data;
+  const forkSnapshot = (await request(`/sessions/${fork.id}`)).data;
+  assert.equal((await request(`/sessions/${fork.id}`, undefined, "DELETE")).status, 200);
+  await assert.rejects(access(forkSnapshot.record.sessionPath)); await access(snapshot.record.sessionPath);
+  const reopened = await fetch(origin + "/api/events", { signal: AbortSignal.timeout(2000) }); const replay = reopened.body!.getReader(); assert.match(new TextDecoder().decode((await replay.read()).value), /background test/); await replay.cancel();
+  const ws = new WebSocket(origin.replace("http", "ws") + `/api/terminal/${w.id}`, { origin }); await once(ws, "open");
+  const terminalOutput = await new Promise<string>((resolve, reject) => { let value = ""; const timer = setTimeout(() => reject(new Error("PTY timed out: " + value)), 10000); ws.on("message", chunk => { const data = JSON.parse(String(chunk)); if (data.type === "error") { clearTimeout(timer); reject(new Error(data.message)); } if (data.type === "data") { value += data.data; if (value.includes("PI_DESK_PTY_OK")) { clearTimeout(timer); resolve(value); } } }); ws.send(JSON.stringify({ type: "resize", cols: 100, rows: 25 })); ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "Write-Output ('PI_DESK_' + 'PTY_OK')\r" : "printf 'PI_DESK_%s\\n' 'PTY_OK'\r" })); });
+  assert.match(terminalOutput, /PI_DESK_PTY_OK/); ws.send(JSON.stringify({ type: "close" })); ws.close();
+  assert.equal((await request(`/workspaces/${w.id}`,{name:"  Renamed workspace  "},"PATCH")).data.name,"Renamed workspace");
+  assert.equal((await request(`/workspaces/${w.id}`,{name:"   "},"PATCH")).status,400);
+  const duplicate=await request("/workspaces",{path:temp,name:"Other workspace",trusted:false});assert.equal(duplicate.status,200);
+  assert.equal((await request(`/workspaces/${w.id}`,{name:"Other workspace"},"PATCH")).status,400);
+  assert.equal((await request(`/workspaces/${w.id}/disconnect`,{})).status,400);assert.equal((await request(`/workspaces/${w.id}/ssh-info`)).status,400);
+  const scheduled=await request("/schedules",{name:"Preserve paused schedule",prompt:"fixture",workspaceId:w.id,model:"mock/mock",mode:"minimal",frequency:"once",runAt:new Date(Date.now()+86400000).toISOString(),enabled:true});assert.equal(scheduled.status,200,JSON.stringify(scheduled.data));
+  const history=await readFile(snapshot.record.sessionPath);const sessionsBefore=(await request("/state")).data.sessions.map((r:any)=>r.id);
+  assert.equal((await request(`/workspaces/missing`,undefined,"DELETE")).status,400);
+  assert.equal((await request(`/workspaces/${w.id}/remove`,{})).status,200);
+  const removedState=(await request("/state")).data;assert.equal(removedState.workspaces.find((item:any)=>item.id===w.id).hidden,true);assert.deepEqual(removedState.sessions.map((r:any)=>r.id),sessionsBefore);
+  assert.equal(removedState.schedules.find((task:any)=>task.id===scheduled.data.id).enabled,false);
+  assert.equal((await request("/schedules",{...scheduled.data,enabled:true})).status,400);
+  assert.equal((await request(`/sessions/${session.id}/reload`,{})).status,200);assert.deepEqual(await readFile(snapshot.record.sessionPath),history);
+  assert.equal(JSON.parse(await readFile(join(temp,"desk","state.json"),"utf8")).workspaces.find((item:any)=>item.id===w.id).hidden,true);
+  const restored=await request("/workspaces",{path:cwd,trusted:true});assert.equal(restored.data.id,w.id);assert.equal(restored.data.hidden,false);assert.equal(restored.data.name,"Renamed workspace");
+  assert.equal((await request("/state")).data.schedules.find((task:any)=>task.id===scheduled.data.id).enabled,false);
+});
+
+test("development HTTP: native Vite config, transformed React entry and isolated state", {timeout:45000}, async t=>{
+  const temp=await mkdtemp(join(tmpdir(),"pi-desk-dev-")),agent=join(temp,"agent");await mkdir(agent);
+  const child=spawn(process.execPath,[resolve("src/server.ts"),"--dev","--port","0","--no-open"],{cwd:process.cwd(),windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions"),PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
+  t.after(async()=>{if(child.exitCode===null){const exit=once(child,"exit");child.kill();await exit;}});
+  let output="",errors="";child.stderr.on("data",chunk=>{errors+=String(chunk);});
+  const origin=await new Promise<string>((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(Error("development service did not start: "+errors)),30000);
+    child.stdout.on("data",chunk=>{output+=String(chunk);const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);resolve(match[0]);}});
+    child.once("error",error=>{clearTimeout(timer);reject(error);});child.once("exit",code=>{clearTimeout(timer);reject(Error(`development service exited ${code}: ${errors}`));});
+  });
+  const page=await fetch(origin);assert.equal(page.status,200);assert.match(await page.text(),/@vite\/client/);
+  const entry=await fetch(origin+"/src/web/main.tsx");assert.equal(entry.status,200);assert.match(await entry.text(),/createRoot/);
+  const health=await(await fetch(origin+"/api/health")).json();assert.equal(health.runtime,"Node.js");assert.equal(health.agentDir,agent);
+  const state=await(await fetch(origin+"/api/state")).json();assert.deepEqual(state.sessions,[]);assert.deepEqual(state.workspaces,[]);
+  assert.equal((await fetch(origin+"/api/state",{headers:{Origin:"https://untrusted.example"}})).status,403);
+});
+
+test("Windows open-with: installed apps, visible launch, PowerShell cwd and startup errors", {skip:process.platform!=="win32"}, async()=>{
+  const {api}=await import("./api.ts"),{default:cp}=await import("node:child_process"),{syncBuiltinESMExports}=await import("node:module"),{promisify}=await import("node:util"),{EventEmitter}=await import("node:events"),{Readable}=await import("node:stream");
+  const root=await mkdtemp(join(tmpdir(),"pi-desk-open-")),cwd=join(root,"项目 & 'quoted',=100%"),programs=join(root,"Programs"),system=join(root,"Windows");await mkdir(cwd);
+  const paths=[join(system,"explorer.exe"),join(programs,"Cursor/Cursor.exe"),join(programs,"Git/git-bash.exe"),join(programs,"PowerShell/7/pwsh.exe")];
+  for(const path of paths){await mkdir(resolve(path,".."),{recursive:true});await writeFile(path,"");}
+  const keys=["PATH","LOCALAPPDATA","ProgramFiles","ProgramFiles(x86)","SystemRoot","ELECTRON_RUN_AS_NODE","NODE_OPTIONS","VSCODE_IPC_HOOK_CLI"],before=keys.map(key=>[key,process.env[key]] as const),originalSpawn=cp.spawn,originalExec=cp.execFile;let outcome="ok";const launches:any[]=[];
+  try{
+    Object.assign(process.env,{PATH:"",LOCALAPPDATA:join(root,"Local"),ProgramFiles:programs,"ProgramFiles(x86)":join(root,"x86"),SystemRoot:system,ELECTRON_RUN_AS_NODE:"1",NODE_OPTIONS:"--inspect",VSCODE_IPC_HOOK_CLI:"stale"});
+    cp.execFile=Object.assign(()=>{throw Error("not registered");},{[promisify.custom]:async(command:any,args:any,options:any)=>{if(command==="reg.exe")throw Error("not registered");launches.push({command,args,options});if(outcome!=="ok")throw Object.assign(Error("shell launch failed"),{code:outcome==="explorer"?1:23});return {stdout:"",stderr:""};}}) as any;
+    cp.spawn=((command:any,args:any,options:any)=>{launches.push({command,args,options});const child=new EventEmitter() as any;child.unref=()=>{};setImmediate(()=>outcome==="error"?child.emit("error",Error("ENOENT")):child.emit("exit",outcome==="fail"?23:outcome==="explorer"?1:0));return child;}) as any;syncBuiltinESMExports();
+    const runtime={store:{state:{workspaces:[{id:"fixture",path:cwd,trusted:true}]}},remote:{workspaceFor:()=>undefined}} as any;
+    const request=async(path:string,data?:unknown)=>{let value:any;const req=Readable.from(data?[Buffer.from(JSON.stringify(data))]:[]) as any;req.method=data?"POST":"GET";req.headers={"content-type":"application/json"};await api(runtime,req,{writeHead(){},end(raw:string){value=JSON.parse(raw);}} as any,new URL("http://localhost/api"+path));return value;};
+    const apps=await request("/applications");assert.deepEqual(apps.map((app:any)=>app.id),["file-manager","cursor","gitbash","powershell"]);assert.ok(apps.every((app:any)=>!("command" in app)));
+    for(const id of ["cursor","gitbash","powershell"]){assert.equal((await request("/workspaces/fixture/open",{applicationId:id})).opened,true);const last=launches.at(-1);assert.equal(last.options.cwd,cwd);assert.equal(last.options.windowsHide,false);assert.equal(last.options.env.ELECTRON_RUN_AS_NODE,undefined);assert.equal(last.options.env.NODE_OPTIONS,undefined);assert.equal(last.options.env.VSCODE_IPC_HOOK_CLI,undefined);assert.deepEqual(last.args,id==="powershell"?["-NoLogo","-NoExit","-WindowStyle","Normal"]:[id==="gitbash"?"--cd="+cwd:cwd]);}
+    await assert.rejects(request("/workspaces/fixture/open",{applicationId:"vscode"}),/应用未安装/);outcome="fail";await assert.rejects(request("/workspaces/fixture/open",{applicationId:"cursor"}),/退出码 23/);outcome="error";await assert.rejects(request("/workspaces/fixture/open",{applicationId:"powershell"}),/无法启动 PowerShell/);await assert.rejects(request("/workspaces/fixture/open",{applicationId:"file-manager"}),/无法打开文件资源管理器/);
+    outcome="explorer";assert.equal((await request("/workspaces/fixture/open",{applicationId:"file-manager"})).opened,true);const shell=launches.at(-1);assert.equal(shell.command,paths[0]);assert.equal(shell.options.cwd,cwd);assert.equal(shell.options.env.NODE_OPTIONS,undefined);assert.equal(shell.options.windowsHide,false);assert.equal(shell.options.timeout,10000);assert.deepEqual(shell.args,["file:///"+cwd.replaceAll("\\","/").replaceAll(" ","%20").replaceAll(",","%2C").replaceAll("=","%3D").replaceAll("100%","100%25")]);
+    outcome="ok";assert.equal((await request("/open-url",{url:"https://example.com/a?query=中文&x=1"})).opened,true);const browser=launches.at(-1);assert.equal(browser.command,"rundll32.exe");assert.deepEqual(browser.args,["url.dll,FileProtocolHandler","https://example.com/a?query=%E4%B8%AD%E6%96%87&x=1"]);assert.equal(browser.options.windowsHide,false);assert.equal(browser.options.env.ELECTRON_RUN_AS_NODE,undefined);
+    const count=launches.length;await assert.rejects(request("/open-url",{url:"file:///C:/secret"}),/HTTP/);assert.equal(launches.length,count);outcome="error";await assert.rejects(request("/open-url",{url:"https://example.com"}),/默认浏览器/);
+  }finally{cp.spawn=originalSpawn;cp.execFile=originalExec;syncBuiltinESMExports();for(const [key,value] of before)if(value===undefined)delete process.env[key];else process.env[key]=value;}
+});
+
+test("message file links: native paths, Markdown bases, safe protocols and code blocks",async()=>{
+  const {resolveLink,renderMarkdown,markdownText}=await import("../frontend/src/web/lib/links.ts"),base="D:/project 中文";
+  assert.equal(markdownText("---\n## 检查完成\n\n已读取 **文件**，查看 [结果](README.md)。\n\n| 检查项 | 状态 |\n| --- | --- |\n| 文件 | 完成 |"),"检查完成 已读取 文件，查看 结果。 检查项 状态 文件 完成");
+  assert.equal(markdownText("```bash\ngit status --short\n```\n\n第一行\n第二行 ![图片](image.png)"),"git status --short 第一行 第二行 图片");
+  assert.deepEqual(resolveLink("file:///C:/A%20B/report.md#L12",base),{kind:"file",path:"C:/A B/report.md"});
+  assert.deepEqual(resolveLink("..\\outside.txt:12:3",base),{kind:"file",path:"D:/outside.txt"});
+  assert.deepEqual(resolveLink("image.png","/tmp/project/docs"),{kind:"file",path:"/tmp/project/docs/image.png"});
+  assert.match(renderMarkdown("文件 D:\\project\\.hidden\\说明.md",base),/data-file-path="D:\/project\/.hidden\/说明.md"/);
+  assert.doesNotMatch(renderMarkdown("https://example.com/docs/file.md",base),/data-file-path/);
+  for(const bad of ["javascript:alert(1)","data:text/html,hello","https://user:secret@example.com"])assert.equal(resolveLink(bad,base),undefined);
+  const html=renderMarkdown("[报告](C:/A B/中文.txt) 和 [网页](https://example.com) 与 `README.md`\n\n绝对路径 D:\\资料\\说明.txt",base);
+  assert.match(html,/data-file-path="C:\/A B\/中文.txt"/);assert.match(html,/data-file-path="D:\/project 中文\/README.md"/);assert.match(html,/data-file-path="D:\/资料\/说明.txt"/);assert.match(html,/href="https:\/\/example.com\/" target="_blank"/);
+  assert.doesNotMatch(renderMarkdown("```txt\nC:/A/file.txt\n```",base),/data-file-path/);
+  assert.doesNotMatch(renderMarkdown("[文件](javascript:alert(1)) <script>alert(1)</script>",base),/<script>|href="javascript:/);
+  assert.doesNotMatch(renderMarkdown("[`README.md`](https://example.com)",base),/data-file-path/);
+});
+
+test("composer IME guard: composing, late confirmation, key release, blur and cleanup",async()=>{
+  const {observeComposition}=await import("../frontend/src/web/dsh/keyboard-composition.ts");
+  // Node's EventTarget needs an options object to remove capture listeners; match browser semantics.
+  const target=new EventTarget(),remove=target.removeEventListener.bind(target);
+  target.removeEventListener=(type,listener,options)=>remove(type,listener,typeof options==="boolean"?{capture:options}:options);
+  const document=Object.assign(target,{defaultView:new EventTarget()}) as unknown as Document;
+  const observer=observeComposition(document),key=(extra:Partial<KeyboardEvent>={})=>({isComposing:false,keyCode:13,...extra} as KeyboardEvent);
+  assert.equal(observer.guards(key()),false);
+  document.dispatchEvent(new Event("compositionstart"));assert.equal(observer.guards(key()),true);assert.equal(observer.guards(key()),true);
+  document.dispatchEvent(new Event("compositionend"));assert.equal(observer.guards(key()),true);assert.equal(observer.guards(key()),false);
+  document.dispatchEvent(new Event("compositionend"));document.dispatchEvent(new Event("keyup"));assert.equal(observer.guards(key()),false);
+  assert.equal(observer.guards(key({isComposing:true})),true);assert.equal(observer.guards(key({keyCode:229})),true);
+  document.dispatchEvent(new Event("compositionstart"));document.defaultView!.dispatchEvent(new Event("blur"));assert.equal(observer.guards(key()),false);
+  observer.dispose();document.dispatchEvent(new Event("compositionstart"));assert.equal(observer.guards(key()),false);
+});

@@ -8,12 +8,16 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitAny": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "lib": ["ESNext", "DOM"],
+    "types": ["vite/client"],
     "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/web/*"] },
+    "ignoreDeprecations": "6.0",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue", "bindings"]
+  "include": ["src/web/**/*.ts", "src/web/**/*.tsx"]
 }

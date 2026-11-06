@@ -1,0 +1,53 @@
+/* DSH theme sources are MIT licensed; see dsh/LICENSE.txt. */
+@import "./dsh/base.css";
+@import "./dsh/design-platform.css";
+@import "./dsh/gradient-shadow-text.css";
+@import "./dsh/scrollbar.css";
+@import "./dsh/focus.css";
+@import "./dsh/brand-font.css";
+html,body,#app{height:100%;margin:0;min-width:0}html,body{overflow-x:clip}body{font-family:var(--dsw-font-family);font-size:var(--dsh-content-font-size,14px);line-height:1.6;-webkit-font-smoothing:antialiased;color:var(--dsw-alias-label-primary);background:var(--dsw-specific-sidebar-fill);text-autospace:normal}*{box-sizing:border-box}button,input,textarea,select{font:inherit}button,a,input,textarea,select{-webkit-tap-highlight-color:transparent}button{color:inherit}button:not(:disabled){cursor:pointer}button:disabled{cursor:not-allowed}a{color:var(--dsw-alias-state-business-primary);text-decoration:none}button:focus-visible,a:focus-visible,select:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}select{max-width:100%;min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:inherit;padding:4px 8px}pre,code,kbd{font-family:var(--ds-font-family-code)}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}svg{flex-shrink:0;vertical-align:middle}[hidden]{display:none!important}body{--terminal-bg:var(--dsw-alias-bg-base);--font-mono:var(--ds-font-family-code);--border:var(--dsw-alias-border-l3);--radius:12px;--muted-foreground:var(--dsw-alias-label-tertiary)}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Code palettes reused from the original Pi Desk. */
+body[data-code-theme="github-light"] {
+  --preview-bg: #ffffff; --preview-fg: #24292f; --preview-muted: #6e7781; --preview-keyword: #cf222e;
+  --preview-declaration: #8250df; --preview-symbol: #953800; --preview-string: #0a3069; --preview-operator: #0550ae;
+}
+body[data-code-theme="github-dark"] {
+  --preview-bg: #0d1117; --preview-fg: #e6edf3; --preview-muted: #8b949e; --preview-keyword: #ff7b72;
+  --preview-declaration: #d2a8ff; --preview-symbol: #ffa657; --preview-string: #a5d6ff; --preview-operator: #79c0ff;
+}
+body[data-code-theme="vitesse-light"] {
+  --preview-bg: #ffffff; --preview-fg: #393a34; --preview-muted: #a0ada0; --preview-keyword: #ab5959;
+  --preview-declaration: #2f798a; --preview-symbol: #b07d48; --preview-string: #b56959; --preview-operator: #1e754f;
+}
+body[data-code-theme="vitesse-dark"] {
+  --preview-bg: #121212; --preview-fg: #dbd7caee; --preview-muted: #758575dd; --preview-keyword: #cb7676;
+  --preview-declaration: #4d9375; --preview-symbol: #d4976c; --preview-string: #c98a7d; --preview-operator: #80a665;
+}
+body[data-code-theme="minimal-light"] {
+  --preview-bg: #ffffff; --preview-fg: #2f2f2f; --preview-muted: #8a8a8a; --preview-keyword: #d53538;
+  --preview-declaration: #751ed9; --preview-symbol: #bd5800; --preview-string: #008809; --preview-operator: #0071ea;
+}
+body[data-code-theme="minimal-dark"] {
+  --preview-bg: #161616; --preview-fg: #e8e8e8; --preview-muted: #858585; --preview-keyword: #ff6b73;
+  --preview-declaration: #c09aff; --preview-symbol: #ff9960; --preview-string: #76c995; --preview-operator: #70b7ff;
+}
+body[data-code-theme="github-hc-light"] {
+  --preview-bg: #ffffff; --preview-fg: #0e1116; --preview-muted: #57606a; --preview-keyword: #a0111f;
+  --preview-declaration: #6639ba; --preview-symbol: #702c00; --preview-string: #032f62; --preview-operator: #0349b4;
+}
+body[data-code-theme="github-hc-dark"] {
+  --preview-bg: #0a0c10; --preview-fg: #f0f3f6; --preview-muted: #9ea7b3; --preview-keyword: #ff9492;
+  --preview-declaration: #dbb7ff; --preview-symbol: #ffb757; --preview-string: #addcff; --preview-operator: #91cbff;
+}
+body[data-code-theme="catppuccin-latte"] {
+  --preview-bg: #eff1f5; --preview-fg: #4c4f69; --preview-muted: #8c8fa1; --preview-keyword: #d20f39;
+  --preview-declaration: #8839ef; --preview-symbol: #fe640b; --preview-string: #40a02b; --preview-operator: #1e66f5;
+}
+body[data-code-theme="catppuccin-mocha"] {
+  --preview-bg: #1e1e2e; --preview-fg: #cdd6f4; --preview-muted: #7f849c; --preview-keyword: #f38ba8;
+  --preview-declaration: #cba6f7; --preview-symbol: #fab387; --preview-string: #a6e3a1; --preview-operator: #89b4fa;
+}
+
+
+body{--code-add:#1a7f37;--code-remove:#cf222e}body[data-code-theme$="dark"],body[data-code-theme="catppuccin-mocha"]{--code-add:#56d364;--code-remove:#ff7b72}

@@ -80,10 +80,10 @@ export default function (pi: ExtensionAPI) {
 
 	function reconstructState(ctx: ExtensionContext): void {
 		const last = ctx.sessionManager
-			.getEntries()
+			.getBranch()
 			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === ENTRY_TYPE)
 			.pop() as { data?: TodoState } | undefined;
-		todos = [...(last?.data?.todos ?? [])].sort((left, right) => left.id - right.id);
+		todos = (last?.data?.todos ?? []).map(todo => ({ ...todo })).sort((left, right) => left.id - right.id);
 		nextId = last?.data?.nextId ?? 1;
 	}
 

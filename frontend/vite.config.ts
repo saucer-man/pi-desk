@@ -1,26 +1,10 @@
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
-import tailwindcss from "@tailwindcss/vite";
-import wails from "@wailsio/runtime/plugins/vite";
+import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  build: {
-    rolldownOptions: {
-      output: {
-        codeSplitting: {
-          groups: [
-            { name: "milkdown-presets", test: /[\\/]node_modules[\\/]@milkdown[\\/]preset-/ },
-            { name: "milkdown", test: /[\\/]node_modules[\\/]@milkdown[\\/]/ },
-          ],
-        },
-      },
-    },
-  },
-  server: {
-    host: "127.0.0.1",
-    port: Number(process.env.WAILS_VITE_PORT) || 9245,
-    strictPort: true,
-  },
-  plugins: [tailwindcss(), vue(), wails("./bindings")],
+  root: fileURLToPath(new URL(".", import.meta.url)),
+  resolve: { alias: { "@": fileURLToPath(new URL("./src/web", import.meta.url)) } },
+  plugins: [react()],
 });

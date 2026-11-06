@@ -180,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 		const source = tool?.sourceInfo as { path?: string; source?: string } | undefined;
 		if (!source?.path?.includes(TODO_SELF_MARKER) && !source?.source?.includes(TODO_SELF_MARKER)) return 0;
 		const last = ctx.sessionManager
-			.getEntries()
+			.getBranch()
 			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === "pi-desk-todo")
 			.pop() as { data?: { todos?: Array<{ done?: boolean }> } } | undefined;
 		return last?.data?.todos?.filter((todo) => !todo.done).length ?? 0;
@@ -188,10 +188,10 @@ export default function (pi: ExtensionAPI) {
 
 	function reconstructState(ctx: ExtensionContext): void {
 		const last = ctx.sessionManager
-			.getEntries()
+			.getBranch()
 			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === ENTRY_TYPE)
 			.pop() as { data?: GoalState } | undefined;
-		goal = last?.data;
+		goal = last?.data ? { ...last.data } : undefined;
 		if (goal && goal.status === "active") {
 			// An active goal restored from disk was interrupted by the restart;
 			// require an explicit resume so a stale session cannot resume spending.
