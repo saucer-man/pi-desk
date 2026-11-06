@@ -18,6 +18,7 @@
 /build/remote-helper/artifacts/helper-*
 /build/remote-helper/artifacts/manifest.json
 /build/remote-helper/artifacts/*.tmp
+/build/npm/
 
 # Go binaries and test artifacts
 *.exe

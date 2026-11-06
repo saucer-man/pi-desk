@@ -1,7 +1,22 @@
 {
-  "name": "pi-desk",
+  "name": "pi-desk-web",
   "version": "2.0.0-dev.2",
-  "private": true,
+  "description": "A local Web coding workspace powered by Pi SDK",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/saucer-man/pi-desk.git" },
+  "bin": { "pi-desk": "dist/server.js" },
+  "files": [
+    "dist/*.js",
+    "frontend/dist/",
+    "build/remote-helper/artifacts/",
+    "internal/workspaceapp/assets/",
+    "internal/appservice/resources/pi-desk-todo.ts",
+    "internal/appservice/resources/pi-desk-goal.ts",
+    "frontend/src/web/dsh/LICENSE.txt",
+    "frontend/src/web/dsh/Montserrat-OFL.txt",
+    "docs/screenshots/"
+  ],
+  "publishConfig": { "access": "public" },
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -13,6 +28,7 @@
     "dev": "node src/build-helper.ts && node --watch src/server.ts --dev",
     "build": "node src/build-helper.ts && npm run build --workspace frontend && tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "prepack": "npm run build",
     "test": "npm run build && go test ./internal/remotehelper ./internal/remoteprotocol && node --test src/*.test.ts",
     "check": "npm test"
   },

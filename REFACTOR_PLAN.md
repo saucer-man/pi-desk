@@ -1029,3 +1029,16 @@ M6 收尾证据：`.cache/ssh-production-check.json`（隔离服务及远端 fix
 macOS 已具备 CI 中的服务、SDK、PTY 和浏览器集成运行证据，替代此前“尚无 macOS 运行证据”的状态；真实 OAuth、原生 IME 等人工验收仍按原记录保留，不以 CI 代替。此次提供 Actions 构建产物，未创建 GitHub Release 或安装包；文档收尾提交不重复运行 CI，应用代码与上述成功构建相同。
 
 本机证据位于 `bak/cleanup-20261105-165446/checks/`：`github-macos-fix-check.log`、`github-teardown-tests.log`、`github-package-smoke.json`、`github-readme-published.jpg` 和 `github-actions-success.jpg`。
+
+### npm / npx 分发（2026-11-06，首次发布待完成）
+
+- [x] 参考 DSH README 的介绍、开发者预览、npm / 源码运行、反馈与许可结构，保留两张截图。主入口改为 npm；首次发布前明确标注命令尚不可用。
+- [x] `pi-desk` 名称已被其他项目占用，暂采用查询未发布的 `pi-desk-web`，等待用户确认包名。现有服务直接作为唯一 `pi-desk` 可执行入口，支持 `web`、端口、关闭自动打开、帮助及版本号，兼容 `npm start`，不新增 CLI 依赖。
+- [x] npm 文件白名单包含生产前后端、内置扩展、应用图标、四种远端 helper 和许可；不包含源码、备份、用户数据或 node_modules。包约 7.4 MB，安装后无需 Go。`prepack` 复用现有生产构建。
+- [x] 本机 `npm run check` 完成生产构建、类型检查、Go 测试及 11 项 Node 测试；CLI 错误参数不创建用户状态。在源码之外通过实际 npm 包执行 `npx ... web`，验证页面 / 设置、原生会话、read 工具及内置扩展，控制台无错误 / 告警，未调用真实模型。
+- [x] 现有 `verify.yml` 增加 npm 打包、目录外命令验证、tarball 上传及发布任务；仅全部平台通过后，版本标签或手动勾选 `publish_npm` 才发布。标签必须与包版本一致，发布使用 npm OIDC / provenance，不存放长期 token。
+- [ ] GitHub 三平台新增流程验收，完成后补充运行链接。
+- [ ] 首次正式发布：本机尚未登录 npm，需用户确认包名并在终端完成 `npm login`，然后发布已验证的 tarball：`npm publish build/npm/pi-desk-web-2.0.0-dev.2.tgz --access public --tag latest`。未执行未认证的正式发布，未宣称 registry 中的 `npx pi-desk-web@latest web` 已可用。
+- [ ] 首次发布后，在 npm 包设置中添加 Trusted Publisher：GitHub owner `saucer-man`、repository `pi-desk`、workflow `verify.yml`，允许直接 `npm publish`；随后可用版本标签或手动触发发布。确认 registry 安装和启动成功后，移除 README 的待发布提示。
+
+本机证据位于 `bak/cleanup-20261105-165446/checks/`：`npm-publish-check.log`、`npm-pack-manifest.json`、`npm-packed-smoke.json`、`npm-packed-settings.jpg`。本轮不修改 Pi SDK、正式配置或会话格式。

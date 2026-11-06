@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, mkdir, writeFile, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
+import { promisify } from "node:util";
 import { createServer, request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
 
@@ -13,6 +14,16 @@ async function stopChild(child:ReturnType<typeof spawn>){
   const exited=once(child,"exit"),timer=setTimeout(()=>child.kill("SIGKILL"),5000);
   child.kill();try{await exited;}finally{clearTimeout(timer);}
 }
+
+test("CLI: help, version and invalid commands do not create user state",async()=>{
+  const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-cli-"))),desk=join(temp,"desk"),run=promisify(execFile);
+  const options={env:{...process.env,PI_DESK_DIR:desk,PI_CODING_AGENT_DIR:join(temp,"agent")},timeout:30000,windowsHide:true};
+  const pkg=JSON.parse(await readFile("package.json","utf8"));
+  assert.equal((await run(process.execPath,[resolve("dist/server.js"),"--version"],options)).stdout.trim(),pkg.version);
+  assert.match((await run(process.execPath,[resolve("dist/server.js"),"web","--help"],options)).stdout,/Usage: npx .* \[web\]/);
+  for(const args of [["unknown"],["web","--unknown"],["web","--port"],["web","--port=bad"],["web","--port=65536"]])await assert.rejects(run(process.execPath,[resolve("dist/server.js"),...args],options));
+  await assert.rejects(access(desk));
+});
 
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-web-"))); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
