@@ -38,13 +38,22 @@ jobs:
       - name: Build and verify isolated SDK, HTTP and PTY flows
         shell: bash
         run: |
-          if npm run check > ci-check.log 2>&1; then
-            cat ci-check.log
-          else
-            cat ci-check.log
-            node --input-type=module -e 'import { readFileSync } from "node:fs"; const tail = readFileSync("ci-check.log", "utf8").split("\n").slice(-120).join("\n"); console.log("::error title=Build and test output::" + tail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A"));'
-            exit 1
-          fi
+          npm run build
+          go test ./internal/remotehelper ./internal/remoteprotocol
+          node --input-type=module <<'NODE'
+          import { readdirSync } from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          for (const file of readdirSync('src').filter(name => name.endsWith('.test.ts'))) {
+            console.log(`::notice title=Test suite::${file}`);
+            const result = spawnSync(process.execPath, ['--test', `src/${file}`], { encoding: 'utf8', timeout: 240000, maxBuffer: 16 * 1024 * 1024 });
+            const output = (result.stdout || '') + (result.stderr || '') + (result.error ? '\n' + result.error.message : '');
+            console.log(output);
+            if (result.status !== 0) {
+              console.log(`::error title=${file}::` + output.slice(-16000).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+              process.exit(1);
+            }
+          }
+          NODE
       - name: Upload Web production resources
         uses: actions/upload-artifact@v4
         with:

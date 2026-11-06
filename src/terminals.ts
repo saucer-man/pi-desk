@@ -4,6 +4,9 @@ import type {IPty} from "node-pty";
 import type {Runtime} from "./runtime.ts";
 import {workspace} from "./api.ts";
 import {safeError} from "./storage.ts";
+import {createRequire} from "node:module";
+import {dirname,join} from "node:path";
+import {chmod,stat} from "node:fs/promises";
 export function attachTerminals(server:Server,runtime:Runtime,allowed:(req:IncomingMessage)=>boolean){
 const terminals = new Map<string, { pty: IPty; buffer: string; clients: Set<WebSocket> }>();
 const starting = new Map<string, Promise<void>>();
@@ -18,6 +21,11 @@ sockets.on("connection", async (ws, req) => {
       let pending = starting.get(id);
       if (!pending) {
         pending = (async () => {
+          // node-pty 1.1.0 ships macOS spawn-helper without its executable bit (upstream #850).
+          if(process.platform==="darwin"){
+            const root=dirname(createRequire(import.meta.url).resolve("node-pty/package.json"));
+            for(const dir of ["build/Release","build/Debug",`prebuilds/darwin-${process.arch}`])try{const helper=join(root,dir,"spawn-helper"),info=await stat(helper);if(!(info.mode&0o100))await chmod(helper,(info.mode&0o777)|0o100);}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+          }
           const { spawn: spawnPty } = await import("node-pty");
           const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/bash";
           const pty = spawnPty(shell, process.platform === "win32" ? ["-NoLogo"] : [], { name: "xterm-256color", cols: 100, rows: 24, cwd: w.path, env: process.env as Record<string,string> });
