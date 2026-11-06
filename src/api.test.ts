@@ -8,6 +8,12 @@ import { once } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
 
+async function stopChild(child:ReturnType<typeof spawn>){
+  if(child.exitCode!==null||child.signalCode!==null)return;
+  const exited=once(child,"exit"),timer=setTimeout(()=>child.kill("SIGKILL"),5000);
+  child.kill();try{await exited;}finally{clearTimeout(timer);}
+}
+
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-web-"))); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
   await mkdir(cwd); await mkdir(agent); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
@@ -29,7 +35,7 @@ test("production HTTP: local origin boundary, default-enabled workspace, SSE rec
   if(process.platform==="linux") { await mkdir(openerBin); await writeFile(join(openerBin,"xdg-open"),'#!/bin/sh\nprintf "%s\\n" "$@" > "$PI_DESK_OPEN_TEST_ARGS"\npwd > "$PI_DESK_OPEN_TEST_CWD"\n',{mode:0o755}); }
   await mkdir(join(temp,"desk"));await writeFile(join(temp,"desk","state.json"),JSON.stringify({version:1,preferences:{theme:"light"},sessions:[],workspaces:[{id:"ssh-menu",name:"SSH menu fixture",path:"/srv/fixture",trusted:false,remote:{target:"fixture@127.0.0.1",port:2222,historyImported:true}}]}));
   const child = spawn(process.execPath, [resolve("dist/server.js"), "--port", "0", "--no-open"], { cwd: process.cwd(), windowsHide: true, env: { ...process.env, ...(process.platform==="linux"?{PATH:openerBin+":"+process.env.PATH,PI_DESK_OPEN_TEST_ARGS:openerArgs,PI_DESK_OPEN_TEST_CWD:openerCwd}:{}), PI_CODING_AGENT_DIR: agent, PI_DESK_DIR: join(temp, "desk") }, stdio: ["ignore", "pipe", "pipe"] });
-  t.after(() => { child.kill(); mock.close(); mock.closeAllConnections(); });
+  t.after(async () => { mock.close(); mock.closeAllConnections(); await stopChild(child); });
   let output = ""; let errors = ""; child.stderr.on("data", chunk => { errors += chunk.toString(); });
   const origin = await new Promise<string>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("service did not start: " + errors)), 30000); child.stdout.on("data", chunk => { output += chunk.toString(); const match = /http:\/\/127\.0\.0\.1:\d+/.exec(output); if (match) { clearTimeout(timer); resolve(match[0]); } }); child.once("exit", code => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${errors}`)); }); });
   const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await fetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
@@ -271,7 +277,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
 test("development HTTP: native Vite config, transformed React entry and isolated state", {timeout:45000}, async t=>{
   const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-dev-"))),agent=join(temp,"agent");await mkdir(agent);
   const child=spawn(process.execPath,[resolve("src/server.ts"),"--dev","--port","0","--no-open"],{cwd:process.cwd(),windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions"),PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
-  t.after(async()=>{if(child.exitCode===null){const exit=once(child,"exit");child.kill();await exit;}});
+  t.after(()=>stopChild(child));
   let output="",errors="";child.stderr.on("data",chunk=>{errors+=String(chunk);});
   const origin=await new Promise<string>((resolve,reject)=>{
     const timer=setTimeout(()=>reject(Error("development service did not start: "+errors)),30000);
