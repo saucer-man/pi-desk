@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-14]
+        os: [windows-latest, ubuntu-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -36,7 +36,15 @@ jobs:
           node node_modules/playwright-core/cli.js install --with-deps chromium
           node --input-type=module -e 'import { chromium } from "playwright-core"; import { appendFileSync } from "node:fs"; appendFileSync(process.env.GITHUB_ENV, `PI_DESK_BROWSER_EXECUTABLE=${chromium.executablePath()}\n`);'
       - name: Build and verify isolated SDK, HTTP and PTY flows
-        run: npm run check
+        shell: bash
+        run: |
+          if npm run check > ci-check.log 2>&1; then
+            cat ci-check.log
+          else
+            cat ci-check.log
+            node --input-type=module -e 'import { readFileSync } from "node:fs"; const tail = readFileSync("ci-check.log", "utf8").split("\n").slice(-120).join("\n"); console.log("::error title=Build and test output::" + tail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A"));'
+            exit 1
+          fi
       - name: Upload Web production resources
         uses: actions/upload-artifact@v4
         with:
