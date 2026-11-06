@@ -1037,9 +1037,11 @@ macOS 已具备 CI 中的服务、SDK、PTY 和浏览器集成运行证据，替
 - [x] npm 文件白名单包含生产前后端、内置扩展、应用图标、四种远端 helper 和许可；不包含源码、备份、用户数据或 node_modules。包约 7.4 MB，安装后无需 Go。`prepack` 复用现有生产构建。
 - [x] 本机 `npm run check` 完成生产构建、类型检查、Go 测试及 11 项 Node 测试；CLI 错误参数不创建用户状态。在源码之外通过实际 npm 包执行 `npx ... web`，验证页面 / 设置、原生会话、read 工具及内置扩展，控制台无错误 / 告警，未调用真实模型。
 - [x] 现有 `verify.yml` 增加 npm 打包、目录外命令验证、tarball 上传及发布任务；仅全部平台通过后，版本标签或手动勾选 `publish_npm` 才发布。标签必须与包版本一致，发布使用 npm OIDC / provenance，不存放长期 token。
-- [ ] GitHub 三平台新增流程验收，完成后补充运行链接。
+- [x] [Actions #49](https://github.com/saucer-man/pi-desk/actions/runs/42209806180) 在提交 `d59484c` 上完成三平台构建和全部适用测试，均成功；新增终端回归计入当前 12 项 Node 测试，macOS / Linux 跳过仅适用于 Windows 的一项。Ubuntu 同时完成 npm tarball 打包与目录外可执行入口验证，上传 `pi-desk-npm` 产物。普通 push 的发布任务按设计跳过，未触发正式 npm 发布。
 - [x] 首轮新增流程中 Windows / Ubuntu 通过，Ubuntu 已完成 tarball 的目录外执行验证；macOS 暴露终端异步初始化期间丢失首条输入的问题。通过现有 WebSocket 暂停 / 恢复能力统一保护本机与 SSH 终端，不延时重试测试，也不移除 PTY 验证；补充延迟 SSH 挂载的首条输入回归，修复后本机生产构建和既有 11 项测试通过，新增回归单独通过。
 - [ ] 首次正式发布：本机尚未登录 npm，需用户确认包名并在终端完成 `npm login`，然后发布已验证的 tarball：`npm publish build/npm/pi-desk-web-2.0.0-dev.2.tgz --access public --tag latest`。未执行未认证的正式发布，未宣称 registry 中的 `npx pi-desk-web@latest web` 已可用。
 - [ ] 首次发布后，在 npm 包设置中添加 Trusted Publisher：GitHub owner `saucer-man`、repository `pi-desk`、workflow `verify.yml`，允许直接 `npm publish`；随后可用版本标签或手动触发发布。确认 registry 安装和启动成功后，移除 README 的待发布提示。
 
 本机证据位于 `bak/cleanup-20261105-165446/checks/`：`npm-publish-check.log`、`npm-pack-manifest.json`、`npm-packed-smoke.json`、`npm-packed-settings.jpg`。本轮不修改 Pi SDK、正式配置或会话格式。
+
+修复后重新打包并通过 `npx` 启动生产服务，实际页面 / 会话与即时 PTY 输入验证正常，标准模式的 Todo、Goal、子 agent 均可加载，无真实模型请求；验收页面和隔离服务已关闭。补充证据为 `npm-terminal-api.log`、`npm-readme-published.jpg` 和 `npm-actions-success.jpg`。自动审批拒绝删除临时目录 `%TEMP%/pi-desk-npx-a8d1ddcb072842eb9654c0882e17be33`，仅返回 `blocked by policy`；未重试删除，该目录只保留隔离测试状态，不被正式应用引用。
