@@ -70,6 +70,9 @@ export class Store {
     this.state.migratedFrom = oldPath;
   }
   save() {
+    const latest = new Map<string, string>();
+    for (const record of this.state.sessions) { const time = record.updatedAt || record.createdAt || ""; if (time > (latest.get(record.workspaceId) || "")) latest.set(record.workspaceId, time); }
+    this.state.workspaces.sort((a, b) => (latest.get(b.id) || "").localeCompare(latest.get(a.id) || ""));
     // ponytail: one synchronous metadata file; use an indexed store if 10,000 sessions make saves noticeable.
     const temporary = this.path + ".tmp";
     writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { mode: 0o600 });

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Agent, ProxyAgent, fetch as proxyFetch } from "undici";
 import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import {
@@ -18,6 +20,14 @@ import { BrowserHost, browserTool } from "./browser.ts";
 const themeTokens = JSON.parse(readFileSync(join(getPackageDir(), "dist/modes/interactive/theme/dark.json"), "utf8")).colors;
 const plainColors = Object.fromEntries(Object.keys(themeTokens).map(key => [key, ""]));
 const webTheme = new Theme(plainColors as ConstructorParameters<typeof Theme>[0], plainColors as ConstructorParameters<typeof Theme>[1], "truecolor", { name: "web", appearance: "light" });
+
+// Google adapters use global fetch; async context keeps concurrent model routes isolated.
+const proxyContext = new AsyncLocalStorage<Agent | ProxyAgent>();
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const dispatcher = proxyContext.getStore();
+  return dispatcher ? (proxyFetch as unknown as typeof originalFetch)(input, { ...init, dispatcher } as RequestInit) : originalFetch(input, init);
+};
 
 interface Live {
   session: AgentSession; loader: DefaultResourceLoader; metrics: RunMetrics;
@@ -44,6 +54,18 @@ export class Runtime {
   private sessionOwners = new Map<string, string>();
   private stopping = new Set<string>();
   private closing = false;
+  private proxyAgents = new Map<string, Agent | ProxyAgent>();
+  private withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
+    const config=this.store.state.preferences.proxy, key=`${model.provider}/${model.id}`;
+    const proxy=config?.models && Object.hasOwn(config.models,key) ? config.models[key] : config?.global;
+    if(proxy===undefined || proxy==="")return proxyContext.exit(()=>request());
+    const route=proxy??"";
+    let agent=this.proxyAgents.get(route);
+    if(!agent){agent=proxy===null?new Agent():new ProxyAgent({uri:proxy,proxyTunnel:true});this.proxyAgents.set(route,agent);}
+    // Bedrock uses Node HTTP agents instead of fetch. Override both env casings and NO_PROXY.
+    const env={http_proxy:route,https_proxy:route,all_proxy:route,HTTP_PROXY:route,HTTPS_PROXY:route,ALL_PROXY:route,no_proxy:proxy===null?"*":" ",NO_PROXY:proxy===null?"*":" "};
+    return proxyContext.run(agent,()=>request(env));
+  }
   emit(event: ServerEvent) { for (const listener of this.listeners) listener(event); }
   changed(record?: SessionRecord) { this.store.save(); this.emit({ type: "state", data: this.store.state }); if (record) this.emit({ type: "record", sessionId: record.id, data: record }); }
   modelRuntime() { return this.catalog ??= ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }); }
@@ -132,8 +154,8 @@ export class Runtime {
       this.progress(id);
     };
     const stream = modelRuntime.stream.bind(modelRuntime); const streamSimple = modelRuntime.streamSimple.bind(modelRuntime);
-    modelRuntime.stream = (model, context, options) => { countRequest(model); return stream(model, context, options); };
-    modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return streamSimple(model, context, options); };
+    modelRuntime.stream = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>stream(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"} as typeof options:options)); };
+    modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>streamSimple(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"}:options)); };
     const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : undefined;
     const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(record.depth<2?[subagentTool(this,record)]:[]),...(!record.readOnly?[browserTool(this,record)]:[])])];
     const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
@@ -155,6 +177,7 @@ export class Runtime {
   }
   private onEvent(record: SessionRecord, live: Live, event: AgentSessionEvent) {
     const now = performance.now();
+    if (event.type === "message_start" || event.type === "message_end") { record.updatedAt = new Date().toISOString(); this.changed(record); }
     if (event.type === "queue_update") {
       const remaining = { steer: [...event.steering], followUp: [...event.followUp] };
       record.pending = (record.pending || []).filter(p => { if (p.paused) return true; const queue = remaining[p.behavior]; const index = queue.indexOf(p.queuedText || p.text); if (index < 0) return false; queue.splice(index, 1); return true; });
@@ -313,10 +336,10 @@ export class Runtime {
       await live.session.prompt(text, { images, streamingBehavior: behavior });
       const queuedText = (behavior === "steer" ? live.session.getSteeringMessages() : live.session.getFollowUpMessages()).at(-1);
       if (queuedText) (record.pending ??= []).push({ id: randomUUID(), text, images: this.store.cacheImages((images || []).map(i => ({ ...i, id: randomUUID(), name: "队列图片" }))), behavior, queuedText, paused: false });
-      record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1; this.changed(record); return;
+      record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1; record.updatedAt = new Date().toISOString(); this.changed(record); return;
     }
     record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1;
-    record.status = "running"; record.error = undefined; record.draft = ""; record.draftImages = [];
+    record.status = "running"; record.error = undefined; record.draft = ""; record.draftImages = []; record.updatedAt = new Date().toISOString();
     if (record.title === "新会话") { record.title = text.trim().slice(0, 64) || "图片任务"; live.session.setSessionName(record.title); }
     live.runId = randomUUID(); live.started = performance.now(); live.generationMs = 0; live.output = 0;
     live.metrics = { startedAt: new Date().toISOString() };
@@ -398,9 +421,9 @@ export class Runtime {
     if (!path) throw new Error("无法创建会话分支");
     return this.create(parent.workspaceId, parent.mode, { cwd: parent.cwd, title: parent.title + " · 分支", sessionPath: path, model: parent.model });
   }
-  async remove(id: string, descendants: boolean) {
-    const ids = new Set([id]); this.store.record(id);
-    for (const record of this.store.state.sessions) if (record.parentId === id && !descendants) throw new Error("此会话包含子任务，请同时删除子任务");
+  async remove(id: string | string[], descendants: boolean) {
+    const ids = new Set(Array.isArray(id) ? id : [id]); for (const key of ids) this.store.record(key);
+    for (const record of this.store.state.sessions) if (record.parentId && ids.has(record.parentId) && !ids.has(record.id) && !descendants) throw new Error("此会话包含子任务，请同时删除子任务");
     let more = true; while (descendants && more) { more = false; for (const r of this.store.state.sessions) if (r.parentId && ids.has(r.parentId) && !ids.has(r.id)) { ids.add(r.id); more = true; } }
     const records = this.store.state.sessions.filter(r => ids.has(r.id));
     if (records.some(r => r.status === "running" || this.creating.has(r.id))) throw new Error("请先停止任务，等待资源加载结束再删除");
@@ -458,5 +481,5 @@ export class Runtime {
     await live.session.abort();
     try { await live.session.extensionRunner.emit({ type: "session_shutdown", reason }); } finally { live.session.dispose(); }
   }
-  async shutdown() { this.closing = true; this.scheduler.close(); await this.remote.close(); await this.browser.close(); for (const controller of this.authControllers) controller.abort(); for (const pending of this.requests.values()) pending.resolve(undefined); await Promise.allSettled([...this.live.values()].map(l => this.release(l, "quit"))); for (const record of this.store.state.sessions) if (record.status === "running") record.status = "paused"; await this.scheduler.drain(); this.store.save(); }
+  async shutdown() { this.closing = true; this.scheduler.close(); await this.remote.close(); await this.browser.close(); for (const controller of this.authControllers) controller.abort(); for (const pending of this.requests.values()) pending.resolve(undefined); await Promise.allSettled([...this.live.values()].map(l => this.release(l, "quit"))); for (const record of this.store.state.sessions) if (record.status === "running") record.status = "paused"; await this.scheduler.drain(); await Promise.allSettled([...this.proxyAgents.values()].map(agent=>agent.destroy())); this.store.save(); }
 }

@@ -106,6 +106,18 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(id&&action==="stop"&&method==="POST"){const task=runtime.scheduler.find(id);if(task.lastSessionId&&task.lastStatus==="running"){await runtime.stop(task.lastSessionId);}json(res,{ok:true});return;}
   }
   if (path === "/api/state" && method === "GET") { json(res, runtime.store.state); return; }
+  if (path === "/api/proxy" && method === "POST") {
+    const data=await body(req),previous=runtime.store.state.preferences.proxy;
+    if(data.proxy!==null && (typeof data.proxy!=="string" || data.proxy.length>2048 || /[\x00-\x1f\x7f]/.test(data.proxy)))throw new Error("代理地址无效");
+    const proxy=typeof data.proxy==="string"?data.proxy.trim():null;
+    if(proxy)try{const url=new URL(proxy);if(!["http:","https:"].includes(url.protocol)||url.pathname!=="/"||url.search||url.hash)throw 0;}catch{throw new Error("代理地址必须是 HTTP / HTTPS URL，例如 http://127.0.0.1:7890");}
+    const config={...previous,models:{...previous?.models}};
+    if(data.model===undefined){if(proxy===null)throw new Error("全局代理请留空以清除");config.global=proxy;}
+    else {const model=text(data.model,600);if(!model.includes("/")||/[\x00-\x1f\x7f]/.test(model))throw new Error("模型 ID 无效");if(proxy==="")delete config.models[model];else config.models[model]=proxy;}
+    runtime.store.state.preferences.proxy=config;
+    try{runtime.changed();}catch(error){runtime.store.state.preferences.proxy=previous;throw error;}
+    json(res,config);return;
+  }
   if (path === "/api/discover" && method === "POST") { await runtime.discover(); json(res, runtime.store.state); return; }
   if (path === "/api/model-config" && method === "GET") { json(res, modelConfig()); return; }
   if (path === "/api/model-config" && method === "POST") {
@@ -146,7 +158,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(id&&action==="ssh-info"&&method==="GET"){const w=runtime.store.state.workspaces.find(w=>w.id===id);if(!w?.remote)throw new Error("不是 SSH 工作区");const identity=await sshIdentity(w.remote.target,w.remote.port);json(res,identity);return;}
     if(id&&action==="disconnect"&&method==="POST"){const w=runtime.store.state.workspaces.find(w=>w.id===id);if(!w?.remote)throw new Error("不是 SSH 工作区");if(runtime.store.state.sessions.some(r=>r.workspaceId===id&&(r.status==="running"||runtime.creating.has(r.id)))||runtime.store.state.schedules?.some(task=>task.workspaceId===id&&task.lastStatus==="running"))throw new Error("工作区仍有运行中的任务或正在加载资源");await runtime.remote.disconnect(id);json(res,w);return;}
     if (id && !action && method === "PATCH") { const w = runtime.store.state.workspaces.find(w => w.id === id); if (!w) throw new Error("工作区不存在"); const data = await body(req); if (data.name !== undefined) {const name=text(data.name,100).trim();if(!name)throw new Error("工作区名称不能为空");if(runtime.store.state.workspaces.some(item=>item.id!==id&&!item.hidden&&item.name===name))throw new Error("已有同名工作区");w.name=name;} if (data.trusted === true) w.trusted = true; runtime.changed(); json(res, w); return; }
-    if (id && (!action&&method==="DELETE"||action==="remove"&&method==="POST")) { const w=runtime.store.state.workspaces.find(w=>w.id===id);if(!w)throw new Error("工作区不存在");if(runtime.store.state.sessions.some(r => r.workspaceId === id && (r.status === "running"||runtime.creating.has(r.id)))||runtime.store.state.schedules?.some(task=>task.workspaceId===id&&task.lastStatus==="running"))throw new Error("工作区仍有运行中的任务或正在加载资源");await runtime.remote.disconnect(id);w.hidden=true;for(const task of runtime.store.state.schedules||[])if(task.workspaceId===id){task.enabled=false;task.nextRunAt=undefined;}runtime.changed(); json(res, { ok: true }); return; }
+    if (id && (!action&&method==="DELETE"||action==="remove"&&method==="POST")) { const w=runtime.store.state.workspaces.find(w=>w.id===id);if(!w)throw new Error("工作区不存在");if(runtime.store.state.sessions.some(r => r.workspaceId === id && (r.status === "running"||runtime.creating.has(r.id)))||runtime.store.state.schedules?.some(task=>task.workspaceId===id&&task.lastStatus==="running"))throw new Error("工作区仍有运行中的任务或正在加载资源");for(const task of runtime.store.state.schedules||[])if(task.workspaceId===id){task.enabled=false;task.nextRunAt=undefined;}await runtime.remote.disconnect(id);await runtime.remove(runtime.store.state.sessions.filter(r=>r.workspaceId===id).map(r=>r.id),false);w.hidden=true;runtime.changed(); json(res, { ok: true }); return; }
   }
   if (resource === "skills" && id) {
     const w=workspace(runtime,id),cwd=w.remote?await runtime.remote.anchor(w):w.path;

@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { promisify } from "node:util";
 import { createServer, request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
+import { connect } from "node:net";
 
 async function stopChild(child:ReturnType<typeof spawn>){
   if(child.exitCode!==null||child.signalCode!==null)return;
@@ -27,8 +28,11 @@ test("CLI: help, version and invalid commands do not create user state",async()=
 
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-web-"))); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
-  await mkdir(cwd); await mkdir(agent); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
-  const mock = createServer(async (req, res) => { for await (const _ of req) {} res.writeHead(200, { "Content-Type": "text/event-stream" }); await new Promise(resolve => setTimeout(resolve, 250));
+  await mkdir(cwd); await mkdir(agent); await mkdir(join(temp,"older")); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
+  const proxyHits:string[][]=[[],[]],proxyAuth:string[]=[],proxyPorts=new Map<number,number>();
+  const mock = createServer(async (req, res) => { let body="";for await (const chunk of req)body+=chunk; res.writeHead(200, { "Content-Type": "text/event-stream" }); await new Promise(resolve => setTimeout(resolve, body.includes("workspace live order fixture")?1500:250));
+    const route=proxyPorts.get(req.socket.remotePort!);if(route!==undefined)proxyHits[route].push(req.url!);
+    if(req.url?.includes("streamGenerateContent")){res.end(`data: ${JSON.stringify({candidates:[{content:{role:"model",parts:[{text:"Google proxy verified"}]},finishReason:"STOP"}],usageMetadata:{promptTokenCount:10,candidatesTokenCount:3,totalTokenCount:13}})}\n\n`);return;}
     for (const chunk of [{ choices: [{ index: 0, delta: { role: "assistant", content: "HTTP SDK verified" }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, { choices: [], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }]) res.write(`data: ${JSON.stringify({ id: "http", object: "chat.completion.chunk", created: 1, model: "mock", ...chunk })}\n\n`);
     res.end("data: [DONE]\n\n"); });
   mock.listen(0, "127.0.0.1"); await once(mock, "listening"); const modelPort = (mock.address() as { port: number }).port;
@@ -44,13 +48,15 @@ test("production HTTP: local origin boundary, default-enabled workspace, SSE rec
   const skillExtensionMarker=join(temp,"skill-list-must-not-execute-extensions");await mkdir(join(cwd,".pi","extensions"),{recursive:true});await writeFile(join(cwd,".pi","extensions","skill-probe.ts"),`import {writeFileSync} from 'node:fs';export default function(){writeFileSync(${JSON.stringify(skillExtensionMarker)},'executed');}`);
   const openerBin=join(temp,"opener-bin"),openerArgs=join(temp,"opener-args"),openerCwd=join(temp,"opener-cwd");
   if(process.platform==="linux") { await mkdir(openerBin); await writeFile(join(openerBin,"xdg-open"),'#!/bin/sh\nprintf "%s\\n" "$@" > "$PI_DESK_OPEN_TEST_ARGS"\npwd > "$PI_DESK_OPEN_TEST_CWD"\n',{mode:0o755}); }
-  await mkdir(join(temp,"desk"));await writeFile(join(temp,"desk","state.json"),JSON.stringify({version:1,preferences:{theme:"light"},sessions:[],workspaces:[{id:"ssh-menu",name:"SSH menu fixture",path:"/srv/fixture",trusted:false,remote:{target:"fixture@127.0.0.1",port:2222,historyImported:true}}]}));
+  const startupSession=(id:string,workspaceId:string,updatedAt:string)=>({id,workspaceId,title:id,cwd:workspaceId==="older"?join(temp,"older"):cwd,mode:"minimal",status:"idle",depth:0,draft:"",createdAt:"2020-01-01T00:00:00.000Z",updatedAt});
+  await mkdir(join(temp,"desk"));await writeFile(join(temp,"desk","state.json"),JSON.stringify({version:1,preferences:{theme:"light"},sessions:[startupSession("older-history","older","2021-01-01T00:00:00.000Z"),startupSession("newest-history","ssh-menu","2022-01-01T00:00:00.000Z"),startupSession("old-remote-history","ssh-menu","2020-01-01T00:00:00.000Z")],workspaces:[{id:"empty",name:"Empty fixture",path:join(temp,"empty"),trusted:true},{id:"older",name:"Older fixture",path:join(temp,"older"),trusted:true},{id:"ssh-menu",name:"SSH menu fixture",path:"/srv/fixture",trusted:false,remote:{target:"fixture@127.0.0.1",port:2222,historyImported:true}}]}));
   const child = spawn(process.execPath, [resolve("dist/server.js"), "--port", "0", "--no-open"], { cwd: process.cwd(), windowsHide: true, env: { ...process.env, ...(process.platform==="linux"?{PATH:openerBin+":"+process.env.PATH,PI_DESK_OPEN_TEST_ARGS:openerArgs,PI_DESK_OPEN_TEST_CWD:openerCwd}:{}), PI_CODING_AGENT_DIR: agent, PI_DESK_DIR: join(temp, "desk") }, stdio: ["ignore", "pipe", "pipe"] });
   t.after(async () => { mock.close(); mock.closeAllConnections(); await stopChild(child); });
   let output = ""; let errors = ""; child.stderr.on("data", chunk => { errors += chunk.toString(); });
   const origin = await new Promise<string>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("service did not start: " + errors)), 30000); child.stdout.on("data", chunk => { output += chunk.toString(); const match = /http:\/\/127\.0\.0\.1:\d+/.exec(output); if (match) { clearTimeout(timer); resolve(match[0]); } }); child.once("exit", code => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${errors}`)); }); });
   const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await fetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
   assert.equal((await fetch(origin)).status, 200);
+  assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","older","empty"],"startup orders workspaces by their newest session and keeps empty workspaces last");
   const sshInfo=await request("/workspaces/ssh-menu/ssh-info");assert.equal(sshInfo.status,200);assert.equal(sshInfo.data.hostname,"127.0.0.1");assert.equal(sshInfo.data.user,"fixture");assert.equal(sshInfo.data.port,2222);assert.ok(!("identityfile" in sshInfo.data));assert.equal((await request("/state")).data.workspaces[0].remote.connected,false);
 assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await fetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);
@@ -243,6 +249,11 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   let snapshot;
   for (let i = 0; i < 60; i++) { snapshot = (await request(`/sessions/${session.id}`)).data; if (snapshot.record.status === "idle" && snapshot.stats.assistantMessages > 0) break; await new Promise(resolve => setTimeout(resolve, 100)); }
   assert.equal(snapshot.stats.tokens.output, 3); assert.equal(snapshot.record.status, "idle"); assert.ok(!("cost" in snapshot.stats));
+  assert.equal((await request("/state")).data.workspaces[0].id,w.id);
+  await request("/sessions/older-history",{draft:"draft does not change activity order"},"PATCH");assert.equal((await request("/state")).data.workspaces[0].id,w.id);
+  assert.equal((await request("/sessions/older-history/prompt",{text:"workspace live order fixture"})).status,202);
+  let activeOrder;for(let attempt=0;attempt<100;attempt++){activeOrder=(await request("/state")).data;if(activeOrder.sessions.find((r:any)=>r.id==="older-history").status==="running")break;await new Promise(resolve=>setTimeout(resolve,10));}assert.equal(activeOrder.workspaces[0].id,"older");assert.equal(activeOrder.sessions.find((r:any)=>r.id==="older-history").status,"running","workspace moves before the reply completes");
+  for(let attempt=0;attempt<60;attempt++){if((await request("/state")).data.sessions.find((r:any)=>r.id==="older-history").status!=="running")break;await new Promise(resolve=>setTimeout(resolve,50));}
   const traces=(await request(`/sessions/${session.id}/traces`)).data;
   assert.ok(traces.some((entry:any)=>entry.type==="assistant"&&entry.data.messageTimestamp===snapshot.messages.at(-1).timestamp));
   assert.ok(traces.some((entry:any)=>entry.type==="settled"));
@@ -271,21 +282,58 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const ws = new WebSocket(origin.replace("http", "ws") + `/api/terminal/${w.id}`, { origin }); await once(ws, "open");
   const terminalOutput = await new Promise<string>((resolve, reject) => { let value = ""; const timer = setTimeout(() => reject(new Error("PTY timed out: " + value)), 10000); ws.on("message", chunk => { const data = JSON.parse(String(chunk)); if (data.type === "error") { clearTimeout(timer); reject(new Error(data.message)); } if (data.type === "data") { value += data.data; if (value.includes("PI_DESK_PTY_OK")) { clearTimeout(timer); resolve(value); } } }); ws.send(JSON.stringify({ type: "resize", cols: 100, rows: 25 })); ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "Write-Output ('PI_DESK_' + 'PTY_OK')\r" : "printf 'PI_DESK_%s\\n' 'PTY_OK'\r" })); });
   assert.match(terminalOutput, /PI_DESK_PTY_OK/); ws.send(JSON.stringify({ type: "close" })); ws.close();
+  // Real CONNECT tunnels: global fallback, per-model overrides, direct mode and Google global fetch.
+  for(let index=0;index<2;index++){
+    const proxy=createServer();const sockets=new Set<import("node:net").Socket>();
+    proxy.on("connect",(req,socket,head)=>{
+      proxyAuth.push(String(req.headers["proxy-authorization"]||""));
+      const target=connect(modelPort,"127.0.0.1",()=>{proxyPorts.set(target.localPort!,index);socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");if(head.length)target.write(head);socket.pipe(target);target.pipe(socket);});
+      for(const item of [socket,target]){sockets.add(item);item.on("close",()=>sockets.delete(item));item.on("error",()=>{socket.destroy();target.destroy();});}
+    });
+    proxy.listen(0,"127.0.0.1");await once(proxy,"listening");
+    t.after(()=>{for(const socket of sockets)socket.destroy();proxy.close();});
+    proxyHits[index].push(`http://${index===0?"user:password@":""}127.0.0.1:${(proxy.address() as {port:number}).port}`);
+  }
+  const globalProxy=proxyHits[0].shift()!,modelProxy=proxyHits[1].shift()!;
+  for(const proxy of ["socks5://127.0.0.1:1080","http://localhost/path","http://localhost/#fragment",42,"http://localhost\n"]){assert.equal((await request("/proxy",{proxy})).status,400);}
+  assert.equal((await request("/proxy",{proxy:globalProxy})).status,200);
+  const routes=JSON.parse(await readFile(join(agent,"models.json"),"utf8"));
+  routes.providers.mock.models.push({id:"proxy-other",contextWindow:100000,maxTokens:1000});
+  routes.providers["google-fixture"]={api:"google-generative-ai",apiKey:"fixture",baseUrl:`http://127.0.0.1:${modelPort}`,models:[{id:"gemini-fixture",contextWindow:100000,maxTokens:1000}]};
+  await writeFile(join(agent,"models.json"),JSON.stringify(routes));
+  const other=(await request("/sessions",{workspaceId:w.id,mode:"minimal",model:"mock/proxy-other"})).data;
+  const google=(await request("/sessions",{workspaceId:w.id,mode:"minimal",model:"google-fixture/gemini-fixture"})).data;
+  const runProxy=async(id:string)=>{
+    const before=(await request(`/sessions/${id}`)).data.stats.assistantMessages;
+    assert.equal((await request(`/sessions/${id}/prompt`,{text:"proxy route fixture"})).status,202);
+    for(let attempt=0;attempt<100;attempt++){const result=(await request(`/sessions/${id}`)).data;assert.notEqual(result.record.status,"error",JSON.stringify(result));if(result.record.status==="idle"&&result.stats.assistantMessages>before){assert.equal(result.messages.at(-1).role,"assistant");assert.ok(!result.messages.at(-1).errorMessage,JSON.stringify(result.messages.at(-1)));return;}await new Promise(resolve=>setTimeout(resolve,50));}assert.fail("proxy request timed out");
+  };
+  assert.equal((await request("/proxy",{model:"mock/proxy-other",proxy:modelProxy})).status,200);
+  await Promise.all([runProxy(session.id),runProxy(other.id),runProxy(google.id)]);
+  assert.equal(proxyHits[0].length,2);assert.equal(proxyHits[1].length,1);assert.ok(proxyAuth.includes("Basic "+Buffer.from("user:password").toString("base64")));
+  assert.equal((await request("/proxy",{model:"mock/mock",proxy:null})).status,200);
+  await runProxy(session.id);assert.equal(proxyHits[0].length,2);
+  assert.equal((await request("/proxy",{model:"mock/mock",proxy:""})).status,200);
+  await runProxy(session.id);assert.equal(proxyHits[0].length,3);
+  const savedProxy=JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).preferences;
+  assert.equal(savedProxy.proxy.global,globalProxy);assert.equal(savedProxy.proxy.models["mock/proxy-other"],modelProxy);assert.ok(!Object.hasOwn(savedProxy.proxy.models,"mock/mock"));assert.equal(savedProxy.theme,"light");
+  assert.equal((await request("/proxy",{proxy:""})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,3);
   assert.equal((await request(`/workspaces/${w.id}`,{name:"  Renamed workspace  "},"PATCH")).data.name,"Renamed workspace");
   assert.equal((await request(`/workspaces/${w.id}`,{name:"   "},"PATCH")).status,400);
   const duplicate=await request("/workspaces",{path:temp,name:"Other workspace",trusted:false});assert.equal(duplicate.status,200);
   assert.equal((await request(`/workspaces/${w.id}`,{name:"Other workspace"},"PATCH")).status,400);
   assert.equal((await request(`/workspaces/${w.id}/disconnect`,{})).status,400);assert.equal((await request(`/workspaces/${w.id}/ssh-info`)).status,400);
   const scheduled=await request("/schedules",{name:"Preserve paused schedule",prompt:"fixture",workspaceId:w.id,model:"mock/mock",mode:"minimal",frequency:"once",runAt:new Date(Date.now()+86400000).toISOString(),enabled:true});assert.equal(scheduled.status,200,JSON.stringify(scheduled.data));
-  const history=await readFile(snapshot.record.sessionPath);const sessionsBefore=(await request("/state")).data.sessions.map((r:any)=>r.id);
+  const sessionsBefore=(await request("/state")).data.sessions;
   assert.equal((await request(`/workspaces/missing`,undefined,"DELETE")).status,400);
   assert.equal((await request(`/workspaces/${w.id}/remove`,{})).status,200);
-  const removedState=(await request("/state")).data;assert.equal(removedState.workspaces.find((item:any)=>item.id===w.id).hidden,true);assert.deepEqual(removedState.sessions.map((r:any)=>r.id),sessionsBefore);
+  const removedState=(await request("/state")).data;assert.equal(removedState.workspaces.find((item:any)=>item.id===w.id).hidden,true);assert.deepEqual(removedState.sessions.map((r:any)=>r.id),sessionsBefore.filter((r:any)=>r.workspaceId!==w.id).map((r:any)=>r.id));
   assert.equal(removedState.schedules.find((task:any)=>task.id===scheduled.data.id).enabled,false);
   assert.equal((await request("/schedules",{...scheduled.data,enabled:true})).status,400);
-  assert.equal((await request(`/sessions/${session.id}/reload`,{})).status,200);assert.deepEqual(await readFile(snapshot.record.sessionPath),history);
+  assert.equal((await request(`/sessions/${session.id}/reload`,{})).status,400);for(const record of sessionsBefore.filter((r:any)=>r.workspaceId===w.id&&r.sessionPath))await assert.rejects(access(record.sessionPath));await access(join(cwd,"hello.txt"));
   assert.equal(JSON.parse(await readFile(join(temp,"desk","state.json"),"utf8")).workspaces.find((item:any)=>item.id===w.id).hidden,true);
   const restored=await request("/workspaces",{path:cwd,trusted:true});assert.equal(restored.data.id,w.id);assert.equal(restored.data.hidden,false);assert.equal(restored.data.name,"Renamed workspace");
+  assert.equal((await request("/state")).data.sessions.some((r:any)=>r.workspaceId===w.id),false);await request("/discover",{});assert.equal((await request("/state")).data.sessions.some((r:any)=>r.workspaceId===w.id),false);
   assert.equal((await request("/state")).data.schedules.find((task:any)=>task.id===scheduled.data.id).enabled,false);
 });
 

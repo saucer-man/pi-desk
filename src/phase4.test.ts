@@ -38,15 +38,16 @@ test("remote schedules run in the local SDK, keep exact parameters and never rep
   }finally{scheduler.close();await scheduler.drain();}
 });
 
-test("workspace disconnect and removal preserve history and reject running tasks or resource loads",async t=>{
+test("workspace disconnect preserves history; removal deletes workspace sessions and rejects running tasks or resource loads",async t=>{
   const {api,json}=await import("./api.ts");let disconnected=0;
   const workspace={id:"remote",name:"Fixture",path:"/project",trusted:true,remote:{target:"fixture",connected:true}};
   const session={id:"history",workspaceId:"remote",status:"running"};const task={id:"scheduled",workspaceId:"remote",enabled:true,lastStatus:"idle",nextRunAt:"future"};
-  const runtime={store:{state:{workspaces:[workspace],sessions:[session],schedules:[task]}},creating:new Map(),remote:{async disconnect(){disconnected++;workspace.remote.connected=false;}},changed(){}} as unknown as Runtime;
+  const child={id:"child",workspaceId:"remote",parentId:session.id,status:"idle"},archived={id:"archived",workspaceId:"remote",archived:true,status:"idle"},other={id:"other",workspaceId:"other",status:"idle"};let removed:string[]=[];
+  const runtime={store:{state:{workspaces:[workspace],sessions:[session,child,archived,other],schedules:[task]}},creating:new Map(),remote:{async disconnect(){disconnected++;workspace.remote.connected=false;}},async remove(ids:string[],descendants:boolean){assert.equal(descendants,false);removed=ids;this.store.state.sessions=this.store.state.sessions.filter((r:any)=>!ids.includes(r.id));},changed(){}} as unknown as Runtime;
   const server=createServer((req,res)=>{void api(runtime,req,res,new URL(req.url!,"http://127.0.0.1")).catch(error=>json(res,{error:error.message},400));});server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.close();server.closeAllConnections();});
   const request=(action:string)=>fetch(`http://127.0.0.1:${(server.address() as any).port}/api/workspaces/remote/${action}`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
   for(const action of ["disconnect","remove"])assert.equal((await request(action)).status,400);
   session.status="idle";runtime.creating.set(session.id,Promise.resolve(null as any));for(const action of ["disconnect","remove"])assert.equal((await request(action)).status,400);
   runtime.creating.clear();task.lastStatus="running";for(const action of ["disconnect","remove"])assert.equal((await request(action)).status,400);assert.equal(disconnected,0);
-  task.lastStatus="idle";assert.equal((await request("disconnect")).status,200);assert.equal(disconnected,1);assert.equal((await request("remove")).status,200);assert.equal(runtime.store.state.workspaces[0].hidden,true);assert.equal(task.enabled,false);assert.equal(task.nextRunAt,undefined);assert.equal(runtime.store.state.sessions[0],session);
+  task.lastStatus="idle";assert.equal((await request("disconnect")).status,200);assert.equal(disconnected,1);assert.equal(runtime.store.state.sessions[0],session);assert.deepEqual(removed,[]);assert.equal((await request("remove")).status,200);assert.equal(runtime.store.state.workspaces[0].hidden,true);assert.equal(task.enabled,false);assert.equal(task.nextRunAt,undefined);assert.deepEqual(removed,[session.id,child.id,archived.id]);assert.deepEqual(runtime.store.state.sessions,[other]);
 });
