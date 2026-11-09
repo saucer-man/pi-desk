@@ -20,7 +20,7 @@ export interface SessionRecord {
   worktree?: { root: string; branch: string; baseHead: string; baseBranch: string; commit?: string; integrated?: boolean };
 }
 export interface Content { type: string; text?: string; thinking?: string; name?: string; id?: string; arguments?: unknown; data?: string; mimeType?: string }
-export interface ChatMessage { model?: string; provider?: string; entryId?: string; completedAt?: number; contextExcluded?: boolean; details?: { diff?: string }; role: string; content: string | Content[]; timestamp?: number; durationMs?: number; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number } }
+export interface ChatMessage { model?: string; provider?: string; entryId?: string; completedAt?: number; contextExcluded?: boolean; details?: { diff?: string }; role: string; content: string | Content[]; summary?: string; tokensBefore?: number; estimatedTokensAfter?: number; timestamp?: number; durationMs?: number; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number } }
 export interface TraceEntry { id: string; sessionId: string; runId: string; type: string; label: string; at: string; durationMs?: number; data?: unknown }
 export interface RunMetrics { startedAt?: string; endedAt?: string; durationMs?: number; firstTokenMs?: number; tokensPerSecond?: number }
 export interface Stats {

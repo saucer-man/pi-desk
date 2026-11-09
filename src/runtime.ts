@@ -5,7 +5,7 @@ import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, ModelRuntime, Theme, getPackageDir,
-  estimateTokens, convertToLlm,
+  estimateTokens, convertToLlm, sessionEntryToContextMessages, buildSessionProjection,
   type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Store, agentDir, deskDir, sessionRoot, safeError, inside } from "./storage.ts";
@@ -287,16 +287,16 @@ export class Runtime {
       for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) aggregate.tokens[key] += totals.tokens[key];
     }
     this.store.save();
-    // Keep excluded messages visible while the SDK alone controls model context.
+    // Display the full branch, including compacted/excluded history; the SDK controls model context.
     const branch = session.sessionManager.getBranch();
     const excluded = new Set<string>(); const hidden = new Set<string>(); const replacements = new Map<string,ChatMessage["content"]>();
     for(const entry of branch) {
       if(entry.type === "context_edit") { if(entry.replacement === null) excluded.add(entry.targetId); else { excluded.delete(entry.targetId); replacements.set(entry.targetId,entry.replacement.content as ChatMessage["content"]); } }
       if(entry.type === "custom" && entry.customType === "pi-desk-message-delete") { const target=(entry.data as {entryId?:string}|undefined)?.entryId; if(target)hidden.add(target); }
     }
-    const persisted = session.sessionManager.buildSessionProjection().entries.flatMap(({sourceEntry, messages}) => {
-      const values = messages.length ? messages : sourceEntry.type === "message" && excluded.has(sourceEntry.id) ? [{...sourceEntry.message,content:replacements.get(sourceEntry.id)??(sourceEntry.message as ChatMessage).content}] : [];
-      return values.map(message=>({...message, entryId:sourceEntry.id, completedAt:Date.parse(sourceEntry.timestamp), contextExcluded:excluded.has(sourceEntry.id)} as ChatMessage));
+    const persisted = branch.flatMap(sourceEntry => {
+      const estimatedTokensAfter=sourceEntry.type==="compaction"?buildSessionProjection(branch,sourceEntry.id).messages.reduce((sum,m)=>sum+estimateTokens(m),0):undefined;
+      return sessionEntryToContextMessages(sourceEntry).map(message=>({...message, ...(message.role==="compactionSummary"?{estimatedTokensAfter}:{}), ...(replacements.has(sourceEntry.id)?{content:replacements.get(sourceEntry.id)}:{}), entryId:sourceEntry.id, completedAt:Date.parse(sourceEntry.timestamp), contextExcluded:excluded.has(sourceEntry.id)} as ChatMessage));
     });
     const key = (m:ChatMessage) => `${m.role}/${m.timestamp}/${m.toolCallId||""}`;
     const known = new Set(persisted.map(key));
@@ -364,13 +364,12 @@ export class Runtime {
   async mutateMessage(id:string, entryId:string, operation:"edit"|"delete"|"exclude", text?:string) {
     const record=this.store.record(id); const {session}=await this.get(id);
     if(!session.isIdle || record.status==="running") throw new Error("请先停止运行，再修改消息");
-    const projected=session.sessionManager.buildSessionProjection().entries.find(e=>e.sourceEntry.id===entryId);
-    const entry=projected?.sourceEntry;
+    const entry=session.sessionManager.getBranch().find(e=>e.id===entryId);
     if(!entry || entry.type!=="message" || entry.message.role!=="assistant"&&entry.message.role!=="user" || entry.message.role==="assistant"&&entry.message.content.some(p=>p.type==="toolCall")) throw new Error("只能修改当前分支的用户消息或助手正文消息");
     if(operation==="edit") {
-      if(!projected.messages.length) throw new Error("已排除的消息不能编辑");
+      const current=(await this.snapshot(id)).messages.find(m=>m.entryId===entryId);
+      if(!current || current.contextExcluded) throw new Error("已排除的消息不能编辑");
       if(!text?.trim() || text.length>1024*1024) throw new Error("消息内容不能为空或超过 1 MiB");
-      const current=projected.messages[0] as ChatMessage;
       const content=Array.isArray(current.content)?current.content.filter(p=>p.type!=="text"):[];
       session.sessionManager.appendContextEdit(entryId,{content:[...content,{type:"text",text}] as typeof entry.message.content});
     } else {

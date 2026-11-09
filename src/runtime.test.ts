@@ -242,9 +242,28 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   assert.equal((await runtime.get(queued.id)).session.pendingMessageCount, 0);
   const compacting = runtime.create("project","minimal"); const compactLive = await runtime.get(compacting.id);
   for(let i=0;i<20;i++) { compactLive.session.sessionManager.appendMessage({role:"user",content:[{type:"text",text:`historical task ${i} `+"context ".repeat(100)}],timestamp:Date.now()}); compactLive.session.sessionManager.appendMessage({...snapshot.messages.at(-1),content:[{type:"text",text:"historical result "+"result ".repeat(100)}],timestamp:Date.now()} as any); }
+  const historical=compactLive.session.sessionManager.getBranch().find(e=>e.type==="message"&&e.message.role==="user")!;
+  await runtime.mutateMessage(compacting.id,historical.id,"edit","edited before compaction");
   compactLive.session.refreshContext(); await compactLive.session.compact();
   assert.ok(compactLive.session.sessionManager.getEntries().some(e=>e.type==="compaction")); assert.equal(compacting.status,"idle");
   assert.equal((await runtime.snapshot(compacting.id)).stats.contextUsage?.tokens,null);assert.equal((await runtime.snapshot(compacting.id)).stats.contextUsage?.breakdown,undefined);
+  const compactedContext=JSON.stringify(compactLive.session.messages);
+  const compactedSnapshot=await runtime.snapshot(compacting.id);
+  const checkpoint=compactLive.session.sessionManager.getBranch().find(e=>e.type==="compaction")!;
+  const divider=compactedSnapshot.messages.find(m=>m.entryId===checkpoint.id)!;
+  assert.equal(divider.role,"compactionSummary");assert.equal(divider.summary,checkpoint.summary);assert.equal(divider.tokensBefore,checkpoint.tokensBefore);assert.ok(divider.estimatedTokensAfter!>0);
+  assert.equal(compactedSnapshot.messages.filter(m=>m.role==="compactionSummary").length,1,"render one divider per compaction without duplicating model context");
+  assert.equal(compactedSnapshot.messages.filter(m=>m.role==="user").length,20,"compaction preserves the complete conversation display");
+  assert.match(JSON.stringify(compactedSnapshot.messages.find(m=>m.entryId===historical.id)?.content),/edited before compaction/);
+  assert.equal(JSON.stringify(compactLive.session.messages),compactedContext,"displaying history must not expand model context");
+  const compactedFork=await runtime.fork(compacting.id);
+  assert.deepEqual((await runtime.snapshot(compactedFork.id)).messages,compactedSnapshot.messages,"fork retains compacted history and earlier edits");
+  assert.deepEqual((await runtime.reload(compactedFork.id)).messages,compactedSnapshot.messages);
+  assert.match(JSON.stringify((await runtime.mutateMessage(compactedFork.id,historical.id,"edit","edited compacted history")).messages.find(m=>m.entryId===historical.id)?.content),/edited compacted history/);
+  assert.equal((await runtime.mutateMessage(compactedFork.id,historical.id,"exclude")).messages.find(m=>m.entryId===historical.id)?.contextExcluded,true);
+  await assert.rejects(runtime.mutateMessage(compactedFork.id,historical.id,"edit","excluded history"),/已排除/);
+  assert.ok(!(await runtime.mutateMessage(compactedFork.id,historical.id,"delete")).messages.some(m=>m.entryId===historical.id));
+  assert.equal((await runtime.snapshot(compacting.id)).messages.filter(m=>m.role==="user").length,20,"editing the fork leaves the parent history intact");
   const parent = runtime.create("project", "standard"); const standard = await runtime.get(parent.id); await access(marker);
   assert.ok(standard.loader.getExtensions().extensions.every(e => !e.resolvedPath.startsWith(legacyExtensionDir)));
   assert.equal(standard.session.getActiveToolNames().filter(name=>name==="subagent").length, 1);
