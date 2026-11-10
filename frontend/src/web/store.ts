@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import type { State, SessionSnapshot, ServerEvent, ChatMessage, TraceEntry, UiRequest, ModelInfo, ExecutionState } from "../../../src/types";
 
 export async function api<T = unknown>(path: string, data?: unknown, method = data === undefined ? "GET" : "POST", signal?:AbortSignal): Promise<T> {
@@ -25,7 +25,10 @@ interface AppState {
 }
 type Update = Partial<AppState> | ((state: AppState) => Partial<AppState>);
 const listeners = new Set<() => void>();
-const set = (update: Update) => { state = { ...state, ...(typeof update === "function" ? update(state) : update) }; for (const listener of listeners) listener(); };
+let pending: ReturnType<typeof setTimeout> | undefined;
+const notify = () => { clearTimeout(pending); pending = undefined; for (const listener of listeners) listener(); };
+const set = (update: Update, streaming=false) => { state = { ...state, ...(typeof update === "function" ? update(state) : update) }; if(streaming)pending??=setTimeout(notify,32);else notify(); };
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); };
 const get = () => state;
 const notified=new Set<string>();
 let state: AppState = ({
@@ -74,7 +77,7 @@ let state: AppState = ({
         const same = last && last.role === message.role && (message.toolCallId ? last.toolCallId === message.toolCallId : last.timestamp === message.timestamp);
         if (same) messages[messages.length - 1] = message; else messages.push(message);
       }
-      set({ [snapshotKey]: { ...snapshot, messages, execution } });
+      set({ [snapshotKey]: { ...snapshot, messages, execution } }, data.type === "message_update");
     }
     if (event.type === "trace" && event.sessionId) {
       const trace = event.data as TraceEntry; const id = event.sessionId;
@@ -96,11 +99,27 @@ let state: AppState = ({
     if (event.type === "auth") set({ auth: event.data as { url: string; message: string } });
   },
 });
-export const useApp = Object.assign(function useApp() { return useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener); }, get); }, { getState: get, setState: set });
+export const useApp = Object.assign(function useApp<T=AppState>(select:(state:AppState)=>T = state=>state as unknown as T) {
+  const previous=useRef<T>();
+  return useSyncExternalStore(subscribe,()=>{
+    const value=select(get()),before=previous.current;
+    if(Object.is(value,before))return value;
+    if(value&&before&&typeof value==="object"&&typeof before==="object"&&Object.keys(value).length===Object.keys(before).length&&Object.entries(value).every(([key,item])=>Object.is(item,(before as Record<string,unknown>)[key])))return before;
+    previous.current=value;return value;
+  });
+}, { getState: get, setState: set, subscribe });
 export function connect() {
-  const events = new EventSource("/api/events");
-  events.onopen = () => { useApp.setState({ connected: true }); const { state, activeId, loading } = useApp.getState(); if (state?.sessions.some(r => r.id === activeId) && !loading) void useApp.getState().refresh(); };
-  events.onmessage = message => { try { useApp.getState().receive(JSON.parse(message.data)); } catch (error) { useApp.getState().fail(error); } };
-  events.onerror = () => useApp.setState({ connected: false });
-  void useApp.getState().loadModels(); return () => events.close();
+  let events: EventSource | undefined, subscription = "";
+  const open = () => {
+    const { activeId, subagentId } = get();
+    const query = new URLSearchParams([["sessionId", activeId], ["sessionId", subagentId]]).toString();
+    if (events && subscription === query) return;
+    subscription = query; events?.close();
+    const source = events = new EventSource("/api/events?" + query);
+    source.onopen = () => { if (events !== source) return; set({ connected: true }); const { state, activeId, loading } = get(); if (state?.sessions.some(r => r.id === activeId) && !loading) void get().refresh(); };
+    source.onmessage = message => { if (events !== source) return; try { get().receive(JSON.parse(message.data)); } catch (error) { get().fail(error); } };
+    source.onerror = () => { if (events === source) set({ connected: false }); };
+  };
+  listeners.add(open); open();
+  void get().loadModels(); return () => { listeners.delete(open); events?.close(); events = undefined; };
 }

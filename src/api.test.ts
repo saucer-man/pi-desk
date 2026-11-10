@@ -54,6 +54,134 @@ test("SSE: ended, disconnected and slow responses stop events and heartbeats",as
   });
 });
 
+test("SSE: only subscribed conversations send bodies; background status and notifications remain global",async t=>{
+  const {api}=await import("./api.ts");
+  for(const query of ["","?sessionId=active&sessionId=child","?sessionId="])await t.test(query||"legacy all sessions",async t=>{
+    const req=new IncomingMessage(new Socket());req.method="GET";const res=new ServerResponse(req);
+    const runtime={store:{state:{}},requests:new Map(),listeners:new Set<(event:import("./types.ts").ServerEvent)=>void>()} as unknown as import("./runtime.ts").Runtime;
+    t.after(()=>res.emit("close"));const writes=t.mock.method(res,"write");
+    await api(runtime,req,res,new URL("http://127.0.0.1/api/events"+query));
+    const send=[...runtime.listeners][0];
+    for(const id of ["active","child","background"])for(const type of ["event","snapshot","widget","status"]){
+      const before=writes.mock.callCount();let serialized=false;
+      send({type,sessionId:id,data:{toJSON(){serialized=true;return {type:"message_update"};}}});
+      const expected=!query||query.includes("active")&&id!=="background";
+      assert.equal(writes.mock.callCount()-before,expected?1:0);assert.equal(serialized,expected,"discard background bodies before JSON serialization");
+    }
+    for(const type of ["state","record","trace","notice","ui","ui_done"]){
+      const before=writes.mock.callCount();send({type,sessionId:"background",data:{type:"settled"}});
+      assert.equal(writes.mock.callCount(),before+1,`${type} remains available for background tasks`);
+    }
+  });
+});
+
+test("web subscriptions: switching sessions, opening children, reconnecting and cleanup",async()=>{
+  const saved=Object.fromEntries(["localStorage","EventSource"].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+  const sources:any[]=[];
+  Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  Object.defineProperty(globalThis,"EventSource",{configurable:true,value:class {closed=false;url:string;constructor(url:string){this.url=url;sources.push(this);}close(){this.closed=true;}}});
+  const {useApp,connect}=await import("../frontend/src/web/store.ts"),original=useApp.getState();let disconnect=()=>{};
+  try{
+    useApp.setState({activeId:"active",subagentId:"",loadModels:async()=>{}});disconnect=connect();
+    const ids=(source:any)=>new URL(source.url,"http://localhost").searchParams.getAll("sessionId").filter(Boolean);
+    assert.deepEqual(ids(sources[0]),["active"]);
+    useApp.setState({error:"unrelated update"});assert.equal(sources.length,1);
+    useApp.setState({subagentId:"child"});assert.equal(sources[0].closed,true);assert.deepEqual(ids(sources[1]),["active","child"]);
+    useApp.setState({activeId:"next",subagentId:""});assert.equal(sources[1].closed,true);assert.deepEqual(ids(sources[2]),["next"]);
+    sources[2].onopen();assert.equal(useApp.getState().connected,true);
+    sources[0].onerror();sources[0].onmessage({data:JSON.stringify({type:"notice",data:{message:"stale"}})});
+    assert.equal(useApp.getState().connected,true);assert.equal(useApp.getState().error,"unrelated update");
+    sources[2].onerror();assert.equal(useApp.getState().connected,false);sources[2].onopen();assert.equal(useApp.getState().connected,true);
+    sources[2].onmessage({data:JSON.stringify({type:"notice",sessionId:"background",data:{message:"background notice"}})});
+    assert.equal(useApp.getState().error,"background notice");
+    disconnect();assert.equal(sources[2].closed,true);useApp.setState({activeId:"after cleanup"});assert.equal(sources.length,3);
+  }finally{
+    disconnect();useApp.setState(original);
+    for(const key of Object.keys(saved)){if(saved[key])Object.defineProperty(globalThis,key,saved[key]!);else Reflect.deleteProperty(globalThis,key);}
+  }
+});
+
+test("web streaming: coalesce updates, flush final messages and discard pending refreshes on switch",async t=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");
+  Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState();
+  t.mock.timers.enable({apis:["setTimeout"]});let notifications=0;
+  useApp.setState({activeId:"stream",snapshot:{messages:[],execution:{runningTools:[]}} as any});
+  const unsubscribe=useApp.subscribe(()=>notifications++);
+  try{
+    const update=(type:string,text:string)=>useApp.getState().receive({type:"event",sessionId:"stream",data:{type,message:{role:"assistant",timestamp:1,content:text}}});
+    for(let i=0;i<100;i++)update("message_update",String(i));
+    assert.equal(notifications,0);assert.equal(useApp.getState().snapshot!.messages.at(-1)!.content,"99");
+    t.mock.timers.tick(31);assert.equal(notifications,0);t.mock.timers.tick(1);assert.equal(notifications,1);
+    update("message_update","pending");update("message_end","complete");assert.equal(notifications,2);
+    t.mock.timers.tick(32);assert.equal(notifications,2,"message end cancels delayed duplicate notifications");
+    assert.equal(useApp.getState().snapshot!.messages.at(-1)!.content,"complete");assert.equal(useApp.getState().snapshot!.execution!.streaming,undefined);
+    update("message_update","old session");useApp.setState({activeId:"next",snapshot:undefined});assert.equal(notifications,3);
+    t.mock.timers.tick(32);assert.equal(notifications,3);assert.equal(useApp.getState().snapshot,undefined);
+  }finally{unsubscribe();useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
+test("progress snapshots: skip unwatched sessions, retain watched parents and recheck disconnections",async t=>{
+  const {Runtime}=await import("./runtime.ts");t.mock.timers.enable({apis:["setTimeout"]});
+  const records={parent:{},child:{parentId:"parent"},background:{}};
+  const watched=Object.assign(()=>{}, {sessions:new Set(["parent"])}),live=new Map(Object.keys(records).map(id=>[id,{}]));
+  const runtime=Object.assign(Object.create(Runtime.prototype),{live,listeners:new Set([watched]),store:{record:(id:keyof typeof records)=>records[id]},closing:false,snapshot:async(id:string)=>({id}),emit:()=>{}});
+  const snapshots=t.mock.method(runtime,"snapshot");
+  runtime.progress("background");assert.equal((live.get("background") as any).progressTimer,undefined);
+  runtime.progress("child");runtime.progress("child");t.mock.timers.tick(100);await Promise.resolve();
+  assert.deepEqual(snapshots.mock.calls.map(call=>call.arguments[0]),["parent"],"child progress refreshes its watched parent's aggregate once");
+  runtime.progress("parent");runtime.listeners.delete(watched);t.mock.timers.tick(100);await Promise.resolve();assert.equal(snapshots.mock.callCount(),1);
+  runtime.listeners.add(()=>{});runtime.progress("background");t.mock.timers.tick(100);await Promise.resolve();assert.equal(snapshots.mock.callCount(),2,"legacy unfiltered clients retain full progress");
+});
+
+test("production persistence: acknowledged data survives SIGKILL and an interrupted temporary write",{timeout:60000},async t=>{
+  const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-durability-"))),project=join(temp,"project"),agent=join(temp,"agent"),desk=join(temp,"desk");
+  await mkdir(project);await mkdir(agent);
+  let requests=0;
+  const model=createServer(async(req,res)=>{for await(const _ of req){}requests++;res.writeHead(200,{"Content-Type":"text/event-stream"});
+    for(const chunk of [{choices:[{index:0,delta:{role:"assistant",content:"persisted reply"},finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:"stop"}]},{choices:[],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}])res.write(`data: ${JSON.stringify({id:"durable",object:"chat.completion.chunk",created:1,model:"mock",...chunk})}\n\n`);
+    res.end("data: [DONE]\n\n");});
+  model.listen(0,"127.0.0.1");await once(model,"listening");
+  await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as {port:number}).port}/v1`,apiKey:"local-fixture",models:[{id:"mock",contextWindow:100000,maxTokens:1000}]}}}));
+  await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"mock",defaultModel:"mock",retry:{enabled:false},compaction:{enabled:false}}));
+  const {pathToFileURL}=await import("node:url"),crashPreload=join(temp,"crash-write.mjs");
+  await writeFile(crashPreload,`import fs from 'node:fs';import {resolve} from 'node:path';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeFileSync;fs.writeFileSync=function(path,contents,options){if(String(path)===resolve(process.env.PI_DESK_DIR,'state.json.tmp')&&String(contents).includes('interrupted draft fixture')){write(path,String(contents).slice(0,20),options);process.kill(process.pid,'SIGKILL');}return write(path,contents,options);};syncBuiltinESMExports();`);
+  let child:ReturnType<typeof spawn>|undefined,origin="";
+  t.after(async()=>{if(child)await stopChild(child);model.close();model.closeAllConnections();});
+  const start=async(crash=false)=>{
+    child=spawn(process.execPath,[...(crash?["--import",pathToFileURL(crashPreload).href]:[]),resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_DESK_DIR:desk,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions")},stdio:["ignore","pipe","pipe"]});
+    origin=await new Promise<string>((ok,fail)=>{let output="",errors="";const timer=setTimeout(()=>fail(Error(errors||"startup timeout")),20000);child!.stderr!.on("data",chunk=>errors+=chunk);child!.stdout!.on("data",chunk=>{output+=chunk;const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});child!.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
+  };
+  const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{
+    const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});
+    const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;
+  };
+  await start();const workspace=await request("/workspaces",{path:project}),session=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});
+  await request(`/sessions/${session.id}/prompt?wait=1`,{text:"original durable prompt"});
+  const reply=(await request(`/sessions/${session.id}`)).messages.find((message:any)=>message.role==="assistant");
+  await request(`/sessions/${session.id}/message`,{operation:"edit",entryId:reply.entryId,text:"edited durable reply"});
+  const image=Buffer.from("durable attachment fixture").toString("base64");
+  await request(`/sessions/${session.id}`,{title:"Durable title",pinned:true,draft:"durable unsent draft",draftImages:[{id:"image",name:"draft.png",type:"image",mimeType:"image/png",data:image}]},"PATCH");
+  await request(`/sessions/${session.id}/queue`,{operation:"replace",pending:[{id:"held",text:"durable paused queue",behavior:"followUp",images:[]}]});
+  await request("/preferences",{theme:"dark"});
+  const exited=once(child!,"exit");child!.kill("SIGKILL");await exited;
+  const saved=JSON.parse(await readFile(join(desk,"state.json"),"utf8")),record=saved.sessions.find((item:any)=>item.id===session.id);
+  assert.equal(record.draft,"durable unsent draft");assert.equal(record.lastStats.tokens.output,3);
+  await writeFile(join(desk,"state.json.tmp"),'{"interrupted temporary file":');
+  await start();const state=await request("/state"),restored=state.sessions.find((item:any)=>item.id===session.id),composer=await request(`/sessions/${session.id}/composer`),snapshot=await request(`/sessions/${session.id}`);
+  assert.equal(state.preferences.theme,"dark");assert.equal(restored.title,"Durable title");assert.equal(restored.pinned,true);assert.equal(restored.status,"idle");
+  assert.equal(composer.text,"durable unsent draft");assert.equal(composer.images[0].data,image);assert.equal(composer.pending[0].text,"durable paused queue");assert.equal(composer.pending[0].paused,true);
+  assert.equal(snapshot.stats.tokens.output,3);assert.ok(snapshot.messages.some((message:any)=>JSON.stringify(message.content).includes("edited durable reply")));assert.equal(requests,1,"restart does not replay held prompts");
+  await request(`/sessions/${session.id}`,{draft:"saved after crash recovery"},"PATCH");
+  assert.equal(JSON.parse(await readFile(join(desk,"state.json"),"utf8")).sessions.find((item:any)=>item.id===session.id).draft,"saved after crash recovery");
+  const stopped=once(child!,"exit");child!.kill("SIGKILL");await stopped;await start(true);
+  const interrupted=once(child!,"exit");await assert.rejects(request(`/sessions/${session.id}`,{draft:"interrupted draft fixture"},"PATCH"));await interrupted;
+  assert.equal(JSON.parse(await readFile(join(desk,"state.json"),"utf8")).sessions.find((item:any)=>item.id===session.id).draft,"saved after crash recovery","a partial temporary write must not replace acknowledged data");
+  const temporary=await readFile(join(desk,"state.json.tmp"),"utf8");assert.throws(()=>JSON.parse(temporary),SyntaxError);
+  await start();const recovered=await request(`/sessions/${session.id}/composer`);
+  assert.equal(recovered.text,"saved after crash recovery");assert.equal(recovered.images[0].data,image);assert.equal(recovered.pending[0].text,"durable paused queue");
+});
+
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), "pi-desk-web-"))); const cwd = join(temp, "project & space 'quoted'"); const agent = join(temp, "agent");
   await mkdir(cwd); await mkdir(agent); await mkdir(join(temp,"older")); await writeFile(join(cwd, "hello.txt"), "workspace preview"); await writeFile(join(temp, "outside.txt"), "outside-workspace");
@@ -315,6 +443,12 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await request(`/sessions/${session.id}/queue`,{operation:"send",id:"resumed"})).status,202);
   for(let i=0;i<60;i++){const state=(await request(`/sessions/${session.id}`)).data;if(state.record.status==="idle"&&state.stats.assistantMessages===2)break;await new Promise(resolve=>setTimeout(resolve,100));}
   assert.equal((await request(`/sessions/${session.id}/composer`)).data.pending.length,0);
+  const beforeResend=(await request(`/sessions/${session.id}`)).data,lastUser=beforeResend.messages.findLast((m:any)=>m.role==="user"),oldReply=beforeResend.messages.at(-1);
+  assert.equal((await request(`/sessions/${session.id}/message`,{operation:"resend",entryId:beforeResend.messages.find((m:any)=>m.role==="user").entryId,text:"old message"})).status,400);
+  assert.equal((await request(`/sessions/${session.id}/message`,{operation:"resend",entryId:lastUser.entryId,text:"HTTP revised fixture"})).status,200);
+  let resent;for(let i=0;i<100;i++){resent=(await request(`/sessions/${session.id}`)).data;if(resent.record.status==="idle"&&resent.messages.some((m:any)=>JSON.stringify(m.content).includes("HTTP revised fixture"))&&resent.messages.at(-1).role==="assistant")break;await new Promise(resolve=>setTimeout(resolve,50));}
+  assert.equal(resent.record.status,"idle");assert.equal(resent.messages.filter((m:any)=>m.role==="user").length,2);assert.ok(!resent.messages.some((m:any)=>m.entryId===lastUser.entryId||m.entryId===oldReply.entryId));
+  assert.equal((await request(`/sessions/${session.id}/message`,{operation:"resend",entryId:lastUser.entryId,text:"duplicate click"})).status,400);
   assert.equal((await request(`/sessions/${session.id}`, {thinking:"off"}, "PATCH")).status, 200);
   assert.equal((await request(`/sessions/${session.id}`, {thinking:"high"}, "PATCH")).status, 400);
   for(const [action,method] of [["tree","GET"],["navigate","POST"],["compact","POST"],["export","GET"]]) assert.equal((await request(`/sessions/${session.id}/${action}`,method==="POST"?{}:undefined,method)).status,404);

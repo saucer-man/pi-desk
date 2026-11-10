@@ -47,7 +47,7 @@ export class Runtime {
   readonly scheduler = new Scheduler(this);
   readonly live = new Map<string, Live>();
   readonly creating = new Map<string, Promise<Live>>();
-  readonly listeners = new Set<(event: ServerEvent) => void>();
+  readonly listeners = new Set<((event: ServerEvent) => void) & {sessions?: Set<string>}>();
   readonly requests = new Map<string, { request: UiRequest; resolve: (value: unknown) => void }>();
   readonly authControllers = new Set<AbortController>();
   private catalog?: Promise<ModelRuntime>;
@@ -181,7 +181,7 @@ export class Runtime {
     if (event.type === "message_start" || event.type === "message_end") { record.updatedAt = new Date().toISOString(); this.changed(record); }
     if (event.type === "queue_update") {
       const remaining = { steer: [...event.steering], followUp: [...event.followUp] };
-      record.pending = (record.pending || []).filter(p => { if (p.paused) return true; const queue = remaining[p.behavior]; const index = queue.indexOf(p.queuedText || p.text); if (index < 0) return false; queue.splice(index, 1); return true; });
+      record.pending = (record.pending || []).filter(p => { if (p.paused || !p.queuedText) return true; const queue = remaining[p.behavior]; const index = queue.indexOf(p.queuedText); if (index < 0) return false; queue.splice(index, 1); return true; });
       this.changed(record);
     }
     if (event.type === "agent_start" && record.status !== "running") { record.status = "running"; live.started = now; live.runId = randomUUID(); live.metrics = { startedAt: new Date().toISOString() }; this.changed(record); }
@@ -234,11 +234,13 @@ export class Runtime {
     });
   }
   private progress(id: string) {
-    const live = this.live.get(id); if (!live || live.progressTimer || !this.listeners.size || this.closing) return;
+    const live = this.live.get(id); if (!live || !this.listeners.size || this.closing) return;
+    const parent = this.store.record(id).parentId; if (parent) this.progress(parent);
+    const watched=()=>[...this.listeners].some(listener=>!listener.sessions||listener.sessions.has(id));
+    if(live.progressTimer||!watched())return;
     live.progressTimer = setTimeout(() => {
-      live.progressTimer = undefined; if (this.live.get(id) !== live || this.closing) return;
+      live.progressTimer = undefined; if (this.live.get(id) !== live || this.closing || !watched()) return;
       void this.snapshot(id).then(data => this.emit({ type: "snapshot", sessionId: id, data })).catch(error => this.emit({ type: "notice", sessionId: id, data: { message: safeError(error) } }));
-      const parent = this.store.record(id).parentId; if (parent) this.progress(parent);
     }, 100);
     live.progressTimer.unref();
   }
@@ -287,7 +289,6 @@ export class Runtime {
       aggregate.modelRequestsEstimated ||= child.modelRequestsEstimated;
       for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) aggregate.tokens[key] += totals.tokens[key];
     }
-    this.store.save();
     // Display the full branch, including compacted/excluded history; the SDK controls model context.
     const branch = session.sessionManager.getBranch();
     const excluded = new Set<string>(); const hidden = new Set<string>(); const replacements = new Map<string,ChatMessage["content"]>();
@@ -327,31 +328,40 @@ export class Runtime {
     const workspace=this.remote.workspaceFor(id);if(workspace)await this.remote.connect(workspace);
     return live;
   }
-  async prompt(id: string, text: string, images?: { type: "image"; data: string; mimeType: string }[], behavior: "steer" | "followUp" = "followUp", signal?: AbortSignal) {
+  async prompt(id: string, text: string, images?: { type: "image"; data: string; mimeType: string }[], behavior: "steer" | "followUp" = "followUp", signal?: AbortSignal, preserveDraft=false) {
     const record = this.store.record(id);
     const live = await this.preparePrompt(id);
     signal?.throwIfAborted();
     if (record.archived) throw new Error("请先恢复归档会话");
     if (!text.trim() && !images?.length) throw new Error("请输入消息或添加图片");
     if (live.session.isStreaming || record.status === "running") {
+      if (behavior === "followUp") {
+        (record.pending ??= []).push({ id: randomUUID(), text, images: this.store.cacheImages((images || []).map(i => ({ ...i, id: randomUUID(), name: "队列图片" }))), behavior, paused: false });
+        record.updatedAt = new Date().toISOString(); this.changed(record); return;
+      }
       await live.session.prompt(text, { images, streamingBehavior: behavior });
       const queuedText = (behavior === "steer" ? live.session.getSteeringMessages() : live.session.getFollowUpMessages()).at(-1);
       if (queuedText) (record.pending ??= []).push({ id: randomUUID(), text, images: this.store.cacheImages((images || []).map(i => ({ ...i, id: randomUUID(), name: "队列图片" }))), behavior, queuedText, paused: false });
       record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1; record.updatedAt = new Date().toISOString(); this.changed(record); return;
     }
     record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1;
-    record.status = "running"; record.error = undefined; record.draft = ""; record.draftImages = []; record.updatedAt = new Date().toISOString();
+    record.status = "running"; record.error = undefined; if(!preserveDraft){record.draft = ""; record.draftImages = [];} record.updatedAt = new Date().toISOString();
     if (record.title === "新会话") { record.title = text.trim().slice(0, 64) || "图片任务"; live.session.setSessionName(record.title); }
     live.runId = randomUUID(); live.started = performance.now(); live.generationMs = 0; live.output = 0;
     live.metrics = { startedAt: new Date().toISOString() };
     this.trace(id, "run_start", "任务开始"); this.changed(record);
     try { await live.session.prompt(text, { images }); await live.session.waitForIdle(); }
     catch (error) { record.status = this.stopping.has(id) ? "paused" : "error"; record.error = safeError(error); this.trace(id, "error", record.error); throw error; }
-    finally { if (record.status === "running") record.status = "idle"; record.updatedAt = new Date().toISOString(); this.changed(record); this.emit({ type: "snapshot", sessionId: id, data: await this.snapshot(id) }); }
+    finally {
+      if (record.status === "running") record.status = "idle";
+      record.updatedAt = new Date().toISOString(); const snapshot = await this.snapshot(id); this.changed(record); this.emit({ type: "snapshot", sessionId: id, data: snapshot });
+      const next = record.pending?.find(p => !p.paused && !p.queuedText);
+      if (next && record.status === "idle" && !this.closing && !this.stopping.has(id)) void this.sendQueued(id, next.id, false).catch(error => this.emit({ type: "notice", sessionId: id, data: { message: safeError(error) } }));
+    }
   }
   async stop(id: string) {
     this.stopping.add(id);
-    try { for (const child of this.store.state.sessions.filter(r => r.parentId === id && r.status === "running")) await this.stop(child.id); await this.live.get(id)?.session.abort(); this.store.record(id).status = "paused"; this.changed(); }
+    try { for (const child of this.store.state.sessions.filter(r => r.parentId === id && r.status === "running")) await this.stop(child.id); await this.live.get(id)?.session.abort(); const record = this.store.record(id); record.status = "paused"; for (const pending of record.pending || []) pending.paused = true; this.changed(record); }
     finally { this.stopping.delete(id); }
   }
   async change(id: string, options: { model?: string; thinking?: string; mode?: Mode }) {
@@ -362,23 +372,40 @@ export class Runtime {
     if (options.mode && options.mode !== record.mode) { try { await this.release(live, "reload"); } finally { this.live.delete(id); } record.mode = options.mode; await this.get(id); }
     this.changed(record); return this.snapshot(id);
   }
-  async mutateMessage(id:string, entryId:string, operation:"edit"|"delete"|"exclude", text?:string) {
+  async mutateMessage(id:string, entryId:string, operation:"edit"|"resend"|"delete"|"exclude", text?:string) {
     const record=this.store.record(id); const {session}=await this.get(id);
     if(!session.isIdle || record.status==="running") throw new Error("请先停止运行，再修改消息");
     const entry=session.sessionManager.getBranch().find(e=>e.id===entryId);
     if(!entry || entry.type!=="message" || entry.message.role!=="assistant"&&entry.message.role!=="user" || entry.message.role==="assistant"&&entry.message.content.some(p=>p.type==="toolCall")) throw new Error("只能修改当前分支的用户消息或助手正文消息");
-    if(operation==="edit") {
-      const current=(await this.snapshot(id)).messages.find(m=>m.entryId===entryId);
+    let images: {type:"image";data:string;mimeType:string}[] | undefined;
+    if(operation==="edit"||operation==="resend") {
+      const before=await this.snapshot(id),current=before.messages.find(m=>m.entryId===entryId);
       if(!current || current.contextExcluded) throw new Error("已排除的消息不能编辑");
       if(!text?.trim() || text.length>1024*1024) throw new Error("消息内容不能为空或超过 1 MiB");
       const content=Array.isArray(current.content)?current.content.filter(p=>p.type!=="text"):[];
-      session.sessionManager.appendContextEdit(entryId,{content:[...content,{type:"text",text}] as typeof entry.message.content});
+      if(operation==="resend") {
+        if(entry.message.role!=="user"||before.messages.findLast(m=>m.role==="user")?.entryId!==entryId)throw new Error("只能编辑并重发最后一条用户消息");
+        if(record.archived)throw new Error("请先恢复归档会话");
+        const manager=session.sessionManager,leaf=manager.getLeafId();
+        await this.preparePrompt(id);
+        if(!session.isIdle||this.store.record(id).status==="running"||manager.getLeafId()!==leaf)throw new Error("会话已更新，请刷新后重试");
+        const edits=manager.getBranch().filter(e=>e.type==="context_edit"||e.type==="custom"&&e.customType==="pi-desk-message-delete");
+        if(entry.parentId)manager.branch(entry.parentId);else manager.resetLeaf();
+        const retained=new Set(manager.getBranch().map(e=>e.id));
+        for(const edit of edits)if(!retained.has(edit.id)) {
+          if(edit.type==="context_edit"&&retained.has(edit.targetId))manager.appendContextEdit(edit.targetId,edit.replacement);
+          else if(edit.type==="custom"&&retained.has((edit.data as {entryId:string}).entryId))manager.appendCustomEntry(edit.customType,edit.data);
+        }
+        images=content.filter(p=>p.type==="image") as typeof images;
+      } else session.sessionManager.appendContextEdit(entryId,{content:[...content,{type:"text",text}] as typeof entry.message.content});
     } else {
       session.sessionManager.appendContextEdit(entryId,null);
       if(operation==="delete") session.sessionManager.appendCustomEntry("pi-desk-message-delete",{entryId});
     }
-    session.refreshContext(); this.changed(record);
-    const snapshot=await this.snapshot(id); this.emit({type:"snapshot",sessionId:id,data:snapshot}); return snapshot;
+    session.refreshContext();
+    const snapshot=await this.snapshot(id); this.changed(record); this.emit({type:"snapshot",sessionId:id,data:snapshot});
+    if(operation==="resend")void this.prompt(id,text!,images,"followUp",undefined,true).catch(error=>this.emit({type:"notice",sessionId:id,data:{type:"error",message:safeError(error)}}));
+    return snapshot;
   }
   async changeSkill(cwd: string, data: {operation?: unknown;path?: unknown;enabled?: unknown}) {
     const skills=await skillCatalog(cwd);const skill=Array.isArray(skills)&&skills.find(s=>s.path===data.path);
@@ -440,6 +467,33 @@ export class Runtime {
       const index = seen.indexOf(value); if (index >= 0) seen.splice(index, 1); else pending.push({ id: randomUUID(), text: value, images: [], behavior, paused: true, queuedText: value });
     }
     record.pending = pending; session.clearQueue(); await this.stop(id); this.changed(record); return pending.map(p => ({ ...p, images: this.store.images(p.images) }));
+  }
+  editQueued(id: string, promptId: string, draft: string, images: DraftImage[]) {
+    const record = this.store.record(id), pending = record.pending?.find(p => p.id === promptId);
+    if (!pending || !pending.paused && pending.queuedText) throw new Error("待发送内容已开始处理，请刷新后重试");
+    const value = [pending.text, draft].filter(Boolean).join("\n\n");
+    if (value.length > 1024 * 1024) throw new Error("合并后的草稿不能超过 1 MiB");
+    const attachments = this.store.cacheImages([...pending.images, ...images]);
+    record.draft = value; record.draftImages = attachments;
+    record.pending = record.pending!.filter(p => p.id !== promptId); this.changed(record);
+    return { text: record.draft, images: this.store.images(attachments) };
+  }
+  async sendQueued(id: string, promptId: string, immediate = true) {
+    const live = await this.preparePrompt(id), record = this.store.record(id);
+    if (!immediate && (this.closing || this.stopping.has(id) || record.status !== "idle" || !live.session.isIdle)) return;
+    const pending = record.pending?.find(p => p.id === promptId);
+    if (!immediate && (!pending || pending.paused)) return;
+    if (!pending || !pending.paused && pending.queuedText) throw new Error("待发送内容已开始处理，请刷新后重试");
+    if (record.archived) throw new Error("请先恢复归档会话");
+    const images = this.store.images(pending.images);
+    if (images.some(i => i.missing)) throw new Error("队列图片已丢失，请重新编辑并移除缺失附件");
+    const attachments = images as { type: "image"; data: string; mimeType: string }[];
+    record.pending = record.pending!.filter(p => p.id !== promptId); this.changed(record);
+    const restore = (error: unknown) => { (record.pending ??= []).unshift({ ...pending, paused: true }); this.changed(record); this.emit({ type: "notice", sessionId: id, data: { message: safeError(error) } }); };
+    if (live.session.isStreaming || record.status === "running") {
+      try { await live.session.steer(pending.text, attachments); record.userTurns = (record.userTurns ?? live.session.getSessionStats().userMessages) + 1; this.changed(record); }
+      catch (error) { restore(error); throw error; }
+    } else void this.prompt(id, pending.text, attachments, "followUp", undefined, true).catch(restore);
   }
   updateQueue(id: string, pending: PendingPrompt[]) {
     const record = this.store.record(id);

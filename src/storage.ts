@@ -14,10 +14,11 @@ export async function directory(path: string) { const canonical = await realpath
 
 export class Store {
   state: State;
+  private saved = "";
   readonly path = join(deskDir, "state.json");
   constructor(legacyStatePath?: string) {
     mkdirSync(deskDir, { recursive: true, mode: 0o700 });
-    this.state = existsSync(this.path) ? JSON.parse(readFileSync(this.path, "utf8")) : { version: 1, workspaces: [], sessions: [], preferences: { theme: "light" } };
+    this.state = existsSync(this.path) ? JSON.parse(this.saved = readFileSync(this.path, "utf8")) : { version: 1, workspaces: [], sessions: [], preferences: { theme: "light" } };
     if (this.state.version !== 1 || !Array.isArray(this.state.sessions) || !Array.isArray(this.state.workspaces)) throw new Error("不支持的 Pi Desk 状态文件，原文件已保留");
     if (!existsSync(this.path) && (legacyStatePath || !process.env.PI_DESK_DIR)) this.migrate(legacyStatePath);
     const preserved = join(deskDir, "legacy-state.json");
@@ -74,8 +75,10 @@ export class Store {
     for (const record of this.state.sessions) { const time = record.updatedAt || record.createdAt || ""; if (time > (latest.get(record.workspaceId) || "")) latest.set(record.workspaceId, time); }
     this.state.workspaces.sort((a, b) => (latest.get(b.id) || "").localeCompare(latest.get(a.id) || ""));
     // ponytail: one synchronous metadata file; use an indexed store if 10,000 sessions make saves noticeable.
+    const contents = JSON.stringify(this.state, null, 2) + "\n";
+    if (contents === this.saved) return;
     const temporary = this.path + ".tmp";
-    writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { mode: 0o600 });
+    writeFileSync(temporary, contents, { mode: 0o600 });
     // Windows readers and scanners can briefly deny replacement; keep the previous file intact.
     for (let attempt = 0; ; attempt++) {
       try { renameSync(temporary, this.path); break; }
@@ -84,6 +87,7 @@ export class Store {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
     }
+    this.saved = contents;
   }
   cacheImages(images: DraftImage[]): DraftImage[] {
     if (!Array.isArray(images) || images.length > 20) throw new Error("每条消息最多保存 20 张图片");

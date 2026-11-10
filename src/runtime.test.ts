@@ -77,11 +77,26 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const migrated = new Store(legacyPath); assert.equal(migrated.state.workspaces[0].path, cwd); assert.equal(migrated.state.sessions[0].draft, "**old Markdown draft**"); assert.equal(migrated.state.sessions[0].status, "paused"); assert.equal(migrated.state.preferences.theme, "dark");
   assert.equal(await readFile(legacyPath, "utf8"), legacy); assert.equal(await readFile(join(process.env.PI_DESK_DIR, "composer-images", "draft.png"), "utf8"), "preserved image");
   assert.equal(migrated.images(migrated.state.sessions[0].draftImages)[0].data, imageBytes.toString("base64"));
+  {
+    const fs=await import("node:fs"),{syncBuiltinESMExports}=await import("node:module"),write=fs.default.writeFileSync;
+    const writes=t.mock.method(fs.default,"writeFileSync",write);syncBuiltinESMExports();
+    try{
+      for(let i=0;i<20;i++)migrated.save();assert.equal(writes.mock.callCount(),0,"unchanged metadata does not rewrite the file");
+      migrated.state.sessions[0].draft="first durable draft";migrated.save();assert.equal(writes.mock.callCount(),1);
+      migrated.state.sessions[0].draft="retry durable draft";
+      const failure=t.mock.method(fs.default,"renameSync",()=>{throw Object.assign(Error("fixture disk failure"),{code:"EIO"});});syncBuiltinESMExports();
+      try{assert.throws(()=>migrated.save(),/fixture disk failure/);assert.equal(JSON.parse(await readFile(migrated.path,"utf8")).sessions[0].draft,"first durable draft");}
+      finally{failure.mock.restore();syncBuiltinESMExports();}
+      migrated.save();assert.equal(writes.mock.callCount(),3,"failed saves must remain eligible for retry");
+      assert.equal(new Store().state.sessions[0].draft,"retry durable draft","reopening restores the last successful save");
+      migrated.state.sessions[0].draft="**old Markdown draft**";migrated.save();
+    }finally{writes.mock.restore();syncBuiltinESMExports();}
+  }
   if (process.platform === "win32") {
     const fs = await import("node:fs"), { syncBuiltinESMExports } = await import("node:module"); const rename = fs.default.renameSync; let attempts = 0;
     const temporaryLock = t.mock.method(fs.default, "renameSync", (...args: Parameters<typeof rename>) => { if (++attempts === 1) throw Object.assign(new Error("Temporary Windows reader lock"), { code: "EPERM" }); return rename(...args); });
     syncBuiltinESMExports();
-    try { migrated.save(); assert.equal(attempts, 2); assert.equal(JSON.parse(await readFile(migrated.path, "utf8")).sessions[0].draft, "**old Markdown draft**"); }
+    try { migrated.state.preferences.theme="light";migrated.save(); assert.equal(attempts, 2); assert.equal(JSON.parse(await readFile(migrated.path, "utf8")).sessions[0].draft, "**old Markdown draft**"); }
     finally { temporaryLock.mock.restore(); syncBuiltinESMExports(); }
   }
 
@@ -103,6 +118,11 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   await assert.rejects(access(marker));
   await assert.rejects(access(mcpMarker));
   const snapshot = await runtime.snapshot(minimal.id);
+  const savedStats=JSON.parse(await readFile(runtime.store.path,"utf8")).sessions.find((record:any)=>record.id===minimal.id).lastStats;
+  assert.deepEqual(savedStats.tokens,snapshot.stats.tokens,"task completion persists final statistics before returning");
+  const snapshotSaves=t.mock.method(runtime.store,"save");
+  try{for(let i=0;i<20;i++)await runtime.snapshot(minimal.id);assert.equal(snapshotSaves.mock.callCount(),0,"reading warmed-up snapshots never saves metadata");}
+  finally{snapshotSaves.mock.restore();}
   assert.equal(snapshot.resources.skills.length, 0);
   assert.equal(snapshot.execution?.streaming, undefined); assert.deepEqual(snapshot.execution?.runningTools, []);
   assert.equal(snapshot.messages.at(-1)?.role, "assistant"); assert.equal(snapshot.stats.tokens.output, 2); assert.equal(snapshot.stats.userMessages, 1); assert.equal(snapshot.stats.assistantMessages, 1);
@@ -232,6 +252,34 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const userLive=await runtime.get(userFork.id);const userImage="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=";
   const imageEntry=userLive.session.sessionManager.appendMessage({role:"user",content:[{type:"text",text:"image message"},{type:"image",data:userImage,mimeType:"image/png"}],timestamp:Date.now()});userLive.session.refreshContext();
   const imageEdit=await runtime.mutateMessage(userFork.id,imageEntry,"edit","Edited user image fixture");const editedImage=imageEdit.messages.find(m=>m.entryId===imageEntry)!;assert.ok(Array.isArray(editedImage.content));assert.equal(editedImage.content.find(p=>p.type==="image")?.data,userImage);
+  const resendRecord=runtime.create("project","minimal"),resendLive=await runtime.get(resendRecord.id),resendManager=resendLive.session.sessionManager;
+  const resendImage=(await readFile(new URL("../frontend/src/web/pi-desk-logo.png",import.meta.url))).toString("base64");
+  resendManager.resetLeaf();const rootUser=resendManager.appendMessage({role:"user",content:[{type:"text",text:"unsent original"},{type:"image",mimeType:"image/png",data:resendImage}],timestamp:Date.now()});resendLive.session.refreshContext();
+  const resend=async(entryId:string,text:string)=>{
+    await runtime.mutateMessage(resendRecord.id,entryId,"resend",text);
+    for(let i=0;i<200;i++){const messages=resendLive.session.messages;if(resendRecord.status==="idle"&&messages.at(-1)?.role==="assistant"&&messages.some(m=>m.role==="user"&&JSON.stringify(m.content).includes(text)))break;await new Promise(resolve=>setTimeout(resolve,20));}
+    assert.equal(resendRecord.status,"idle",resendRecord.error);return runtime.snapshot(resendRecord.id);
+  };
+  resendRecord.draft="unsent composer draft";resendRecord.draftImages=[{id:"draft",name:"draft.png",type:"image",mimeType:"image/png",cacheKey:"a".repeat(64)}];
+  let resent=await resend(rootUser,"resent root fixture");
+  assert.equal(resendRecord.draft,"unsent composer draft");assert.equal(resendRecord.draftImages?.[0].id,"draft","resend must not clear unrelated composer attachments");
+  assert.equal(resent.messages.filter(m=>m.role==="user").length,1,"resending a root user with no reply must not duplicate it");
+  assert.ok(!resent.messages.some(m=>m.entryId===rootUser));assert.ok(resendManager.getEntry(rootUser),"the original remains in native history");
+  const firstResent=resent.messages.find(m=>m.role==="user")!,firstReply=resent.messages.find(m=>m.role==="assistant")!;
+  assert.ok(Array.isArray(firstResent.content)&&firstResent.content.some(p=>p.type==="image"&&p.data),"resend preserves image attachments through SDK image normalization");
+  await runtime.prompt(resendRecord.id,"second original fixture");resent=await runtime.snapshot(resendRecord.id);
+  const lastUser=resent.messages.findLast(m=>m.role==="user")!,oldReply=resent.messages.at(-1)!;
+  await assert.rejects(runtime.mutateMessage(resendRecord.id,firstResent.entryId!,"resend","older"),/最后一条用户消息/);
+  await assert.rejects(runtime.mutateMessage(resendRecord.id,lastUser.entryId!,"resend"," "),/不能为空/);
+  resendRecord.archived=true;await assert.rejects(runtime.mutateMessage(resendRecord.id,lastUser.entryId!,"resend","archived"),/恢复归档/);resendRecord.archived=false;
+  await runtime.mutateMessage(resendRecord.id,firstResent.entryId!,"edit","earlier edit survives resend");
+  await runtime.mutateMessage(resendRecord.id,firstReply.entryId!,"delete");
+  resent=await resend(lastUser.entryId!,"second revised fixture");
+  assert.equal(resent.messages.filter(m=>m.role==="user").length,2);assert.ok(!resent.messages.some(m=>m.entryId===oldReply.entryId||m.entryId===lastUser.entryId||m.entryId===firstReply.entryId));
+  assert.ok(resendManager.getEntry(oldReply.entryId!));assert.match(seenContexts.at(-1)!,/earlier edit survives resend/);assert.ok(!seenContexts.at(-1)!.includes("second original fixture"));
+  assert.deepEqual((await runtime.reload(resendRecord.id)).messages,resent.messages,"the replacement branch survives reload");
+  const excludedLast=resent.messages.findLast(m=>m.role==="user")!;await runtime.mutateMessage(resendRecord.id,excludedLast.entryId!,"exclude");
+  await assert.rejects(runtime.mutateMessage(resendRecord.id,excludedLast.entryId!,"resend","excluded"),/已排除/);
   const excludedUser=await runtime.mutateMessage(userFork.id,userEntry.entryId!,"exclude");assert.equal(excludedUser.messages.find(m=>m.entryId===userEntry.entryId)?.contextExcluded,true);
   await assert.rejects(runtime.mutateMessage(userFork.id,userEntry.entryId!,"edit","restore implicitly"),/已排除/);await runtime.reload(userFork.id);assert.equal((await runtime.snapshot(userFork.id)).messages.find(m=>m.entryId===userEntry.entryId)?.contextExcluded,true);
   await runtime.prompt(userFork.id,"continue after user exclude");assert.ok(!seenContexts.at(-1)!.includes("Edited user fixture"));
@@ -256,12 +304,36 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   await assert.rejects(runtime.change(queued.id,{mode:"standard"}), /请先停止/);
   assert.equal(queued.mode,"minimal");
   await assert.rejects(runtime.mutateMessage(queued.id,reply.entryId!,"delete"),/请先停止/);
+  await assert.rejects(runtime.mutateMessage(queued.id,reply.entryId!,"resend","running"),/请先停止/);
   await runtime.prompt(queued.id, "queued image task", [{type:"image",mimeType:"image/png",data:Buffer.from("queued image").toString("base64")}]);
   const pausedQueue = await runtime.pauseQueue(queued.id); await slowRun;
   assert.equal(pausedQueue.length, 1); assert.equal(pausedQueue[0].paused, true); assert.ok(pausedQueue[0].images[0].data);
   runtime.updateQueue(queued.id, pausedQueue.map(p=>({...p,text:"edited pending task"})));
   assert.equal(queued.pending?.[0].text, "edited pending task"); assert.throws(()=>runtime.updateQueue(queued.id, null as any), /无效/);
   assert.equal((await runtime.get(queued.id)).session.pendingMessageCount, 0);
+  const inlineQueue = runtime.create("project", "minimal"), inlineRun = runtime.prompt(inlineQueue.id, "slow inline queue");
+  for (let i=0;i<100&&!seenUsers.includes("slow inline queue");i++) await new Promise(resolve=>setTimeout(resolve,10));
+  await runtime.prompt(inlineQueue.id, "edit queued image", [{type:"image",mimeType:"image/png",data:Buffer.from("inline image").toString("base64")}]);
+  await runtime.prompt(inlineQueue.id, "automatic queue A"); await runtime.prompt(inlineQueue.id, "automatic queue B");
+  await runtime.prompt(inlineQueue.id, "immediate queued message");
+  assert.equal((await runtime.get(inlineQueue.id)).session.pendingMessageCount, 0, "follow-ups stay editable outside the SDK queue");
+  const composer = runtime.editQueued(inlineQueue.id, inlineQueue.pending![0].id, "existing draft", []);
+  assert.equal(composer.text, "edit queued image\n\nexisting draft"); assert.ok(composer.images[0].data);
+  assert.equal(inlineQueue.status, "running", "editing a queued message must not stop the run");
+  assert.equal(inlineQueue.pending!.length, 3);
+  const immediateId = inlineQueue.pending!.at(-1)!.id;
+  await runtime.sendQueued(inlineQueue.id, immediateId);
+  await assert.rejects(runtime.sendQueued(inlineQueue.id, immediateId), /已开始处理/);
+  assert.deepEqual(inlineQueue.pending!.map(p=>p.text), ["automatic queue A", "automatic queue B"]);
+  await inlineRun;
+  for (let i=0;i<200&&(inlineQueue.status!=="idle"||inlineQueue.pending!.length||!seenUsers.includes("automatic queue B"));i++) await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(inlineQueue.status, "idle"); assert.equal(inlineQueue.pending!.length, 0);
+  assert.deepEqual(seenUsers.filter(text=>["slow inline queue","immediate queued message","automatic queue A","automatic queue B"].includes(text)), ["slow inline queue","immediate queued message","automatic queue A","automatic queue B"]);
+  assert.ok(!seenUsers.includes("edit queued image")); assert.equal(inlineQueue.draft, composer.text); assert.equal(inlineQueue.draftImages!.length, 1);
+  const stoppedQueue = runtime.create("project", "minimal"), stoppedRun = runtime.prompt(stoppedQueue.id, "slow stopped queue");
+  for (let i=0;i<100&&!seenUsers.includes("slow stopped queue");i++) await new Promise(resolve=>setTimeout(resolve,10));
+  await runtime.prompt(stoppedQueue.id, "must remain paused"); await runtime.stop(stoppedQueue.id); await stoppedRun;
+  assert.equal(stoppedQueue.pending![0].paused, true); assert.ok(!seenUsers.includes("must remain paused"));
   const compacting = runtime.create("project","minimal"); const compactLive = await runtime.get(compacting.id);
   for(let i=0;i<20;i++) { compactLive.session.sessionManager.appendMessage({role:"user",content:[{type:"text",text:`historical task ${i} `+"context ".repeat(100)}],timestamp:Date.now()}); compactLive.session.sessionManager.appendMessage({...snapshot.messages.at(-1),content:[{type:"text",text:"historical result "+"result ".repeat(100)}],timestamp:Date.now()} as any); }
   const historical=compactLive.session.sessionManager.getBranch().find(e=>e.type==="message"&&e.message.role==="user")!;

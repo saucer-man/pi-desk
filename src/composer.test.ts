@@ -1,0 +1,53 @@
+import {test} from "node:test";
+import assert from "node:assert/strict";
+import {existsSync} from "node:fs";
+import {mkdtemp,mkdir,writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join,resolve} from "node:path";
+import {spawn} from "node:child_process";
+import {once} from "node:events";
+import {chromium} from "playwright-core";
+
+test("composer: project file search, atomic references, restored drafts and prompt paths",{timeout:60000},async t=>{
+  const executablePath=[process.env.PI_DESK_BROWSER_EXECUTABLE,"C:/Program Files/Google/Chrome/Application/chrome.exe","C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe","/Applications/Google Chrome.app/Contents/MacOS/Google Chrome","/usr/bin/chromium","/usr/bin/google-chrome"].find(path=>path&&existsSync(path));
+  if(!executablePath){t.skip("Chrome / Edge / Chromium unavailable");return;}
+  const temp=await mkdtemp(join(tmpdir(),"pi-desk-composer-")),project=join(temp,"project"),agent=join(temp,"agent");
+  await mkdir(join(project,"src"),{recursive:true});await mkdir(join(project,"docs"));await mkdir(agent);
+  for(const path of ["src/app.tsx","docs/app.tsx","docs/设计 (草稿) [v1].md"])await writeFile(join(project,path),"fixture content");
+  await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:"http://127.0.0.1:1/v1",apiKey:"fixture",models:[{id:"mock",contextWindow:100000,maxTokens:1000}]}}}));
+  await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"mock",defaultModel:"mock"}));
+  const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_DESK_DIR:join(temp,"desk"),PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(agent,"sessions")},stdio:["ignore","pipe","pipe"]});
+  t.after(async()=>{if(child.exitCode===null){const exited=once(child,"exit");child.kill();await exited;}});
+  const url=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("production server startup timeout")),15000);child.once("error",reject);child.stdout.on("data",chunk=>{const match=String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`production server exited: ${code}`));});});
+  const request=async(path:string,data?:unknown,method=data?"POST":"GET")=>{const response=await fetch(url+"/api"+path,{method,headers:data?{"Content-Type":"application/json"}:undefined,body:data?JSON.stringify(data):undefined});const body=await response.json();assert.ok(response.ok,JSON.stringify(body));return body;};
+  const workspace=await request("/workspaces",{path:project}),session=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});
+  const browser=await chromium.launch({executablePath,headless:true});t.after(()=>browser.close());
+  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors:string[]=[];page.setDefaultTimeout(8000);page.on("pageerror",error=>errors.push(error.message));
+  const restored=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/composer`));await page.goto(url);await restored;
+  const editor=page.getByRole("textbox",{name:"任务输入",exact:true}),options=page.getByRole("option"),picker=page.getByRole("listbox",{name:"项目文件搜索结果"});
+  await editor.waitFor();await editor.fill("请检查 @app");await options.first().waitFor();assert.equal(await options.count(),2);
+  await editor.press("ArrowDown");const path=await options.nth(1).getAttribute("title");await editor.press("Enter");
+  await page.getByRole("button",{name:`预览文件：${path}`,exact:true}).waitFor();assert.equal(await picker.count(),0);assert.match(await editor.innerText(),/请检查/);
+  // A single backspace removes the whole reference; undo restores the node.
+  await editor.press("Backspace");await editor.press("Backspace");assert.equal(await page.getByRole("button",{name:`预览文件：${path}`,exact:true}).count(),0);
+  await editor.press("ControlOrMeta+z");await page.getByRole("button",{name:`预览文件：${path}`,exact:true}).waitFor();
+  await page.getByRole("button",{name:`移除文件引用：${path}`,exact:true}).click();assert.equal(await page.getByRole("button",{name:`预览文件：${path}`,exact:true}).count(),0);
+  await page.getByRole("button",{name:"添加文件或调用指令",exact:true}).click();await page.getByRole("menuitem",{name:"引用项目文件",exact:true}).click();await options.first().waitFor();
+  await editor.press("ControlOrMeta+End");await editor.pressSequentially("设计");await options.first().waitFor();assert.equal(await options.count(),1);await editor.press("Tab");
+  const special="docs/设计 (草稿) [v1].md";await page.getByRole("button",{name:`预览文件：${special}`,exact:true}).waitFor();
+  await new Promise(resolve=>setTimeout(resolve,750));const saved=await request(`/sessions/${session.id}/composer`);assert.ok(saved.text.includes("docs/%E8%AE%BE%E8%AE%A1%20%28"));assert.match(saved.text,/\[@设计/);
+  await request(`/sessions/${session.id}`,{title:"File reference draft"},"PATCH");const second=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});await request(`/sessions/${second.id}`,{title:"Empty draft"},"PATCH");
+  const sidebar=page.getByRole("region",{name:"工作区会话"}),switched=page.waitForResponse(response=>response.url().endsWith(`/sessions/${second.id}/composer`));
+  await sidebar.getByRole("button",{name:/^Empty draft/}).click();await switched;assert.equal((await editor.innerText()).trim(),"");await editor.press("ControlOrMeta+z");assert.equal((await editor.innerText()).trim(),"");
+  await sidebar.getByRole("button",{name:/^File reference draft/}).click();await page.getByRole("button",{name:`预览文件：${special}`,exact:true}).waitFor();
+  await page.reload();await page.getByRole("button",{name:`预览文件：${special}`,exact:true}).waitFor();
+  await editor.click();await editor.press("ControlOrMeta+End");await editor.pressSequentially(" @does-not-exist");await page.getByText("未找到匹配文件，试试文件名或路径。",{exact:true}).waitFor();
+  await editor.press("Enter");assert.equal(await picker.count(),1);await editor.press("Escape");assert.equal(await picker.count(),0);
+  await editor.fill("test@example.com");await new Promise(resolve=>setTimeout(resolve,200));assert.equal(await picker.count(),0);
+  await page.route("**/api/files/*?search=*",route=>route.fulfill({status:503,contentType:"application/json",body:'{"error":"fixture unavailable"}'}));
+  await editor.fill("@failure");await page.getByRole("alert").filter({hasText:"无法搜索：fixture unavailable"}).waitFor();await editor.press("Escape");await page.unroute("**/api/files/*?search=*");
+  await editor.fill("@app");await options.first().waitFor();await editor.dispatchEvent("compositionstart");await editor.dispatchEvent("compositionend");await editor.press("Enter");assert.equal(await picker.count(),1);await editor.press("Enter");assert.equal(await picker.count(),0);
+  await page.route("**/api/sessions/*/prompt",route=>route.fulfill({status:202,contentType:"application/json",body:'{"accepted":true}'}));
+  const [sent]=await Promise.all([page.waitForRequest("**/api/sessions/*/prompt"),page.getByRole("button",{name:"发送任务",exact:true}).click()]);
+  assert.match(sent.postDataJSON().text,/\[@app\.tsx\]\((docs|src)\/app\.tsx\)/);assert.deepEqual(errors,[]);
+});

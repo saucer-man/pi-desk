@@ -15,7 +15,7 @@ Pi Desk 是基于 **Node.js + Pi SDK + React** 的开源编码工作台，在浏
 需要 **Node.js 22.19+** 和 **Git**，直接运行 GitHub Releases 中的预构建包：
 
 ```sh
-npx https://github.com/saucer-man/pi-desk/releases/download/v2.0.0-dev.5/pi-desk.tgz web
+npx https://github.com/saucer-man/pi-desk/releases/download/v2.0.0-dev.6/pi-desk.tgz web
 ```
 
 默认在 `http://127.0.0.1:30140` 启动并打开浏览器；在「设置 → 模型管理」配置模型后开始使用。传入 `--no-open` 可关闭自动打开，`--port 30141` 可指定端口。

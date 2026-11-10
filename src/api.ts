@@ -78,7 +78,11 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
       if(res.writableLength>2*1024*1024){cleanup();res.end();return;}
       res.write(data);
     };
-    const send=(event:unknown)=>write(`data: ${JSON.stringify(event,(key,value)=>key==="cost"?undefined:value)}\n\n`);
+    const sessions=url.searchParams.has("sessionId")?new Set(url.searchParams.getAll("sessionId")):undefined;
+    const send=Object.assign((event:import("./types.ts").ServerEvent)=>{
+      if(sessions&&event.sessionId&&["event","snapshot","widget","status"].includes(event.type)&&!sessions.has(event.sessionId))return;
+      write(`data: ${JSON.stringify(event,(key,value)=>key==="cost"?undefined:value)}\n\n`);
+    },{sessions});
     const heartbeat=setInterval(()=>write(": heartbeat\n\n"),15000);
     res.on("close",cleanup);res.on("finish",cleanup);res.on("error",()=>{cleanup();res.destroy();});
     runtime.listeners.add(send);
@@ -221,19 +225,15 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if (action === "agents" && method === "GET") { json(res, await agentDefinitions(runtime.remote.workspaceFor(id)?await runtime.remote.anchor(runtime.remote.workspaceFor(id)!):record.cwd)); return; }
     if (action === "reload" && method === "POST") { json(res, await runtime.reload(id)); return; }
     if (action === "delegate" && method === "POST") { json(res, await delegate(runtime, record, await body(req))); return; }
-    if (action === "message" && method === "POST") { const data=await body(req); if(!["edit","delete","exclude"].includes(data.operation)) throw new Error("无效消息操作"); json(res,await runtime.mutateMessage(id,text(data.entryId,100),data.operation,data.text===undefined?undefined:text(data.text,1024*1024))); return; }
+    if (action === "message" && method === "POST") { const data=await body(req); if(!["edit","resend","delete","exclude"].includes(data.operation)) throw new Error("无效消息操作"); json(res,await runtime.mutateMessage(id,text(data.entryId,100),data.operation,data.text===undefined?undefined:text(data.text,1024*1024))); return; }
     if (action === "fork" && method === "POST") { const data = await body(req); json(res, await runtime.fork(id, data.entryId)); return; }
     if (action === "queue" && method === "POST") {
       const data = await body(req);
       if (data.operation === "pause") { json(res, await runtime.pauseQueue(id)); return; }
       if (data.operation === "replace") { runtime.updateQueue(id, data.pending); json(res, { ok: true }); return; }
+      if (data.operation === "edit") { json(res, runtime.editQueued(id, text(data.id, 100), text(data.draft ?? "", 1024 * 1024), data.images || [])); return; }
       if (data.operation === "send") {
-        const pending = record.pending?.find(p => p.id === data.id && p.paused); if (!pending) throw new Error("待发送内容不存在或尚未暂停");
-        const images = runtime.store.images(pending.images); if (images.some(i => i.missing)) throw new Error("队列图片已丢失，请先移除缺失附件");
-        await runtime.preparePrompt(id);
-        if (record.status === "running") await runtime.prompt(id, pending.text, images as { type: "image"; data: string; mimeType: string }[], pending.behavior);
-        else void runtime.prompt(id, pending.text, images as { type: "image"; data: string; mimeType: string }[]).catch(error => { (record.pending ??= []).push(pending); runtime.changed(record); runtime.emit({ type: "notice", data: { message: safeError(error) } }); });
-        record.pending = record.pending?.filter(p => p.id !== pending.id); runtime.changed(record); json(res, { accepted: true }, 202); return;
+        await runtime.sendQueued(id, text(data.id, 100)); json(res, { accepted: true }, 202); return;
       }
       throw new Error("未知队列操作");
     }
