@@ -1,4 +1,5 @@
 export type Mode = "standard" | "minimal";
+export interface AgentForm {name:string;description:string;model:string;instructions:string}
 export interface PluginSummary { id:string;name:string;type:string;path:string;description:string;source:string;enabled:boolean }
 export interface McpSummary { name:string;scope:"global"|"project";source:string;description:string;enabled:boolean;overridden:boolean }
 export interface McpCatalog { paths:{global:string;project:string};servers:McpSummary[];errors:string[] }
@@ -17,6 +18,7 @@ export interface SessionRecord {
   remoteHistory?: {sourcePath:string;sha256:string;importedAt:string};
   modelRequests?: number; modelRequestsEstimated?: boolean;
   userTurns?: number; lastStats?: Stats;
+  parentToolCallId?: string;
   worktree?: { root: string; branch: string; baseHead: string; baseBranch: string; commit?: string; integrated?: boolean };
 }
 export interface Content { type: string; text?: string; thinking?: string; name?: string; id?: string; arguments?: unknown; data?: string; mimeType?: string }

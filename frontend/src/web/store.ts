@@ -17,6 +17,7 @@ interface AppState {
   code: CodePreferences; setCode: (update: Partial<CodePreferences>) => void;
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
   snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
+  subagentId:string; subagentSnapshot?:SessionSnapshot;
   requests: UiRequest[]; auth?: { url: string; message: string };
   select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: () => Promise<void>;
   setPage: (page: "workbench" | "trajectory") => void; fail: (error: unknown) => void;
@@ -30,12 +31,14 @@ const notified=new Set<string>();
 let state: AppState = ({
   code: readCodePreferences(),
   setCode: update => { const code = { ...get().code, ...update }; localStorage.setItem("pi-desk.code", JSON.stringify(code)); set({ code }); },
-  activeId: localStorage.getItem("pi-desk.active") || "", workspaceId: "", page: localStorage.getItem("pi-desk.page")==="trajectory"?"trajectory":"workbench", connected: false, loading: false, error: "", traces: {}, requests: [],
+  activeId: localStorage.getItem("pi-desk.active") || "", subagentId:"", workspaceId: "", page: localStorage.getItem("pi-desk.page")==="trajectory"?"trajectory":"workbench", connected: false, loading: false, error: "", traces: {}, requests: [],
   fail: error => set({ error: error instanceof Error ? error.message : String(error) }),
   setPage: page => { localStorage.setItem("pi-desk.page",page);set({ page }); },
   select: async id => {
-    const record = get().state?.sessions.find(r => r.id === id); localStorage.setItem("pi-desk.active", id);
-    set({ activeId: id, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, loading: true, error: "" });
+    let record = get().state?.sessions.find(r => r.id === id);const subagentId=record?.parentId?id:"";
+    while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
+    id=record?.id||id;localStorage.setItem("pi-desk.active", id);
+    set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, loading: true, error: "" });
     try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) { set({ snapshot }); void get().loadModels(); } }
     catch (error) { if (get().activeId === id) get().fail(error); }
     finally { if (get().activeId === id) set({ loading: false }); }
@@ -50,11 +53,12 @@ let state: AppState = ({
       set({ state, activeId, workspaceId: record?.workspaceId || state.workspaces.find(w=>w.id===current.workspaceId&&!w.hidden)?.id || state.workspaces.find(w=>!w.hidden)?.id || "", snapshot: current.snapshot && record ? { ...current.snapshot, record } : undefined });
       if (!current.snapshot && activeId && !current.loading) void get().select(activeId);
     }
-    if (event.type === "snapshot" && event.sessionId === get().activeId) set({ snapshot: event.data as SessionSnapshot });
-    if (event.type === "event" && event.sessionId === get().activeId) {
+    const snapshotKey=event.sessionId===get().activeId?"snapshot":event.sessionId===get().subagentId?"subagentSnapshot":undefined;
+    if (event.type === "snapshot" && snapshotKey) set({ [snapshotKey]: event.data as SessionSnapshot });
+    if (event.type === "event" && snapshotKey) {
       const data = event.data as { type: string; message?: ChatMessage; steering?: string[]; followUp?: string[]; toolCallId?: string; assistantMessageEvent?: { type: string; contentIndex?: number } };
-      const snapshot = get().snapshot; if (!snapshot) return;
-      if (data.type === "queue_update") { set({ snapshot: { ...snapshot, queue: { steering: data.steering || [], followUp: data.followUp || [] } } }); return; }
+      const snapshot = get()[snapshotKey]; if (!snapshot) return;
+      if (data.type === "queue_update") { set({ [snapshotKey]: { ...snapshot, queue: { steering: data.steering || [], followUp: data.followUp || [] } } }); return; }
       const execution: ExecutionState = { runningTools: [], ...snapshot.execution };
       if (data.message?.role === "assistant") {
         const delta = data.assistantMessageEvent;
@@ -70,7 +74,7 @@ let state: AppState = ({
         const same = last && last.role === message.role && (message.toolCallId ? last.toolCallId === message.toolCallId : last.timestamp === message.timestamp);
         if (same) messages[messages.length - 1] = message; else messages.push(message);
       }
-      set({ snapshot: { ...snapshot, messages, execution } });
+      set({ [snapshotKey]: { ...snapshot, messages, execution } });
     }
     if (event.type === "trace" && event.sessionId) {
       const trace = event.data as TraceEntry; const id = event.sessionId;

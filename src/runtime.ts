@@ -123,7 +123,7 @@ export class Runtime {
       noExtensions: true, noSkills: minimal, noThemes: true,
       disabledBuiltinExtensions:embeddedPlugins.filter(p=>p.factory&&overrides[p.id]===false).map(p=>p.name),
       // Discover with the native package manager, then pass only enabled entry points to the SDK.
-      additionalExtensionPaths: plugins.filter(p=>p.enabled).map(p=>p.id), additionalSkillPaths: [],
+      additionalExtensionPaths: plugins.filter(p=>p.enabled&&p.id!=="builtin:subagent").map(p=>p.id), additionalSkillPaths: [],
       extensionFactories: [...(minimal ? [] : embeddedPlugins.flatMap(p=>p.factory?[p.factory]:[])),...(remote?[{name:"pi-desk-remote",hidden:true,factory:remote.extension}]:[])],
       appendSystemPrompt: record.instructions ? [record.instructions] : [],
     });
@@ -157,9 +157,10 @@ export class Runtime {
     modelRuntime.stream = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>stream(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"} as typeof options:options)); };
     modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>streamSimple(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"}:options)); };
     const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : undefined;
-    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(record.depth<2?[subagentTool(this,record)]:[]),...(!record.readOnly?[browserTool(this,record)]:[])])];
+    const subagents=record.depth<2&&overrides["builtin:subagent"]!==false;
+    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(!record.readOnly?[browserTool(this,record)]:[])])];
     const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
-      tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(record.depth < 2 ? ["subagent"] : [])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
+      tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(subagents ? ["subagent"] : [])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
       customTools, excludeTools: workspace.remote?["powershell"]:undefined,
     });
     if (result.extensionsResult.errors.length) { result.session.dispose(); throw new Error("扩展加载失败：" + result.extensionsResult.errors.map(e => safeError(e.error)).join("；")); }
@@ -405,8 +406,7 @@ export class Runtime {
     return results.flatMap((result,i)=>result.status==="rejected"?[`${this.store.record(idle[i]).title}：${safeError(result.reason)}`]:[]);
   }
   async reload(id: string) {
-    const record=this.store.record(id); const live=await this.get(id); if(!live.session.isIdle || record.status==="running") throw new Error("请先停止运行再重载资源");
-    await this.release(live,"reload"); this.live.delete(id); return this.snapshot(id);
+    const live=await this.get(id);live.resourcesStale=true;return this.snapshot(id);
   }
   async fork(id: string, entryId?: string) {
     const parent = this.store.record(id); const { session } = await this.get(id);

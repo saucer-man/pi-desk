@@ -6,9 +6,9 @@ import { join, resolve } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer, request as httpRequest, IncomingMessage, ServerResponse } from "node:http";
 import { WebSocket } from "ws";
-import { connect } from "node:net";
+import { connect, Socket } from "node:net";
 
 async function stopChild(child:ReturnType<typeof spawn>){
   if(child.exitCode!==null||child.signalCode!==null)return;
@@ -24,6 +24,34 @@ test("CLI: help, version and invalid commands do not create user state",async()=
   assert.match((await run(process.execPath,[resolve("dist/server.js"),"web","--help"],options)).stdout,/Usage: pi-desk \[web\]/);
   for(const args of [["unknown"],["web","--unknown"],["web","--port"],["web","--port=bad"],["web","--port=65536"]])await assert.rejects(run(process.execPath,[resolve("dist/server.js"),...args],options));
   await assert.rejects(access(desk));
+});
+
+test("SSE: ended, disconnected and slow responses stop events and heartbeats",async t=>{
+  const {api}=await import("./api.ts");
+  for(const reason of ["overflow","heartbeat overflow","ended","destroyed","close","finish","error","initial overflow"])await t.test(reason,async t=>{
+    t.mock.timers.enable({apis:["setInterval"]});
+    const req=new IncomingMessage(new Socket());req.method="GET";const res=new ServerResponse(req);
+    let buffered=reason==="initial overflow"?2*1024*1024+1:0;
+    Object.defineProperty(res,"writableLength",{get:()=>buffered});
+    const runtime={store:{state:{}},requests:new Map(),listeners:new Set<(event:unknown)=>void>()} as unknown as import("./runtime.ts").Runtime;
+    t.after(()=>{req.emit("close");res.destroy();});
+    const writes=t.mock.method(res,"write");
+    await api(runtime,req,res,new URL("http://127.0.0.1/api/events"));
+    const send=[...runtime.listeners][0];
+    if(send){const count=writes.mock.callCount();t.mock.timers.tick(15000);assert.equal(writes.mock.callCount(),count+1,"open response sends heartbeats");}
+    if(reason==="overflow"){buffered=2*1024*1024+1;send({type:"event"});assert.equal(res.writableEnded,true);}
+    else if(reason==="heartbeat overflow"){buffered=2*1024*1024+1;t.mock.timers.tick(15000);assert.equal(res.writableEnded,true);}
+    else if(reason==="ended")res.end();
+    else if(reason==="destroyed")res.destroy();
+    else if(reason==="close")res.emit("close");
+    else if(reason==="finish")res.emit("finish");
+    else if(reason==="error"){assert.doesNotThrow(()=>res.emit("error",Error("connection reset")));assert.equal(res.destroyed,true);}
+    if(reason==="ended"||reason==="destroyed")send({type:"event"});
+    assert.equal(runtime.listeners.size,0,"finished response must unsubscribe immediately");
+    buffered=0;const count=writes.mock.callCount();send?.({type:"event"});t.mock.timers.tick(15000);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(writes.mock.callCount(),count,"late events and heartbeat must not write after cleanup");
+  });
 });
 
 test("production HTTP: local origin boundary, default-enabled workspace, SSE reconnect, background task, PTY", { timeout: 120000 }, async t => {
@@ -67,6 +95,9 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   for(const resource of ["skills","plugins","mcp"])assert.equal((await request(`/${resource}/${w.id}`)).status,200);
   const session = (await request("/sessions", { workspaceId: w.id, mode: "minimal" })).data;
   const pluginList=await request(`/plugins/${w.id}`);assert.equal(pluginList.status,200);
+  assert.ok(pluginList.data.some((p:any)=>p.id==="builtin:subagent"&&p.name==="subagent"&&p.enabled));assert.match((await request(`/plugins/${w.id}?id=builtin%3Asubagent`)).data.text,/function delegate/);
+  assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:subagent",enabled:false})).data.plugins.find((p:any)=>p.id==="builtin:subagent").enabled,false);
+  assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:subagent",enabled:true})).status,200);
   const plugin=pluginList.data.find((p:any)=>p.name==="skill-probe");assert.ok(plugin&&plugin.type==="项目插件"&&plugin.enabled);
   assert.match((await request(`/plugins/${w.id}?id=${encodeURIComponent(plugin.id)}`)).data.text,/skill-list-must-not-execute/);await assert.rejects(access(skillExtensionMarker));
   assert.equal((await request(`/plugins/${w.id}?id=${encodeURIComponent(join(temp,"outside.txt"))}`)).status,400);
@@ -174,6 +205,23 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await request(configUrl)).status,200); await writeFile(join(agent,"models.json"),preserved);
   assert.equal((await request(configUrl,{operation:"default",provider:"mock",model:"mock"})).status,200);
   const resourceUrl=`/resources/${w.id}?scope=project`;
+  const defaults=await request(resourceUrl);assert.ok(defaults.data.agentDefaults["agents/scout.md"]);
+  const workerUrl=resourceUrl+"&path=agents/worker.md",workerDefault=await request(workerUrl);assert.equal(workerDefault.data.builtin,true);await assert.rejects(access(join(cwd,".pi","agents","worker.md")));
+  const roleText="---\nname: worker\ndescription: Edited worker\nmodel: mock/mock\n---\nWorker prompt from the editor";
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/worker.md",text:roleText})).status,200);assert.equal((await request(workerUrl)).data.text,roleText);
+  assert.deepEqual((await request(workerUrl)).data.agent,{name:"worker",description:"Edited worker",model:"mock/mock",instructions:"Worker prompt from the editor"});
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/worker.md",text:"---\nmodel: []\n---\ninvalid",overwrite:true})).status,400);assert.equal((await request(workerUrl)).data.text,roleText);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/broken.md",text:"---\nname: [broken\n---\ninvalid"})).status,400);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/empty.md",text:"---\nname: empty\n---\n"})).status,400);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/../../outside.md",text:"bad"})).status,400);
+  const preservedRole=roleText.replace("model: mock/mock","model: mock/mock\ntools: [read, grep]\ncustom: keep");await request(resourceUrl,{operation:"save",path:"agents/worker.md",text:preservedRole,overwrite:true});
+  const roleForm={name:"edited-worker",description:"说明：保留引号 \"和换行\"\n第二行",model:"",instructions:"Prompt with --- and : symbols\n\nKeep this exact text."};
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/worker.md",agent:roleForm,overwrite:true})).status,200);const roleRoundtrip=(await request(workerUrl)).data;assert.deepEqual(roleRoundtrip.agent,roleForm);assert.match(roleRoundtrip.text,/custom: keep/);assert.match(roleRoundtrip.text,/tools:\n\s+- read/);assert.ok(!roleRoundtrip.text.includes("model:"));
+  for(const agent of [{...roleForm,name:" "},{...roleForm,instructions:""},{...roleForm,model:[]},[]])assert.equal((await request(resourceUrl,{operation:"save",path:"agents/worker.md",agent,overwrite:true})).status,400);
+  assert.deepEqual((await request(workerUrl)).data.agent,roleForm,"invalid form submissions must not alter existing role data");
+  assert.equal((await request(resourceUrl,{operation:"save",path:"prompts/form.md",agent:roleForm})).status,400);
+  assert.equal((await request(resourceUrl,{operation:"save",path:"agents/new-form.md",agent:{...roleForm,name:"new-form",model:"mock/mock"}})).status,200);assert.equal((await request(resourceUrl+"&path=agents/new-form.md")).data.agent.model,"mock/mock");await request(resourceUrl,{operation:"delete",path:"agents/new-form.md"});
+  assert.equal((await request(resourceUrl,{operation:"delete",path:"agents/worker.md"})).status,200);assert.equal((await request(workerUrl)).data.builtin,true);
   const skillsUrl=`/skills/${w.id}`, skillList=await request(skillsUrl);assert.equal(skillList.status,200);
   for(const [,name] of skillFixtures)assert.ok(skillList.data.some((s:any)=>s.name===name));
   const shared=skillList.data.filter((s:any)=>s.name==="pi-desk-shared");assert.equal(shared.length,1);assert.equal(shared[0].description,"Project description");

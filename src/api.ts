@@ -71,10 +71,18 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   if (path === "/api/health") { json(res, { name: "Pi Desk", runtime: "Node.js", sdk: "1.4.0", agentDir, deskDir }); return; }
   if (path === "/api/events" && method === "GET") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-    const send = (event: unknown) => { if (res.writableLength > 2 * 1024 * 1024) { res.end(); return; } res.write(`data: ${JSON.stringify(event, (key, value) => key === "cost" ? undefined : value)}\n\n`); };
-    send({ type: "state", data: runtime.store.state }); for (const { request } of runtime.requests.values()) send({ type: "ui", data: request });
-    runtime.listeners.add(send); const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15000);
-    req.on("close", () => { clearInterval(heartbeat); runtime.listeners.delete(send); }); return;
+    let closed=false;
+    const cleanup=()=>{closed=true;clearInterval(heartbeat);runtime.listeners.delete(send);};
+    const write=(data:string)=>{
+      if(closed||res.destroyed||res.writableEnded){cleanup();return;}
+      if(res.writableLength>2*1024*1024){cleanup();res.end();return;}
+      res.write(data);
+    };
+    const send=(event:unknown)=>write(`data: ${JSON.stringify(event,(key,value)=>key==="cost"?undefined:value)}\n\n`);
+    const heartbeat=setInterval(()=>write(": heartbeat\n\n"),15000);
+    res.on("close",cleanup);res.on("finish",cleanup);res.on("error",()=>{cleanup();res.destroy();});
+    runtime.listeners.add(send);
+    send({ type: "state", data: runtime.store.state }); for (const { request } of runtime.requests.values()) send({ type: "ui", data: request }); return;
   }
   if(path==="/api/applications" && method==="GET") { json(res,(await workspaceApplications()).map(({id,name,icon})=>({id,name,icon}))); return; }
   if(resource==="workspaces" && id && action==="open" && method==="POST") {

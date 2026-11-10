@@ -8,6 +8,9 @@ import { DefaultPackageManager, SettingsManager, getPackageDir, loadSkills, crea
 import { agentDir, inside, safeError } from "./storage.ts";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import type { McpCatalog, McpDefinition, McpDebugResult, PluginSummary } from "./types.ts";
+import { defaultAgentFiles, parseAgent } from "./subagents.ts";
+import { parse, stringify } from "yaml";
+import type { AgentForm } from "./types.ts";
 
 const MASK = "[已保存]";
 async function readJson(path: string) { try { return JSON.parse((await readFile(path, "utf8")).replace(/^\uFEFF/,"")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; } }
@@ -41,7 +44,7 @@ export async function resources(cwd: string, scope: string) {
   const settings=SettingsManager.create(cwd,agentDir); settings.setProjectTrusted(true);
   const manager=new DefaultPackageManager({cwd,agentDir,settingsManager:settings});
   await resourceConfigPath(root,join(root,"mcp.json"));
-  return {root,files,packages:manager.listConfiguredPackages().filter(p=>p.scope===scope),mcp:protect(await readJson(join(root,"mcp.json")))};
+  return {root,files,agentDefaults:defaultAgentFiles,packages:manager.listConfiguredPackages().filter(p=>p.scope===scope),mcp:protect(await readJson(join(root,"mcp.json")))};
 }
 export async function skillCatalog(cwd: string, path?: string, disabledSkills: readonly string[] = []) {
   const settings=SettingsManager.create(cwd,agentDir); settings.setProjectTrusted(true);
@@ -70,6 +73,7 @@ export async function pluginCatalog(cwd:string,overrides:Record<string,boolean>=
     const name=basename(resource.path,extname(resource.path));
     rows.set(id,{id,name:embedded?.name||(name==="index"&&resource.metadata.packageRoot?basename(resource.metadata.packageRoot):name),type,path:embedded?.path||resource.path,source:resource.metadata.source,description:embedded?.description||`${type} · ${resource.metadata.source==="auto"?"自动发现":resource.metadata.source}`,enabled:overrides[id]??resource.enabled});
   }
+  rows.set("builtin:subagent",{id:"builtin:subagent",name:"subagent",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./subagents${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"委派子 Agent；在 agent 设置中编辑角色",enabled:overrides["builtin:subagent"]!==false});
   return [...rows.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 export async function readPlugin(cwd:string,id:string,overrides:Record<string,boolean>={}) {
@@ -78,7 +82,13 @@ export async function readPlugin(cwd:string,id:string,overrides:Record<string,bo
   return {...plugin,text:await readFile(plugin.path,"utf8")};
 }
 export async function readResource(cwd: string, scope: string, name: string) {
-  const path=await resourcePath(await resourceRoot(cwd,scope),name); if((await stat(path)).size>1024*1024) throw new Error("资源编辑仅支持 1 MiB 以内的文件"); return {path:name,text:await readFile(path,"utf8")};
+  const path=await resourcePath(await resourceRoot(cwd,scope),name);
+  let text:string,builtin=false;
+  try {if((await stat(path)).size>1024*1024) throw new Error("资源编辑仅支持 1 MiB 以内的文件");text=await readFile(path,"utf8");}
+  catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT"||!Object.hasOwn(defaultAgentFiles,name))throw error;text=defaultAgentFiles[name];builtin=true;}
+  const definition=name.replaceAll("\\","/").startsWith("agents/")?parseAgent(text,path):undefined;
+  const agent:AgentForm|undefined=definition&&{name:definition.name,description:definition.description,model:definition.model||"",instructions:definition.instructions};
+  return {path:name,text,builtin,agent};
 }
 export async function mutateResource(cwd: string, scope: string, data: Record<string,any>) {
   const root=await resourceRoot(cwd,scope);
@@ -96,7 +106,16 @@ export async function mutateResource(cwd: string, scope: string, data: Record<st
   }
   const path=await resourcePath(root,data.path);
   if(data.operation==="delete") { await unlink(path); return; }
+  if(data.operation==="save"&&data.agent!==undefined){
+    if(!data.path.replaceAll("\\","/").startsWith("agents/")||!data.agent||typeof data.agent!=="object"||Array.isArray(data.agent)||["name","description","model","instructions"].some(key=>typeof data.agent[key]!=="string"))throw Error("角色的名称、说明、模型和提示词必须是文本");
+    const agent=data.agent as AgentForm;if(!agent.name.trim()||!agent.instructions.trim())throw Error("角色名称和提示词不能为空");
+    const original=await readResource(cwd,scope,data.path).catch(error=>{if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;return {text:""};});
+    const match=/^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(original.text),meta=match?parse(match[1])||{}:{};
+    Object.assign(meta,{name:agent.name.trim(),description:agent.description});if(agent.model.trim())meta.model=agent.model.trim();else delete meta.model;
+    data.text=`---\n${stringify(meta)}---\n${agent.instructions}`;
+  }
   if(data.operation!=="save" || typeof data.text!=="string" || data.text.length>1024*1024) throw new Error("资源内容无效或超过 1 MiB");
+  if(data.path.replaceAll("\\","/").startsWith("agents/")){const agent=parseAgent(data.text,path);if(!agent.name.trim()||!agent.instructions.trim())throw Error("角色名称和指令不能为空");}
   if(!data.overwrite) { try { await stat(path); throw new Error("文件已存在，请明确选择覆盖"); } catch(e) { if((e as NodeJS.ErrnoException).code!=="ENOENT") throw e; } }
   await mkdir(dirname(path),{recursive:true}); await writeFile(path,data.text,{mode:0o600});
 }

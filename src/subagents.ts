@@ -6,7 +6,7 @@ import {quote} from "./remote.ts";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { agentDir, deskDir, safeError } from "./storage.ts";
 import type { Runtime } from "./runtime.ts";
 import type { SessionRecord } from "./types.ts";
@@ -18,16 +18,27 @@ async function serial<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const pending = (writing.get(key) || Promise.resolve()).catch(() => {}).then(operation); writing.set(key, pending);
   try { return await pending; } finally { if (writing.get(key) === pending) writing.delete(key); }
 }
+export const defaultAgents = [
+  {name:"worker",description:"执行独立开发任务",instructions:"Complete the assigned task, run appropriate validation, and report changes and checks.",readOnly:false},
+  {name:"scout",description:"只读检查与研究",instructions:"Investigate the project and report relevant files, architecture, and findings. You have read-only tools.",readOnly:true},
+  {name:"reviewer",description:"只读审查与验证",instructions:"Review the assigned code for bugs and regressions. Report actionable findings with file paths and evidence. You have read-only tools.",readOnly:true},
+];
+export const defaultAgentFiles = Object.fromEntries(defaultAgents.map(({name,description,instructions,readOnly})=>[`agents/${name}.md`,`---\n${stringify({name,description,...(readOnly?{tools:["read","grep","find","ls"]}:{})})}---\n\n${instructions}\n`]));
+export function parseAgent(text:string,source:string) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(text);
+  const meta = match ? parse(match[1]) || {} : {};
+  if(typeof meta!=="object"||Array.isArray(meta)||["name","description","model"].some(key=>meta[key]!==undefined&&typeof meta[key]!=="string")||meta.tools!==undefined&&typeof meta.tools!=="string"&&!(Array.isArray(meta.tools)&&meta.tools.every((tool:unknown)=>typeof tool==="string")))throw Error("角色配置无效：name、description、model 必须是文本，tools 必须是文本或文本数组");
+  const name = String(meta.name || source.split(/[/\\]/).at(-1)!.slice(0,-3));
+  const tools = Array.isArray(meta.tools) ? meta.tools : typeof meta.tools === "string" ? meta.tools.split(/[, ]+/).filter(Boolean) : undefined;
+  return {name,description:String(meta.description||""),instructions:match?match[2]:text,model:meta.model as string|undefined,readOnly:Boolean(tools?.length&&tools.every((tool:string)=>["read","grep","find","ls"].includes(tool))),source};
+}
 export async function agentDefinitions(cwd: string) {
-  const agents = new Map<string, { name: string; description: string; instructions: string; model?: string; readOnly: boolean; source: string }>();
+  const agents = new Map<string, ReturnType<typeof parseAgent>>(defaultAgents.map(agent=>[agent.name,{...agent,model:undefined,source:`builtin:${agent.name}`} ]));
   for (const dir of [join(agentDir, "agents"), join(cwd, ".pi", "agents")]) {
     for (const file of await readdir(dir).catch(() => [] as string[])) {
       if (!file.endsWith(".md")) continue;
-      const source = join(dir, file); const text = await readFile(source, "utf8"); const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(text);
-      const meta = match ? parse(match[1]) || {} : {};
-      const name = String(meta.name || file.slice(0, -3));
-      const tools = Array.isArray(meta.tools) ? meta.tools : typeof meta.tools === "string" ? meta.tools.split(/[, ]+/) : undefined;
-      agents.set(name, { name, description: String(meta.description || ""), instructions: match ? match[2] : text, model: meta.model, readOnly: Boolean(tools?.length && tools.every((t: string) => ["read", "grep", "find", "ls"].includes(t))), source });
+      const source = join(dir, file); const agent=parseAgent(await readFile(source,"utf8"),source);
+      agents.set(agent.name, agent);
     }
   }
   return [...agents.values()];
@@ -69,9 +80,10 @@ async function applyWorktree(runtime: Runtime, parent: SessionRecord, id: string
   return { id, commit, result: "变更已整合" };
 }
 
-export async function delegate(runtime: Runtime, parent: SessionRecord, input: Input, signal?: AbortSignal) {
+export async function delegate(runtime: Runtime, parent: SessionRecord, input: Input, signal?: AbortSignal, toolCallId?:string) {
   if (parent.mode === "minimal") throw new Error("Minimal 仅允许 Pi 四工具，不提供主动委派");
-  await runtime.get(parent.id);
+  const live=await runtime.get(parent.id);
+  if(runtime.store.state.preferences.pluginOverrides?.["builtin:subagent"]===false&&!live.session.getAllTools().some(tool=>tool.name==="subagent"))throw new Error("子 Agent 插件已禁用");
   if (input.action === "integrate") { if (!input.id) throw new Error("需要子任务 id"); return integrate(runtime, parent, input.id); }
   if (parent.depth >= 2) throw new Error("子 agent 最多嵌套两层");
   const tasks = input.tasks || (input.task ? [{ task: input.task, agent: input.agent, access: input.access }] : []);
@@ -81,7 +93,7 @@ export async function delegate(runtime: Runtime, parent: SessionRecord, input: I
   const definitions = await agentDefinitions(workspace?await runtime.remote.anchor(workspace):parent.cwd);
   const run = async (task: Task, previous = "") => {
     signal?.throwIfAborted();
-    const definition = task.agent && definitions.find(a => a.name === task.agent);
+    const definition = definitions.find(a => a.name === (task.agent||"worker"));
     if (task.agent && !definition && !["worker", "scout", "reviewer"].includes(task.agent)) throw new Error(`未找到 agent 定义：${task.agent}`);
     const readOnly = parent.readOnly || task.access === "read" || definition && definition.readOnly || ["scout", "reviewer"].includes(task.agent || "");
     const id = randomUUID(); let cwd = parent.cwd; let worktree: SessionRecord["worktree"];
@@ -98,7 +110,7 @@ export async function delegate(runtime: Runtime, parent: SessionRecord, input: I
     }
     if (!readOnly && !isGit && parent.depth > 0 && !parent.readOnly) throw new Error("非 Git 目录中的嵌套子任务请使用只读访问；写入由当前子 agent 完成");
     const instructions = [definition && definition.instructions || (readOnly ? "Inspect the project and report findings. You have read-only tools." : "Complete the assigned task, run appropriate validation, and report changes and checks."), worktree ? `Your isolated Git worktree is based on commit ${worktree.baseHead}. Uncommitted changes in the parent checkout are not included. Do not merge or remove this worktree. Report the validation commands and result to the parent.` : ""].join("\n");
-    const child = runtime.create(parent.workspaceId, task.mode || "standard", { id, cwd, parentId: parent.id, depth: parent.depth + 1, title: `${task.agent || "worker"} · ${task.task.slice(0, 55)}`, readOnly: Boolean(readOnly), model: task.model || definition && definition.model || parent.model, instructions, worktree });
+    const child = runtime.create(parent.workspaceId, task.mode || "standard", { id, cwd, parentId: parent.id, parentToolCallId:toolCallId, depth: parent.depth + 1, title: `${task.agent || "worker"} · ${task.task.slice(0, 55)}`, readOnly: Boolean(readOnly), model: task.model || definition && definition.model || parent.model, instructions, worktree });
     runtime.trace(parent.id, "subagent_start", "委派子任务", { id });
     const execute = async () => {
       const abort = () => { void runtime.stop(id); }; signal?.addEventListener("abort", abort, { once: true });
@@ -129,6 +141,6 @@ export function subagentTool(runtime: Runtime, parent: SessionRecord) {
   return defineTool({ name: "subagent", label: "子 agent", executionMode: "sequential",
     description: "Delegate independent tasks to in-process SDK subagents. Modes: single, parallel (unlimited), chain (passes previous result). Use access=read for analysis; write tasks use isolated Git worktrees. Default agents: worker, scout, reviewer; custom definitions in ~/.pi/agent/agents and .pi/agents. Inspect each result, run validation, then action=integrate with child id to merge a successful write task. Keep worktrees on failures. Maximum nesting: two levels.",
     parameters: Type.Object({ action: Type.Optional(Type.Union([Type.Literal("run"), Type.Literal("integrate")])), id: Type.Optional(Type.String()), mode: Type.Optional(Type.Union([Type.Literal("single"), Type.Literal("parallel"), Type.Literal("chain")])), tasks: Type.Optional(Type.Array(taskSchema, { minItems: 1 })), task: Type.Optional(Type.String()), agent: Type.Optional(Type.String()), access: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])) }),
-    execute: async (_id, params, signal) => { const result = await delegate(runtime, parent, params, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+    execute: async (id, params, signal) => { const result = await delegate(runtime, parent, params, signal, id); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
 }
