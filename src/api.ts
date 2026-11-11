@@ -123,8 +123,9 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(data.proxy!==null && (typeof data.proxy!=="string" || data.proxy.length>2048 || /[\x00-\x1f\x7f]/.test(data.proxy)))throw new Error("代理地址无效");
     const proxy=typeof data.proxy==="string"?data.proxy.trim():null;
     if(proxy)try{const url=new URL(proxy);if(!["http:","https:"].includes(url.protocol)||url.pathname!=="/"||url.search||url.hash)throw 0;}catch{throw new Error("代理地址必须是 HTTP / HTTPS URL，例如 http://127.0.0.1:7890");}
-    const config={...previous,models:{...previous?.models}};
-    if(data.model===undefined){if(proxy===null)throw new Error("全局代理请留空以清除");config.global=proxy;}
+    const config={...previous,models:{...previous?.models},providers:{...previous?.providers}};
+    if(data.provider!==undefined){const provider=text(data.provider,256).trim();if(!provider||/[\x00-\x1f\x7f]/.test(provider)||["__proto__","constructor","prototype"].includes(provider)||data.model!==undefined)throw new Error("供应商 ID 无效");if(proxy==="")delete config.providers[provider];else config.providers[provider]=proxy;}
+    else if(data.model===undefined){if(proxy===null)throw new Error("全局代理请留空以清除");config.global=proxy;}
     else {const model=text(data.model,600);if(!model.includes("/")||/[\x00-\x1f\x7f]/.test(model))throw new Error("模型 ID 无效");if(proxy==="")delete config.models[model];else config.models[model]=proxy;}
     runtime.store.state.preferences.proxy=config;
     try{runtime.changed();}catch(error){runtime.store.state.preferences.proxy=previous;throw error;}
@@ -145,6 +146,9 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(data.operation==="import")await runtime.selectModels(data.provider.id,data.models.map((m:any)=>m.id));
     if(data.operation==="delete_provider"&&selection){delete selection[data.provider];runtime.changed();}
     if(data.operation==="delete_model"&&selection?.[data.provider]){selection[data.provider]=selection[data.provider].filter(id=>id!==data.model);runtime.changed();}
+    const providerProxies=runtime.store.state.preferences.proxy?.providers;
+    if(data.operation==="save"&&data.originalProvider&&data.originalProvider!==data.provider.id&&providerProxies&&Object.hasOwn(providerProxies,data.originalProvider)){providerProxies[data.provider.id]=providerProxies[data.originalProvider];delete providerProxies[data.originalProvider];runtime.changed();}
+    if(data.operation==="delete_provider"&&providerProxies){delete providerProxies[data.provider];runtime.changed();}
     const catalog = await runtime.models(); runtime.emit({ type: "models", data: catalog }); json(res, { ...modelConfig(), catalog }); return;
   }
   if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined, url.searchParams.get("refresh")==="1")); return; }
@@ -164,11 +168,11 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     else if (data.operation === "api_key") { const key = text(data.key, 20000); if (!key.trim()) throw new Error("API Key 不能为空"); await models.login(provider, "api_key", { prompt: async () => key, notify() {} }); }
     else if (data.operation === "oauth") {
       const controller = new AbortController(); runtime.authControllers.add(controller);
-      void models.login(provider, "oauth", {
+      void runtime.withProxy({provider,id:""},()=>models.login(provider, "oauth", {
         signal: controller.signal,
         prompt: async prompt => { const result = await runtime.ask({ type: prompt.type === "select" ? "select" : prompt.type === "secret" ? "secret" : "input", title: prompt.message, options: prompt.type === "select" ? prompt.options.map(o => o.id) : undefined }, prompt.signal); if (result === undefined) throw new Error("登录已取消"); return String(result); },
         notify: event => { if (event.type === "auth_url") runtime.emit({ type: "auth", data: { url: event.url, message: event.instructions || "请在浏览器中完成登录" } }); else if (event.type === "device_code") runtime.emit({ type: "auth", data: { url: event.verificationUri, message: `验证码：${event.userCode}` } }); else runtime.emit({ type: "notice", data: { message: event.message } }); },
-      }).then(async () => {if(data.selectModels===true&&runtime.store.state.preferences.modelSelection?.[provider]===undefined){const catalog=await runtime.models();(runtime.store.state.preferences.modelSelection??={})[provider]=catalog.defaultProvider===provider&&catalog.defaultModel?[catalog.defaultModel]:[];runtime.changed();}runtime.emit({ type: "models", data: await runtime.models() });}).catch(error => runtime.emit({ type: "notice", data: { type: "error", message: safeError(error) } })).finally(() => runtime.authControllers.delete(controller));
+      })).then(async () => {if(data.selectModels===true&&runtime.store.state.preferences.modelSelection?.[provider]===undefined){const catalog=await runtime.models();(runtime.store.state.preferences.modelSelection??={})[provider]=catalog.defaultProvider===provider&&catalog.defaultModel?[catalog.defaultModel]:[];runtime.changed();}runtime.emit({ type: "models", data: await runtime.models() });}).catch(error => runtime.emit({ type: "notice", data: { type: "error", message: safeError(error) } })).finally(() => runtime.authControllers.delete(controller));
       json(res, { started: true }); return;
     } else throw new Error("未知认证操作");
     json(res, await runtime.models()); return;

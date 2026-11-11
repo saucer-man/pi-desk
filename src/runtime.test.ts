@@ -117,8 +117,9 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
     assert.ok(!(await runtime.models()).models.some(m=>m.id.startsWith("oauth-refresh-fixture")));assert.equal(catalogHits,0,"background loads remain cache-only");
     assert.ok((await runtime.models(undefined,true)).allModels.some(m=>m.id==="oauth-refresh-fixture-1"));assert.ok(!(await runtime.models()).models.some(m=>m.id==="oauth-refresh-fixture-1"),"new OAuth catalog models require explicit import");
     assert.ok((await runtime.selectModels("openai",["oauth-refresh-fixture-1"])).models.some(m=>m.id==="oauth-refresh-fixture-1"));
+    runtime.store.state.preferences.proxy={providers:{openai:null}};
     catalogVersion=2;assert.ok((await runtime.models(undefined,true)).allModels.some(m=>m.id==="oauth-refresh-fixture-2"));assert.equal(catalogHits,2,"manual refresh bypasses catalog freshness for OAuth providers");
-  } finally { modelRuntimeMock.mock.restore();catalogServer.close();catalogServer.closeAllConnections(); }
+  } finally { runtime.store.state.preferences.proxy=undefined;modelRuntimeMock.mock.restore();catalogServer.close();catalogServer.closeAllConnections(); }
   const minimal = runtime.create("project", "minimal");
   const executionSnapshots: { id: string; type: string; snapshot: any }[] = []; const executionChecks: Promise<void>[] = [];
   runtime.listeners.add(event => { const data=event.data as any; if(event.type === "event" && ["tool_execution_start","tool_execution_end"].includes(data.type)) executionChecks.push(runtime.snapshot(event.sessionId!).then(snapshot=>{executionSnapshots.push({id:event.sessionId!,type:data.type,snapshot});})); });

@@ -55,9 +55,9 @@ export class Runtime {
   private stopping = new Set<string>();
   private closing = false;
   private proxyAgents = new Map<string, Agent | ProxyAgent>();
-  private withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
+  withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
     const config=this.store.state.preferences.proxy, key=`${model.provider}/${model.id}`;
-    const proxy=config?.models && Object.hasOwn(config.models,key) ? config.models[key] : config?.global;
+    const proxy=config?.models && Object.hasOwn(config.models,key) ? config.models[key] : config?.providers&&Object.hasOwn(config.providers,model.provider)?config.providers[model.provider]:config?.global;
     if(proxy===undefined || proxy==="")return proxyContext.exit(()=>request());
     const route=proxy??"";
     let agent=this.proxyAgents.get(route);
@@ -71,7 +71,13 @@ export class Runtime {
   modelRuntime() { return this.catalog ??= ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }); }
   async models(id?: string, refresh=false) {
     const models = id ? (await this.get(id)).session.modelRuntime : await this.modelRuntime();
-    const result = await models.refresh({ allowNetwork: refresh, force: refresh, signal: refresh ? AbortSignal.timeout(15000) : undefined });
+    const options={allowNetwork:refresh,force:refresh,signal:refresh?AbortSignal.timeout(15000):undefined};
+    let result;
+    if(refresh&&Object.keys(this.store.state.preferences.proxy?.providers||{}).length){
+      await models.refresh({allowNetwork:false});
+      const results=await Promise.all(models.getProviders().filter(p=>models.hasConfiguredAuth(p.id)).map(p=>this.withProxy({provider:p.id,id:""},()=>models.refresh({...options,providers:[p.id]}))));
+      result={aborted:options.signal!.aborted||results.some(r=>r.aborted),errors:new Map(results.flatMap(r=>[...r.errors]))};
+    }else result=await this.withProxy({provider:"",id:""},()=>models.refresh(options));
     const settings = SettingsManager.create(agentDir, agentDir).getGlobalSettings();
     if(!this.store.state.preferences.modelSelection){const selection:Record<string,string[]>={};for(const model of models.getAvailableSnapshot())(selection[model.provider]??=[]).push(model.id);this.store.state.preferences.modelSelection=selection;this.changed();}
     const selection=this.store.state.preferences.modelSelection;
@@ -101,7 +107,7 @@ export class Runtime {
   }
   async discoverModels(draft:Record<string,any>,signal?:AbortSignal) {
     const prepared=modelDraft(draft),models=await this.probeRuntime(draft),model=models.getModel(prepared.id,prepared.model.id)!;
-    const auth=await models.getAuth(model,{signal}),base=prepared.provider.baseUrl||auth?.auth.baseUrl||model.baseUrl;
+    const auth=await this.withProxy(model,()=>models.getAuth(model,{signal})),base=prepared.provider.baseUrl||auth?.auth.baseUrl||model.baseUrl;
     if(!base)throw new Error("请填写 API 地址");
     const protocol=prepared.provider.api||model.api,root=base.replace(/\/+$/,"");
     const path=protocol==="anthropic-messages"&&!root.endsWith("/v1")?"/v1/models":"/models";
@@ -128,7 +134,7 @@ export class Runtime {
     const log=(kind:ModelProbeLog["kind"],data:unknown)=>options.log?.({at:new Date().toISOString(),kind,data:redact(data)});
     log("info",{provider,model:id,prompt:options.prompt||"Reply with OK."});
     try {
-      const auth=await models.getAuth(model,{signal});if(auth?.auth.apiKey)secrets.add(auth.auth.apiKey);for(const value of Object.values(auth?.auth.headers||{}))if(value)secrets.add(value);
+      const auth=await this.withProxy(model,()=>models.getAuth(model,{signal}));if(auth?.auth.apiKey)secrets.add(auth.auth.apiKey);for(const value of Object.values(auth?.auth.headers||{}))if(value)secrets.add(value);
       let status:number|undefined,sawHTTP=false;
       const loggedFetch:typeof fetch=async(input,init)=>{
         const request=input instanceof Request?input:undefined,url=String(request?.url||input),headers=new Headers(init?.headers||request?.headers);
