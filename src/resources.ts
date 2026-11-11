@@ -195,6 +195,23 @@ function validateEndpoint(value: unknown) {
   try { const url = new URL(String(value)); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw 0; }
   catch { throw new Error("API 地址必须是 HTTP / HTTPS URL，且不能包含用户名或密码"); }
 }
+function validateModel(model:Record<string,any>) {
+  identifier(model.id,"模型 ID");
+  for (const field of ["contextWindow", "maxTokens"]) if (!Number.isSafeInteger(model[field]) || model[field] <= 0 || model[field] > 10_000_000) throw new Error(`${field} 必须是 1–10000000 的整数`);
+  if (model.maxTokens > model.contextWindow) throw new Error("最大输出不能超过上下文窗口");
+  validateEndpoint(model.baseUrl);
+}
+export function modelDraft(data:Record<string,any>,document=modelDocument()) {
+  const input=configObject(data.provider,"提供商"),id=identifier(input.id,"提供商 ID"),original=document.providers[data.originalProvider?identifier(data.originalProvider,"原提供商 ID"):id];
+  const {id:_id,models:_models,hasApiKey:_has,...fields}=input;
+  const provider=protect(fields,original,false,false);if(!Object.hasOwn(provider,"apiKey"))provider.apiKey=original?.apiKey;
+  if(data.clearApiKey)delete provider.apiKey;
+  validateEndpoint(provider.baseUrl);
+  const definition=configObject(data.model||{id:"connection-test"},"模型");
+  const model={name:definition.id,reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:16384,...definition};validateModel(model);
+  if(!modelSchema.Check({providers:{[id]:{...provider,models:[model]}}}))throw new Error("模型或提供商配置无效");
+  return {id,provider,model};
+}
 // Synchronous read/validate/rename keeps concurrent HTTP edits from losing each other's changes.
 // Restore both documents if the second rename fails; never overwrite a malformed source file.
 export function mutateModelConfig(data: Record<string, any>, knownProviders: readonly string[]) {
@@ -206,6 +223,14 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
   const removed = new Set<string>();
   if (data.operation === "default") {
     settings.defaultProvider = identifier(data.provider, "提供商 ID"); settings.defaultModel = identifier(data.model, "模型 ID");
+  } else if (data.operation === "import") {
+    if(!Array.isArray(data.models)||!data.models.length||data.models.length>10000)throw new Error("请选择要导入的模型");
+    const first=modelDraft({provider:data.provider,model:data.models[0],clearApiKey:data.clearApiKey},root),id=first.id;
+    if(data.createProvider&&(Object.hasOwn(root.providers,id)||knownProviders.includes(id)))throw new Error("提供商 ID 已存在，请使用其他 ID");
+    if(!knownProviders.includes(id)&&(!first.provider.baseUrl||!first.provider.api))throw new Error("自定义提供商必须填写 API 地址与协议");
+    const models=[...(root.providers[id]?.models||[])],seen=new Set<string>();
+    for(const input of data.models){const {model}=modelDraft({provider:data.provider,model:input,clearApiKey:data.clearApiKey},root);if(seen.has(model.id))throw new Error("模型 ID 重复");seen.add(model.id);const index=models.findIndex(m=>m.id===model.id);if(index<0)models.push(model);else models[index]={...models[index],...model};}
+    root.providers[id]={...first.provider,models};
   } else if (data.operation === "save") {
     const input = configObject(data.provider, "提供商"), modelInput = configObject(data.model, "模型");
     const id = identifier(input.id, "提供商 ID"), modelId = identifier(modelInput.id, "模型 ID");
@@ -223,9 +248,7 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
     const { compaction: _compaction, ...modelFields } = modelInput;
     const model = protect(modelFields, models[index], false, false); model.id = modelId;
     if (model.cost === undefined && models[index]?.cost !== undefined) model.cost = models[index].cost;
-    for (const field of ["contextWindow", "maxTokens"]) if (!Number.isSafeInteger(model[field]) || model[field] <= 0 || model[field] > 10_000_000) throw new Error(`${field} 必须是 1–10000000 的整数`);
-    if (model.maxTokens > model.contextWindow) throw new Error("最大输出不能超过上下文窗口");
-    validateEndpoint(provider.baseUrl); validateEndpoint(model.baseUrl);
+    validateModel(model);validateEndpoint(provider.baseUrl);
     if (!knownProviders.includes(id) || oldProvider && oldProvider !== id) {
       if (!(provider.baseUrl || model.baseUrl) || !(provider.api || model.api)) throw new Error("自定义提供商必须填写 API 地址与协议");
     }
@@ -246,6 +269,7 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
   } else if (data.operation === "delete_model" || data.operation === "delete_provider") {
     const id = identifier(data.provider, "提供商 ID"), provider = root.providers[id];
     if (!provider) throw new Error("提供商配置不存在");
+    if(settings.defaultProvider===id&&(data.operation==="delete_provider"||data.model===settings.defaultModel))throw new Error("请先更换默认模型，再删除");
     if (data.operation === "delete_provider") {
       for (const key of Object.keys(settings.compaction?.modelOverrides || {})) if (key.startsWith(id + "/")) removed.add(key);
       if (settings.defaultProvider === id) removed.add(`${id}/${settings.defaultModel}`);

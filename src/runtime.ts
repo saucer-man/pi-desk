@@ -9,9 +9,9 @@ import {
   type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Store, agentDir, deskDir, sessionRoot, safeError, inside } from "./storage.ts";
-import type { Mode, SessionRecord, SessionSnapshot, ServerEvent, TraceEntry, RunMetrics, UiRequest, ChatMessage, PendingPrompt, DraftImage, ExecutionState } from "./types.ts";
+import type { Mode, SessionRecord, SessionSnapshot, ServerEvent, TraceEntry, RunMetrics, UiRequest, ChatMessage, PendingPrompt, DraftImage, ExecutionState, ModelProbeLog } from "./types.ts";
 import { subagentTool } from "./subagents.ts";
-import { skillCatalog, pluginCatalog, embeddedPlugins } from "./resources.ts";
+import { skillCatalog, pluginCatalog, embeddedPlugins, modelDraft } from "./resources.ts";
 import { Scheduler } from "./schedules.ts";
 import { RemoteManager } from "./remote.ts";
 import { remoteTools } from "./remote-tools.ts";
@@ -73,15 +73,79 @@ export class Runtime {
     const models = id ? (await this.get(id)).session.modelRuntime : await this.modelRuntime();
     const result = await models.refresh({ allowNetwork: refresh, force: refresh, signal: refresh ? AbortSignal.timeout(15000) : undefined });
     const settings = SettingsManager.create(agentDir, agentDir).getGlobalSettings();
-    return { defaultProvider: settings.defaultProvider, defaultModel: settings.defaultModel, models: models.getAvailableSnapshot().map(m => ({ id: m.id, provider: m.provider, name: m.name, contextWindow: m.contextWindow, reasoning: Boolean(m.reasoning) })), providers: models.getProviders().map(p => ({ id: p.id, name: p.name, configured: models.hasConfiguredAuth(p.id), oauth: Boolean(p.auth.oauth?.login), apiKey: Boolean(p.auth.apiKey?.login) })), warning: [models.getError(),...Array.from(result.errors,([provider,error])=>`${provider}: ${safeError(error)}`),result.aborted?"模型刷新超时，请重试":undefined].filter(Boolean).join("；") || undefined, agentDir };
+    if(!this.store.state.preferences.modelSelection){const selection:Record<string,string[]>={};for(const model of models.getAvailableSnapshot())(selection[model.provider]??=[]).push(model.id);this.store.state.preferences.modelSelection=selection;this.changed();}
+    const selection=this.store.state.preferences.modelSelection;
+    const info=(m:ReturnType<ModelRuntime["getModels"]>[number])=>({id:m.id,provider:m.provider,name:m.name,contextWindow:m.contextWindow,maxTokens:m.maxTokens,reasoning:Boolean(m.reasoning)});
+    const available=models.getAvailableSnapshot();
+    const providers=await Promise.all(models.getProviders().map(async p=>({id:p.id,name:p.name,configured:models.hasConfiguredAuth(p.id),oauth:Boolean(p.auth.oauth?.login),apiKey:Boolean(p.auth.apiKey?.login),authType:(await models.checkAuth(p.id))?.type})));
+    const visibleProviders=new Set(providers.filter(p=>p.configured||selection[p.id]!==undefined).map(p=>p.id));
+    return { defaultProvider:settings.defaultProvider,defaultModel:settings.defaultModel,models:available.filter(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)).map(info),allModels:models.getModels().filter(m=>visibleProviders.has(m.provider)).map(info),selection,providers,warning:[models.getError(),...Array.from(result.errors,([provider,error])=>`${provider}: ${safeError(error)}`),result.aborted?"模型刷新超时，请重试":undefined].filter(Boolean).join("；")||undefined,agentDir };
   }
-  async testModel(provider: string, id: string, sessionId?: string) {
-    const models=sessionId?(await this.get(sessionId)).session.modelRuntime:await this.modelRuntime();await models.refresh({allowNetwork:false});
+  assertModelSelection(provider:string,ids:unknown): asserts ids is string[] {
+    if(!Array.isArray(ids)||ids.length>10000||ids.some(id=>typeof id!=="string"||!id||id.length>500))throw new Error("模型选择无效");
+    const settings=SettingsManager.create(agentDir,agentDir).getGlobalSettings();
+    if(settings.defaultProvider===provider&&!ids.includes(settings.defaultModel||""))throw new Error("请先更换默认模型，再移除");
+  }
+  async selectModels(provider:string,ids:unknown) {
+    this.assertModelSelection(provider,ids);
+    const models=await this.modelRuntime();await models.refresh({allowNetwork:false});
+    if(!models.getProvider(provider))throw new Error("供应商不存在，请刷新后重试");
+    if(ids.some(id=>!models.getModel(provider,id)))throw new Error("模型不存在，请刷新后重试");
+    (this.store.state.preferences.modelSelection??={})[provider]=[...new Set(ids)];this.changed();
+    const catalog=await this.models();this.emit({type:"models",data:catalog});return catalog;
+  }
+  private async probeRuntime(draft?:Record<string,any>,sessionId?:string) {
+    if(!draft)return sessionId?(await this.get(sessionId)).session.modelRuntime:await this.modelRuntime();
+    const {id,provider,model}=modelDraft(draft),models=await ModelRuntime.create({authPath:join(agentDir,"auth.json"),modelsPath:null,allowModelNetwork:false});
+    models.registerProvider(id,{...provider,models:[model]});await models.refresh({allowNetwork:false});return models;
+  }
+  async discoverModels(draft:Record<string,any>,signal?:AbortSignal) {
+    const prepared=modelDraft(draft),models=await this.probeRuntime(draft),model=models.getModel(prepared.id,prepared.model.id)!;
+    const auth=await models.getAuth(model,{signal}),base=prepared.provider.baseUrl||auth?.auth.baseUrl||model.baseUrl;
+    if(!base)throw new Error("请填写 API 地址");
+    const protocol=prepared.provider.api||model.api,root=base.replace(/\/+$/,"");
+    const path=protocol==="anthropic-messages"&&!root.endsWith("/v1")?"/v1/models":"/models";
+    const headers:Record<string,string>={Accept:"application/json",...prepared.provider.headers,...auth?.auth.headers};
+    if(auth?.auth.apiKey){if(protocol==="anthropic-messages")headers["x-api-key"]=auth.auth.apiKey;else if(protocol==="google-generative-ai")headers["x-goog-api-key"]=auth.auth.apiKey;else headers.Authorization=`Bearer ${auth.auth.apiKey}`;}
+    if(protocol==="anthropic-messages")headers["anthropic-version"]="2023-06-01";
+    return this.withProxy(model,async()=>{
+      const response=await fetch(root+path,{headers,signal:AbortSignal.any([AbortSignal.timeout(15000),...(signal?[signal]:[])])});
+      if(!response.ok)throw new Error(`拉取模型失败（HTTP ${response.status}）`);
+      const value=await response.json() as any,items=Array.isArray(value)?value:value.data||value.models;
+      if(!Array.isArray(items))throw new Error("响应中没有模型列表，请手动填写模型 ID");
+      return [...new Map(items.filter((m:any)=>typeof (m.id||m.name)==="string").map((m:any)=>{const id=String(m.id||m.name).replace(/^models\//,"");return [id,{id,name:m.displayName||m.name||id,contextWindow:m.contextWindow||m.context_window||m.inputTokenLimit||128000,maxTokens:m.maxTokens||m.max_output_tokens||m.outputTokenLimit||16384,reasoning:Boolean(m.reasoning),input:["text"]}];})).values()];
+    });
+  }
+  async testModel(provider:string,id:string,sessionId?:string,options:{prompt?:string;draft?:Record<string,any>;signal?:AbortSignal;log?:(log:ModelProbeLog)=>void}={}) {
+    const models=await this.probeRuntime(options.draft,sessionId);await models.refresh({allowNetwork:false});
     const model=models.getModel(provider,id);if(!model)throw new Error("模型不存在，请刷新后重试");
-    const started=performance.now();
-    const result=await this.withProxy(model,env=>models.completeSimple(model,{messages:[{role:"user",content:[{type:"text",text:"Reply with OK."}],timestamp:Date.now()}]},{maxTokens:16,maxRetries:0,reasoning:"minimal",signal:AbortSignal.timeout(15000),...(env?{env,transport:"sse" as const}:{})}));
-    if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试失败或超时");
-    return {durationMs:Math.round(performance.now()-started)};
+    const started=performance.now(),secrets=new Set<string>(),signal=AbortSignal.any([AbortSignal.timeout(15000),...(options.signal?[options.signal]:[])]);
+    const redact=(value:unknown)=>JSON.parse(JSON.stringify(value,(key,value)=>{
+      if(key.toLowerCase()==="headers"&&value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([name,content])=>[name,/^(accept|content-type|user-agent|anthropic-version)$/i.test(name)?content:"[已隐藏]"]));
+      if(/^(authorization|proxy-authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|client[-_]?secret|password|cookie|set-cookie|access|refresh)$/i.test(key))return "[已隐藏]";
+      if(typeof value==="string"){for(const secret of secrets)if(secret.length>=4)value=value.replaceAll(secret,"[已隐藏]");return value.replace(/Bearer\s+[^\s"']+/gi,"Bearer [已隐藏]");}return value;
+    }));
+    const log=(kind:ModelProbeLog["kind"],data:unknown)=>options.log?.({at:new Date().toISOString(),kind,data:redact(data)});
+    log("info",{provider,model:id,prompt:options.prompt||"Reply with OK."});
+    try {
+      const auth=await models.getAuth(model,{signal});if(auth?.auth.apiKey)secrets.add(auth.auth.apiKey);for(const value of Object.values(auth?.auth.headers||{}))if(value)secrets.add(value);
+      let status:number|undefined,sawHTTP=false;
+      const loggedFetch:typeof fetch=async(input,init)=>{
+        const request=input instanceof Request?input:undefined,url=String(request?.url||input),headers=new Headers(init?.headers||request?.headers);
+        headers.forEach((value,key)=>{if(!/^(accept|content-type|user-agent|anthropic-version|x-stainless-.*)$/i.test(key))secrets.add(value.replace(/^Bearer\s+/i,""));});
+        const body=typeof init?.body==="string"?init.body:request?await request.clone().text():undefined;
+        log("request",{method:init?.method||request?.method||"POST",url,headers:Object.fromEntries(headers),body});
+        const response=await fetch(input,init);sawHTTP=true;status=response.status;log("response",{url:response.url,status,headers:Object.fromEntries(response.headers)});return response;
+      };
+      const result=await this.withProxy(model,async env=>{
+        const usesFetch=/^(openai|anthropic|google)/.test(model.api);
+        const stream=models.streamSimple(model,{messages:[{role:"user",content:[{type:"text",text:options.prompt||"Reply with OK."}],timestamp:Date.now()}]},{maxTokens:256,maxRetries:0,reasoning:"minimal",signal,transport:"sse",...(env?{env}:{}),...(usesFetch?{fetch:loggedFetch}:{}),onPayload:payload=>{if(!usesFetch)log("request",{api:model.api,baseUrl:auth?.auth.baseUrl||model.baseUrl,payload});},onResponse:response=>{status=response.status;if(!sawHTTP)log("response",response);},onProviderStreamEvent:event=>{log("response",{event});}});
+        for await(const event of stream)if(event.type==="text_delta")log("output",event.delta);
+        return stream.result();
+      });
+      if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试已取消或超时");
+      const value={durationMs:Math.round(performance.now()-started),status,text:result.content.filter(p=>p.type==="text").map(p=>p.text).join("")};log("result",value);return value;
+    } catch(error){const message=redact(error instanceof Error?error.message:String(error));log("error",{message,durationMs:Math.round(performance.now()-started)});throw new Error(message);}
   }
   async discover() {
     const known = new Set(this.store.state.sessions.map(r => r.sessionPath));
@@ -164,7 +228,8 @@ export class Runtime {
     const stream = modelRuntime.stream.bind(modelRuntime); const streamSimple = modelRuntime.streamSimple.bind(modelRuntime);
     modelRuntime.stream = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>stream(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"} as typeof options:options)); };
     modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>streamSimple(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"}:options)); };
-    const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : undefined;
+    const selection=this.store.state.preferences.modelSelection;
+    const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : !record.sessionPath&&selection ? modelRuntime.getAvailableSnapshot().find(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)) : undefined;
     const subagents=record.depth<2&&overrides["builtin:subagent"]!==false;
     const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(!record.readOnly?[browserTool(this,record)]:[])])];
     const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
@@ -174,7 +239,7 @@ export class Runtime {
     if (result.extensionsResult.errors.length) { result.session.dispose(); throw new Error("扩展加载失败：" + result.extensionsResult.errors.map(e => safeError(e.error)).join("；")); }
     const selected = record.model && modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model);
     if (selected && selected !== result.session.model) await result.session.setModel(selected);
-    const live: Live = { session: result.session, loader, metrics: {}, runId: "", started: 0, turnStarted: 0, generationMs: 0, output: 0, tools: new Map(), widgets: {}, modelNeedsSelection: Boolean(record.model && !selected || result.modelFallbackMessage) };
+    const live: Live = { session: result.session, loader, metrics: {}, runId: "", started: 0, turnStarted: 0, generationMs: 0, output: 0, tools: new Map(), widgets: {}, modelNeedsSelection: Boolean(record.model && !selected || result.modelFallbackMessage || !record.model&&!record.sessionPath&&selection&&!model) };
     this.live.set(id, live);
     live.metrics = (this.traces(id).filter(e => e.type === "settled").at(-1)?.data as RunMetrics) || {};
     result.session.subscribe(event => this.onEvent(record, live, event));

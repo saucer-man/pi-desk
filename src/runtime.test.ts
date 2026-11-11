@@ -115,8 +115,9 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const modelRuntimeMock=t.mock.method(runtime,"modelRuntime",async()=>oauthModels);
   try {
     assert.ok(!(await runtime.models()).models.some(m=>m.id.startsWith("oauth-refresh-fixture")));assert.equal(catalogHits,0,"background loads remain cache-only");
-    assert.ok((await runtime.models(undefined,true)).models.some(m=>m.id==="oauth-refresh-fixture-1"));
-    catalogVersion=2;assert.ok((await runtime.models(undefined,true)).models.some(m=>m.id==="oauth-refresh-fixture-2"));assert.equal(catalogHits,2,"manual refresh bypasses catalog freshness for OAuth providers");
+    assert.ok((await runtime.models(undefined,true)).allModels.some(m=>m.id==="oauth-refresh-fixture-1"));assert.ok(!(await runtime.models()).models.some(m=>m.id==="oauth-refresh-fixture-1"),"new OAuth catalog models require explicit import");
+    assert.ok((await runtime.selectModels("openai",["oauth-refresh-fixture-1"])).models.some(m=>m.id==="oauth-refresh-fixture-1"));
+    catalogVersion=2;assert.ok((await runtime.models(undefined,true)).allModels.some(m=>m.id==="oauth-refresh-fixture-2"));assert.equal(catalogHits,2,"manual refresh bypasses catalog freshness for OAuth providers");
   } finally { modelRuntimeMock.mock.restore();catalogServer.close();catalogServer.closeAllConnections(); }
   const minimal = runtime.create("project", "minimal");
   const executionSnapshots: { id: string; type: string; snapshot: any }[] = []; const executionChecks: Promise<void>[] = [];

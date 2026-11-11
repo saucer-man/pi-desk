@@ -5,7 +5,7 @@ export async function api<T = unknown>(path: string, data?: unknown, method = da
   const res = await fetch("/api" + path, { method, signal, headers: data === undefined ? undefined : { "Content-Type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data) });
   const body = await res.json(); if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`); return body;
 }
-export interface Catalog { defaultProvider?: string; defaultModel?: string; models: ModelInfo[]; providers: { id: string; name: string; configured: boolean; oauth: boolean; apiKey: boolean }[]; warning?: string; agentDir: string }
+export interface Catalog { defaultProvider?: string; defaultModel?: string; models: ModelInfo[]; allModels?: ModelInfo[]; selection?:Record<string,string[]>; providers: { id: string; name: string; configured: boolean; oauth: boolean; apiKey: boolean; authType?:"api_key"|"oauth" }[]; warning?: string; agentDir: string }
 export const CODE_THEMES = [["github-light","GitHub Light"],["github-dark","GitHub Dark"],["vitesse-light","Vitesse Light"],["vitesse-dark","Vitesse Dark"],["minimal-light","Minimal Light"],["minimal-dark","Minimal Dark"],["github-hc-light","GitHub HC Light"],["github-hc-dark","GitHub HC Dark"],["catppuccin-latte","Catppuccin Latte"],["catppuccin-mocha","Catppuccin Mocha"]] as const;
 interface CodePreferences { lightTheme: string; darkTheme: string; lineNumbers: boolean; wrap: boolean; fontSize: number }
 function readCodePreferences(): CodePreferences {

@@ -134,12 +134,30 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   if (path === "/api/model-config" && method === "GET") { json(res, modelConfig()); return; }
   if (path === "/api/model-config" && method === "POST") {
     const data = await body(req); const models = await runtime.modelRuntime(); await models.refresh({ allowNetwork: false });
-    if (data.operation === "default" && !models.getAvailableSnapshot().some(m => m.provider === data.provider && m.id === data.model)) throw new Error("默认模型必须是已认证的可用模型");
+    if (data.operation === "default" && !(await runtime.models()).models.some(m => m.provider === data.provider && m.id === data.model)) throw new Error("默认模型必须是已导入且已认证的可用模型");
+    if(data.operation==="import")runtime.assertModelSelection(data.provider?.id,data.models?.map((m:any)=>m.id));
     mutateModelConfig(data, models.getProviders().map(p => p.id));
+    const selection=runtime.store.state.preferences.modelSelection;
+    if(data.operation==="save"&&selection?.[data.originalProvider||data.provider.id]){
+      const previous=data.originalProvider||data.provider.id,ids=selection[previous].map(id=>id===data.originalModel?data.model.id:id);
+      if(previous!==data.provider.id)delete selection[previous];selection[data.provider.id]=ids;runtime.changed();
+    }
+    if(data.operation==="import")await runtime.selectModels(data.provider.id,data.models.map((m:any)=>m.id));
+    if(data.operation==="delete_provider"&&selection){delete selection[data.provider];runtime.changed();}
+    if(data.operation==="delete_model"&&selection?.[data.provider]){selection[data.provider]=selection[data.provider].filter(id=>id!==data.model);runtime.changed();}
     const catalog = await runtime.models(); runtime.emit({ type: "models", data: catalog }); json(res, { ...modelConfig(), catalog }); return;
   }
   if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined, url.searchParams.get("refresh")==="1")); return; }
-  if (path === "/api/models/test" && method === "POST") { const data=await body(req);json(res,await runtime.testModel(text(data.provider,150),text(data.model,500),url.searchParams.get("sessionId")||undefined));return; }
+  if (path === "/api/models/selection" && method === "POST") {const data=await body(req);json(res,await runtime.selectModels(text(data.provider,256),data.models));return;}
+  if (path === "/api/models/discover" && method === "POST") {const data=await body(req),controller=new AbortController(),cancel=()=>controller.abort();res.on("close",cancel);try{json(res,await runtime.discoverModels(data,controller.signal));}finally{res.off("close",cancel);}return;}
+  if (path === "/api/models/test" && method === "POST") {
+    const data=await body(req),provider=text(data.provider,256),model=text(data.model,500),prompt=data.prompt===undefined?undefined:text(data.prompt,10000);
+    if(url.searchParams.get("stream")!=="1"){json(res,await runtime.testModel(provider,model,url.searchParams.get("sessionId")||undefined,{prompt,draft:data.draft}));return;}
+    res.writeHead(200,{"Content-Type":"application/x-ndjson; charset=utf-8","Cache-Control":"no-store"});res.flushHeaders();
+    const controller=new AbortController(),cancel=()=>controller.abort(),log=(event:import("./types.ts").ModelProbeLog)=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(event)+"\n");};res.on("close",cancel);
+    let loggedError=false;
+    try{await runtime.testModel(provider,model,undefined,{prompt,draft:data.draft,signal:controller.signal,log:event=>{if(event.kind==="error")loggedError=true;log(event);}});}catch(error){if(!loggedError)log({at:new Date().toISOString(),kind:"error",data:{message:safeError(error)}});}finally{res.off("close",cancel);res.end();}return;
+  }
   if (path === "/api/models" && method === "POST") {
     const data = await body(req);const provider = text(data.provider, 150); const models = await runtime.modelRuntime();
     if (data.operation === "logout") await models.logout(provider);
@@ -150,7 +168,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
         signal: controller.signal,
         prompt: async prompt => { const result = await runtime.ask({ type: prompt.type === "select" ? "select" : prompt.type === "secret" ? "secret" : "input", title: prompt.message, options: prompt.type === "select" ? prompt.options.map(o => o.id) : undefined }, prompt.signal); if (result === undefined) throw new Error("登录已取消"); return String(result); },
         notify: event => { if (event.type === "auth_url") runtime.emit({ type: "auth", data: { url: event.url, message: event.instructions || "请在浏览器中完成登录" } }); else if (event.type === "device_code") runtime.emit({ type: "auth", data: { url: event.verificationUri, message: `验证码：${event.userCode}` } }); else runtime.emit({ type: "notice", data: { message: event.message } }); },
-      }).then(async () => runtime.emit({ type: "models", data: await runtime.models() })).catch(error => runtime.emit({ type: "notice", data: { type: "error", message: safeError(error) } })).finally(() => runtime.authControllers.delete(controller));
+      }).then(async () => {if(data.selectModels===true&&runtime.store.state.preferences.modelSelection?.[provider]===undefined){const catalog=await runtime.models();(runtime.store.state.preferences.modelSelection??={})[provider]=catalog.defaultProvider===provider&&catalog.defaultModel?[catalog.defaultModel]:[];runtime.changed();}runtime.emit({ type: "models", data: await runtime.models() });}).catch(error => runtime.emit({ type: "notice", data: { type: "error", message: safeError(error) } })).finally(() => runtime.authControllers.delete(controller));
       json(res, { started: true }); return;
     } else throw new Error("未知认证操作");
     json(res, await runtime.models()); return;
