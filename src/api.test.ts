@@ -162,6 +162,7 @@ test("production persistence: acknowledged data survives SIGKILL and an interrup
   await request(`/sessions/${session.id}/message`,{operation:"edit",entryId:reply.entryId,text:"edited durable reply"});
   const image=Buffer.from("durable attachment fixture").toString("base64");
   await request(`/sessions/${session.id}`,{title:"Durable title",pinned:true,draft:"durable unsent draft",draftImages:[{id:"image",name:"draft.png",type:"image",mimeType:"image/png",data:image}]},"PATCH");
+  await request(`/workspaces/${workspace.id}`,{pinned:true},"PATCH");
   await request(`/sessions/${session.id}/queue`,{operation:"replace",pending:[{id:"held",text:"durable paused queue",behavior:"followUp",images:[]}]});
   await request("/preferences",{theme:"dark"});
   const exited=once(child!,"exit");child!.kill("SIGKILL");await exited;
@@ -170,6 +171,7 @@ test("production persistence: acknowledged data survives SIGKILL and an interrup
   await writeFile(join(desk,"state.json.tmp"),'{"interrupted temporary file":');
   await start();const state=await request("/state"),restored=state.sessions.find((item:any)=>item.id===session.id),composer=await request(`/sessions/${session.id}/composer`),snapshot=await request(`/sessions/${session.id}`);
   assert.equal(state.preferences.theme,"dark");assert.equal(restored.title,"Durable title");assert.equal(restored.pinned,true);assert.equal(restored.status,"idle");
+  assert.equal(state.workspaces.find((item:any)=>item.id===workspace.id).pinned,true);
   assert.equal(composer.text,"durable unsent draft");assert.equal(composer.images[0].data,image);assert.equal(composer.pending[0].text,"durable paused queue");assert.equal(composer.pending[0].paused,true);
   assert.equal(snapshot.stats.tokens.output,3);assert.ok(snapshot.messages.some((message:any)=>JSON.stringify(message.content).includes("edited durable reply")));assert.equal(requests,1,"restart does not replay held prompts");
   await request(`/sessions/${session.id}`,{draft:"saved after crash recovery"},"PATCH");
@@ -213,6 +215,16 @@ test("production HTTP: local origin boundary, default-enabled workspace, SSE rec
   const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await fetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
   assert.equal((await fetch(origin)).status, 200);
   assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","older","empty"],"startup orders workspaces by their newest session and keeps empty workspaces last");
+  assert.equal((await request("/workspaces/empty",{pinned:true},"PATCH")).data.pinned,true);
+  assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["empty","ssh-menu","older"]);
+  assert.equal(JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).workspaces[0].pinned,true);
+  assert.equal((await request("/workspaces/ssh-menu",{pinned:true},"PATCH")).data.pinned,true);
+  assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","empty","older"],"pinned workspaces retain activity ordering within their group");
+  assert.equal((await request("/workspaces/empty",{pinned:"yes",name:"Must not change"},"PATCH")).status,400);
+  assert.equal((await request("/state")).data.workspaces.find((item:any)=>item.id==="empty").name,"Empty fixture");
+  assert.equal((await request("/workspaces/ssh-menu",{pinned:false},"PATCH")).data.pinned,false);
+  assert.equal((await request("/workspaces/empty",{pinned:false},"PATCH")).data.pinned,false);
+  assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","older","empty"],"unpinning restores activity ordering");
   const sshInfo=await request("/workspaces/ssh-menu/ssh-info");assert.equal(sshInfo.status,200);assert.equal(sshInfo.data.hostname,"127.0.0.1");assert.equal(sshInfo.data.user,"fixture");assert.equal(sshInfo.data.port,2222);assert.ok(!("identityfile" in sshInfo.data));assert.equal((await request("/state")).data.workspaces[0].remote.connected,false);
 assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await fetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);

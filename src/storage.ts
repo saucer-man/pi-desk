@@ -73,7 +73,7 @@ export class Store {
   save() {
     const latest = new Map<string, string>();
     for (const record of this.state.sessions) { const time = record.updatedAt || record.createdAt || ""; if (time > (latest.get(record.workspaceId) || "")) latest.set(record.workspaceId, time); }
-    this.state.workspaces.sort((a, b) => (latest.get(b.id) || "").localeCompare(latest.get(a.id) || ""));
+    this.state.workspaces.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (latest.get(b.id) || "").localeCompare(latest.get(a.id) || ""));
     // ponytail: one synchronous metadata file; use an indexed store if 10,000 sessions make saves noticeable.
     const contents = JSON.stringify(this.state, null, 2) + "\n";
     if (contents === this.saved) return;

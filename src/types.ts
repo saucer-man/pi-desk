@@ -6,7 +6,7 @@ export interface McpCatalog { paths:{global:string;project:string};servers:McpSu
 export interface McpDefinition { name:string;scope:"global"|"project";source:string;definition:Record<string,unknown>;revision:string }
 export interface McpDebugResult { state:string;error?:string;durationMs:number;serverInfo?:{name:string;version:string};instructions?:string;tools:{name:string;description?:string;inputSchema:unknown}[] }
 export type Status = "idle" | "running" | "paused" | "error";
-export interface Workspace { id: string; name: string; path: string; trusted: boolean; hidden?:boolean; remote?: {target:string;port?:number;identity?:string;configFingerprint?:string;hostFingerprint?:string;workspaceId?:string;connected?:boolean;error?:string;execution?:"local-sdk";historyImported?:boolean} }
+export interface Workspace { id: string; name: string; path: string; trusted: boolean; hidden?:boolean; pinned?:boolean; remote?: {target:string;port?:number;identity?:string;configFingerprint?:string;hostFingerprint?:string;workspaceId?:string;connected?:boolean;error?:string;execution?:"local-sdk";historyImported?:boolean} }
 export interface DraftImage { type: "image"; id: string; name: string; mimeType: string; cacheKey?: string; data?: string; missing?: boolean }
 export interface PendingPrompt { id: string; text: string; images: DraftImage[]; behavior: "steer" | "followUp"; paused: boolean; queuedText?: string }
 export interface SessionRecord {
