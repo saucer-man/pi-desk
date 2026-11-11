@@ -121,6 +121,21 @@ test("web streaming: coalesce updates, flush final messages and discard pending 
   }finally{unsubscribe();useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
 });
 
+test("settings errors: refresh failures reach the caller and OAuth errors stay in their dialog",async t=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");
+  Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState();
+  t.mock.method(globalThis,"fetch",async()=>new Response(JSON.stringify({error:"settings operation failed"}),{status:500}));
+  try{
+    useApp.setState({error:"existing conversation error",auth:undefined});
+    await assert.rejects(useApp.getState().loadModels(true),/settings operation failed/);
+    await assert.rejects(useApp.getState().refresh(),/settings operation failed/);
+    useApp.getState().receive({type:"auth",data:{provider:"openai",status:"error",message:"OAuth state mismatch"}});
+    assert.equal(useApp.getState().auth?.message,"OAuth state mismatch");
+    assert.equal(useApp.getState().error,"existing conversation error","settings must not overwrite unrelated conversation feedback");
+  }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
 test("progress snapshots: skip unwatched sessions, retain watched parents and recheck disconnections",async t=>{
   const {Runtime}=await import("./runtime.ts");t.mock.timers.enable({apis:["setTimeout"]});
   const records={parent:{},child:{parentId:"parent"},background:{}};
@@ -132,6 +147,31 @@ test("progress snapshots: skip unwatched sessions, retain watched parents and re
   assert.deepEqual(snapshots.mock.calls.map(call=>call.arguments[0]),["parent"],"child progress refreshes its watched parent's aggregate once");
   runtime.progress("parent");runtime.listeners.delete(watched);t.mock.timers.tick(100);await Promise.resolve();assert.equal(snapshots.mock.callCount(),1);
   runtime.listeners.add(()=>{});runtime.progress("background");t.mock.timers.tick(100);await Promise.resolve();assert.equal(snapshots.mock.callCount(),2,"legacy unfiltered clients retain full progress");
+});
+
+test("OpenAI OAuth: production login persists and reuses the installation UUID",{timeout:45000},async t=>{
+  const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-oauth-device-"))),agent=join(temp,"agent");await mkdir(agent);
+  await writeFile(join(agent,"settings.json"),JSON.stringify({retry:{enabled:false}}));
+  let child:ReturnType<typeof spawn>|undefined,streamAbort:AbortController|undefined,deviceId="";
+  t.after(async()=>{streamAbort?.abort();if(child)await stopChild(child);});
+  for(let attempt=0;attempt<2;attempt++){
+    child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_DESK_DIR:join(temp,"desk"),PI_OAUTH_CALLBACK_HOST:"127.0.0.1"},stdio:["ignore","pipe","pipe"]});
+    const server=child;let output="",errors="";server.stderr!.on("data",chunk=>errors+=chunk);
+    const origin=await new Promise<string>((ok,fail)=>{const timer=setTimeout(()=>fail(Error(errors||"OAuth fixture startup timed out")),15000);server.stdout!.on("data",chunk=>{output+=chunk;const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});server.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
+    streamAbort=new AbortController();const response=await fetch(origin+"/api/events",{signal:AbortSignal.any([streamAbort.signal,AbortSignal.timeout(15000)])}),reader=response.body!.getReader(),decoder=new TextDecoder();let buffer="";
+    const next=async(type:string):Promise<any>=>{for(;;){const end=buffer.indexOf("\n\n");if(end>=0){const block=buffer.slice(0,end);buffer=buffer.slice(end+2);if(!block.startsWith("data: "))continue;const event=JSON.parse(block.slice(6));if(event.type===type)return event.data;if(event.type==="notice"&&event.data.type==="error")throw Error(event.data.message);continue;}const chunk=await reader.read();assert.equal(chunk.done,false,"OAuth event stream ended early");buffer+=decoder.decode(chunk.value,{stream:true});}};
+    const post=async(path:string,data:unknown)=>{const response=await fetch(origin+"/api"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});assert.equal(response.status,200);return response.json();};
+    assert.equal((await post("/models",{provider:"openai",operation:"oauth"})).started,true);
+    const auth=await next("auth"),url=new URL(auth.url),settings=JSON.parse(await readFile(join(agent,"settings.json"),"utf8"));
+    assert.match(settings.deviceId,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.equal(url.hostname,"auth.openai.com");assert.equal(url.searchParams.get("ext_agent_host_id"),`urn:uuid:${settings.deviceId}`);assert.equal(url.searchParams.get("agent_name_hint"),"Pi Desk");assert.equal(settings.retry.enabled,false);
+    if(deviceId)assert.equal(settings.deviceId,deviceId,"restarting and retrying keeps the same installation identity");deviceId=settings.deviceId;
+    const prompt=await next("ui");assert.equal(prompt.url,auth.url);assert.deepEqual(prompt.oauth,{provider:"openai",kind:"manual_code",placeholder:"http://127.0.0.1:1455/auth/callback"});
+    if(attempt===0)await post(`/ui/${prompt.id}`,{});else await post("/models",{provider:"openai",operation:"cancel_oauth"});
+    const ended=await next("auth");assert.equal(ended.status,attempt===0?"error":"cancelled");assert.match(ended.message,/取消|cancel/i);
+    await post("/preferences",{theme:"light"});await next("state"); // Drain through a marker; any duplicate global error notice fails next().
+    streamAbort.abort();await reader.cancel().catch(()=>{});await stopChild(server);child=undefined;
+  }
 });
 
 test("production persistence: acknowledged data survives SIGKILL and an interrupted temporary write",{timeout:60000},async t=>{

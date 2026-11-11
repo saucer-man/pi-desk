@@ -15,6 +15,7 @@ import { agentDir, deskDir, directory, inside, safeError } from "./storage.ts";
 import { git, agentDefinitions, delegate } from "./subagents.ts";
 import { skillCatalog, pluginCatalog, readPlugin, resources, readResource, mutateResource, modelConfig, mutateModelConfig, mcpCatalog, mcpDefinition, mutateMcp, debugMcp } from "./resources.ts";
 import { sshIdentity } from "./remote.ts";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 export function json(res: ServerResponse, data: unknown, status = 200) { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); res.end(JSON.stringify(data, (key, value) => key === "cost" ? undefined : value)); }
 async function body(req: IncomingMessage): Promise<Record<string, any>> {
@@ -164,15 +165,20 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   }
   if (path === "/api/models" && method === "POST") {
     const data = await body(req);const provider = text(data.provider, 150); const models = await runtime.modelRuntime();
+    if (data.operation === "cancel_oauth") { runtime.authControllers.get(provider)?.abort(); json(res,{ok:true}); return; }
     if (data.operation === "logout") await models.logout(provider);
     else if (data.operation === "api_key") { const key = text(data.key, 20000); if (!key.trim()) throw new Error("API Key 不能为空"); await models.login(provider, "api_key", { prompt: async () => key, notify() {} }); }
     else if (data.operation === "oauth") {
-      const controller = new AbortController(); runtime.authControllers.add(controller);
+      const settings=SettingsManager.create(agentDir,agentDir),deviceId=settings.getOrCreateDeviceId();await settings.flush();
+      runtime.authControllers.get(provider)?.abort();
+      const controller = new AbortController(); runtime.authControllers.set(provider,controller);
+      let auth:import("./types.ts").OAuthState={provider,status:"waiting"};
+      const update=(data:Partial<typeof auth>)=>{auth={...auth,...data};if(runtime.authControllers.get(provider)===controller)runtime.emit({type:"auth",data:auth});};
       void runtime.withProxy({provider,id:""},()=>models.login(provider, "oauth", {
         signal: controller.signal,
-        prompt: async prompt => { const result = await runtime.ask({ type: prompt.type === "select" ? "select" : prompt.type === "secret" ? "secret" : "input", title: prompt.message, options: prompt.type === "select" ? prompt.options.map(o => o.id) : undefined }, prompt.signal); if (result === undefined) throw new Error("登录已取消"); return String(result); },
-        notify: event => { if (event.type === "auth_url") runtime.emit({ type: "auth", data: { url: event.url, message: event.instructions || "请在浏览器中完成登录" } }); else if (event.type === "device_code") runtime.emit({ type: "auth", data: { url: event.verificationUri, message: `验证码：${event.userCode}` } }); else runtime.emit({ type: "notice", data: { message: event.message } }); },
-      })).then(async () => {if(data.selectModels===true&&runtime.store.state.preferences.modelSelection?.[provider]===undefined){const catalog=await runtime.models();(runtime.store.state.preferences.modelSelection??={})[provider]=catalog.defaultProvider===provider&&catalog.defaultModel?[catalog.defaultModel]:[];runtime.changed();}runtime.emit({ type: "models", data: await runtime.models() });}).catch(error => runtime.emit({ type: "notice", data: { type: "error", message: safeError(error) } })).finally(() => runtime.authControllers.delete(controller));
+        prompt: async prompt => { const result = await runtime.ask({ type: prompt.type === "select" ? "select" : prompt.type === "secret" ? "secret" : "input", title: prompt.message, url:auth.url, options: prompt.type === "select" ? prompt.options.map(o => o.id) : undefined, oauth:{provider,kind:prompt.type,placeholder:"placeholder" in prompt?prompt.placeholder:undefined,labels:prompt.type==="select"?prompt.options.map(o=>o.label):undefined} }, AbortSignal.any([controller.signal,...(prompt.signal?[prompt.signal]:[])])); if (result === undefined) throw new Error("登录已取消"); return String(result); },
+        notify: event => { if (event.type === "auth_url") update({url:event.url,message:event.instructions}); else if (event.type === "device_code") update({url:event.verificationUri,userCode:event.userCode}); else update({message:event.message}); },
+      },{getDeviceId:()=>deviceId,agentName:"Pi Desk"})).then(async () => {if(data.selectModels===true&&runtime.store.state.preferences.modelSelection?.[provider]===undefined){const catalog=await runtime.models();(runtime.store.state.preferences.modelSelection??={})[provider]=catalog.defaultProvider===provider&&catalog.defaultModel?[catalog.defaultModel]:[];runtime.changed();}runtime.emit({ type: "models", data: await runtime.models() });update({status:"complete"});}).catch(error => {if(runtime.authControllers.get(provider)!==controller)return;const message=controller.signal.aborted?"登录已取消":safeError(error);update({status:controller.signal.aborted?"cancelled":"error",message});}).finally(() => {if(runtime.authControllers.get(provider)===controller)runtime.authControllers.delete(provider);});
       json(res, { started: true }); return;
     } else throw new Error("未知认证操作");
     json(res, await runtime.models()); return;

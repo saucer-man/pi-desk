@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from "react";
-import type { State, SessionSnapshot, ServerEvent, ChatMessage, TraceEntry, UiRequest, ModelInfo, ExecutionState } from "../../../src/types";
+import type { State, SessionSnapshot, ServerEvent, ChatMessage, TraceEntry, UiRequest, ModelInfo, ExecutionState, OAuthState } from "../../../src/types";
 
 export async function api<T = unknown>(path: string, data?: unknown, method = data === undefined ? "GET" : "POST", signal?:AbortSignal): Promise<T> {
   const res = await fetch("/api" + path, { method, signal, headers: data === undefined ? undefined : { "Content-Type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data) });
@@ -18,7 +18,7 @@ interface AppState {
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
   snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
   subagentId:string; subagentSnapshot?:SessionSnapshot;
-  requests: UiRequest[]; auth?: { url: string; message: string };
+  requests: UiRequest[]; auth?: OAuthState;
   select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: (refresh?: boolean) => Promise<void>;
   setPage: (page: "workbench" | "trajectory") => void; fail: (error: unknown) => void;
   receive: (event: ServerEvent) => void;
@@ -42,12 +42,12 @@ let state: AppState = ({
     while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
     id=record?.id||id;localStorage.setItem("pi-desk.active", id);
     set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, loading: true, error: "" });
-    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) { set({ snapshot }); void get().loadModels(); } }
+    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) { set({ snapshot }); void get().loadModels().catch(get().fail); } }
     catch (error) { if (get().activeId === id) get().fail(error); }
     finally { if (get().activeId === id) set({ loading: false }); }
   },
-  refresh: async () => { try { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) set({ snapshot }); } } catch (error) { get().fail(error); } },
-  loadModels: async (refresh=false) => { try { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); } catch (error) { get().fail(error); } },
+  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) set({ snapshot }); } },
+  loadModels: async (refresh=false) => { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); },
   receive: event => {
     if (event.type === "state") {
       const state = event.data as State; const current = get();
@@ -92,11 +92,11 @@ let state: AppState = ({
       if (trace.type === "run_start" && id === get().activeId && get().snapshot) set(s => ({ snapshot: { ...s.snapshot!, metrics: { startedAt: trace.at } } }));
     }
     if (event.type === "notice") { const notice = event.data as { message: string }; set({ error: notice.message }); }
-    if (event.type === "ui") { const request = event.data as UiRequest; set(s => ({ requests: [...s.requests.filter(r => r.id !== request.id), request] })); }
+    if (event.type === "ui") { const request = event.data as UiRequest; set(s => ({ requests: [...s.requests.filter(r => r.id !== request.id), request], ...(request.oauth&&(!s.auth||s.auth.provider!==request.oauth.provider||s.auth.status!=="waiting")?{auth:{provider:request.oauth.provider,url:request.url,status:"waiting" as const}}:{}) })); }
     if (event.type === "ui_done") set(s => ({ requests: s.requests.filter(r => r.id !== (event.data as { id: string }).id) }));
-    if (event.type === "models") set({ catalog: event.data as Catalog, auth: undefined });
+    if (event.type === "models") set({ catalog: event.data as Catalog });
     if (event.type === "widget" && event.sessionId === get().activeId && get().snapshot) { const widget = event.data as { key: string; lines: string[] }; set(s => ({ snapshot: { ...s.snapshot!, widgets: { ...s.snapshot!.widgets, [widget.key]: widget.lines } } })); }
-    if (event.type === "auth") set({ auth: event.data as { url: string; message: string } });
+    if (event.type === "auth") { const auth=event.data as OAuthState; set({auth:auth.status==="cancelled"?undefined:auth}); }
   },
 });
 export const useApp = Object.assign(function useApp<T=AppState>(select:(state:AppState)=>T = state=>state as unknown as T) {
@@ -116,10 +116,10 @@ export function connect() {
     if (events && subscription === query) return;
     subscription = query; events?.close();
     const source = events = new EventSource("/api/events?" + query);
-    source.onopen = () => { if (events !== source) return; set({ connected: true }); const { state, activeId, loading } = get(); if (state?.sessions.some(r => r.id === activeId) && !loading) void get().refresh(); };
+    source.onopen = () => { if (events !== source) return; set({ connected: true }); const { state, activeId, loading } = get(); if (state?.sessions.some(r => r.id === activeId) && !loading) void get().refresh().catch(get().fail); };
     source.onmessage = message => { if (events !== source) return; try { get().receive(JSON.parse(message.data)); } catch (error) { get().fail(error); } };
     source.onerror = () => { if (events === source) set({ connected: false }); };
   };
   listeners.add(open); open();
-  void get().loadModels(); return () => { listeners.delete(open); events?.close(); events = undefined; };
+  void get().loadModels().catch(get().fail); return () => { listeners.delete(open); events?.close(); events = undefined; };
 }

@@ -49,7 +49,7 @@ export class Runtime {
   readonly creating = new Map<string, Promise<Live>>();
   readonly listeners = new Set<((event: ServerEvent) => void) & {sessions?: Set<string>}>();
   readonly requests = new Map<string, { request: UiRequest; resolve: (value: unknown) => void }>();
-  readonly authControllers = new Set<AbortController>();
+  readonly authControllers = new Map<string,AbortController>();
   private catalog?: Promise<ModelRuntime>;
   private sessionOwners = new Map<string, string>();
   private stopping = new Set<string>();
@@ -620,5 +620,5 @@ export class Runtime {
     await live.session.abort();
     try { await live.session.extensionRunner.emit({ type: "session_shutdown", reason }); } finally { live.session.dispose(); }
   }
-  async shutdown() { this.closing = true; this.scheduler.close(); await this.remote.close(); await this.browser.close(); for (const controller of this.authControllers) controller.abort(); for (const pending of this.requests.values()) pending.resolve(undefined); await Promise.allSettled([...this.live.values()].map(l => this.release(l, "quit"))); for (const record of this.store.state.sessions) if (record.status === "running") record.status = "paused"; await this.scheduler.drain(); await Promise.allSettled([...this.proxyAgents.values()].map(agent=>agent.destroy())); this.store.save(); }
+  async shutdown() { this.closing = true; this.scheduler.close(); await this.remote.close(); await this.browser.close(); for (const controller of this.authControllers.values()) controller.abort(); for (const pending of this.requests.values()) pending.resolve(undefined); await Promise.allSettled([...this.live.values()].map(l => this.release(l, "quit"))); for (const record of this.store.state.sessions) if (record.status === "running") record.status = "paused"; await this.scheduler.drain(); await Promise.allSettled([...this.proxyAgents.values()].map(agent=>agent.destroy())); this.store.save(); }
 }
