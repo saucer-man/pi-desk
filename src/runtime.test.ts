@@ -13,12 +13,17 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   process.env.PI_CODING_AGENT_DIR = join(temp, "agent"); process.env.PI_DESK_DIR = join(temp, "desk");
   const cwd = join(temp, "project"); await mkdir(join(cwd, ".pi", "extensions"), { recursive: true }); await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   let active = 0, peak = 0; const seenTools: string[][] = []; const seenUsers: string[] = []; const seenContexts:string[]=[];
+  const retryRequests=new Map<string,number>();
   const model = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const request = JSON.parse(Buffer.concat(chunks).toString());
     seenTools.push((request.tools || []).map((tool: any) => tool.function.name));
     const last = request.messages.at(-1); const content = [...request.messages].reverse().find((m: any) => m.role === "user")?.content; const user = Array.isArray(content) ? content.map((p: any) => p.text || "").join("") : String(content || "");
     seenUsers.push(user); seenContexts.push(JSON.stringify(request.messages));
+    if(user.startsWith("retry-http")||user==="retry-invalid-auth") {
+      const attempt=(retryRequests.get(user)||0)+1;retryRequests.set(user,attempt);
+      if(user!=="retry-http-success"||attempt<=2){res.writeHead(user==="retry-invalid-auth"?401:503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:{message:user==="retry-invalid-auth"?"Invalid API key":"Service temporarily unavailable"}}));return;}
+    }
     const goalId=/<goal_id>([^<]+)<\/goal_id>/.exec(user)?.[1];
     const tool = last?.role !== "tool" && user.includes("complete-fixture") && goalId ? { name:"goal_complete", args:{goal_id:goalId,summary:"Fixture requirements verified"} }
       : last?.role !== "tool" && user.startsWith("todo-toggle") ? {name:"todo",args:{action:"toggle",id:1}}
@@ -329,24 +334,42 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   await runtime.prompt(inlineQueue.id, "edit queued image", [{type:"image",mimeType:"image/png",data:Buffer.from("inline image").toString("base64")}]);
   await runtime.prompt(inlineQueue.id, "automatic queue A"); await runtime.prompt(inlineQueue.id, "automatic queue B");
   await runtime.prompt(inlineQueue.id, "immediate queued message");
+  await runtime.prompt(inlineQueue.id, "deleted queue fixture");
+  const deletedId = inlineQueue.pending!.at(-1)!.id;
+  runtime.deleteQueued(inlineQueue.id, deletedId);
+  assert.throws(()=>runtime.deleteQueued(inlineQueue.id, deletedId), /已开始处理/);
+  assert.equal(inlineQueue.status, "running", "deleting a queued message must not stop the run");
+  assert.deepEqual(inlineQueue.pending!.map(p=>p.text), ["edit queued image", "automatic queue A", "automatic queue B", "immediate queued message"]);
   assert.equal((await runtime.get(inlineQueue.id)).session.pendingMessageCount, 0, "follow-ups stay editable outside the SDK queue");
   const composer = runtime.editQueued(inlineQueue.id, inlineQueue.pending![0].id, "existing draft", []);
   assert.equal(composer.text, "edit queued image\n\nexisting draft"); assert.ok(composer.images[0].data);
   assert.equal(inlineQueue.status, "running", "editing a queued message must not stop the run");
   assert.equal(inlineQueue.pending!.length, 3);
+  const [queueA, queueB] = inlineQueue.pending!;
+  runtime.moveQueued(inlineQueue.id, queueA.id, queueB.id);
+  assert.deepEqual(inlineQueue.pending!.slice(0,2), [queueB, queueA]);
+  runtime.moveQueued(inlineQueue.id, queueA.id, queueB.id);
+  assert.deepEqual(inlineQueue.pending!.slice(0,2), [queueA, queueB]);
+  runtime.moveQueued(inlineQueue.id, queueB.id, queueA.id);
+  runtime.moveQueued(inlineQueue.id, queueB.id, queueB.id);
+  assert.throws(()=>runtime.moveQueued(inlineQueue.id, "missing", queueB.id), /已开始处理/);
+  assert.throws(()=>runtime.moveQueued(inlineQueue.id, queueB.id, "missing"), /已开始处理/);
+  assert.equal(inlineQueue.status, "running");
   const immediateId = inlineQueue.pending!.at(-1)!.id;
   await runtime.sendQueued(inlineQueue.id, immediateId);
   await assert.rejects(runtime.sendQueued(inlineQueue.id, immediateId), /已开始处理/);
-  assert.deepEqual(inlineQueue.pending!.map(p=>p.text), ["automatic queue A", "automatic queue B"]);
+  assert.deepEqual(inlineQueue.pending!.map(p=>p.text), ["automatic queue B", "automatic queue A"]);
   await inlineRun;
-  for (let i=0;i<200&&(inlineQueue.status!=="idle"||inlineQueue.pending!.length||!seenUsers.includes("automatic queue B"));i++) await new Promise(resolve=>setTimeout(resolve,20));
+  for (let i=0;i<200&&(inlineQueue.status!=="idle"||inlineQueue.pending!.length||!seenUsers.includes("automatic queue A"));i++) await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(inlineQueue.status, "idle"); assert.equal(inlineQueue.pending!.length, 0);
-  assert.deepEqual(seenUsers.filter(text=>["slow inline queue","immediate queued message","automatic queue A","automatic queue B"].includes(text)), ["slow inline queue","immediate queued message","automatic queue A","automatic queue B"]);
+  assert.deepEqual(seenUsers.filter(text=>["slow inline queue","immediate queued message","automatic queue A","automatic queue B"].includes(text)), ["slow inline queue","immediate queued message","automatic queue B","automatic queue A"]);
   assert.ok(!seenUsers.includes("edit queued image")); assert.equal(inlineQueue.draft, composer.text); assert.equal(inlineQueue.draftImages!.length, 1);
+  assert.ok(!seenUsers.includes("deleted queue fixture"));
   const stoppedQueue = runtime.create("project", "minimal"), stoppedRun = runtime.prompt(stoppedQueue.id, "slow stopped queue");
   for (let i=0;i<100&&!seenUsers.includes("slow stopped queue");i++) await new Promise(resolve=>setTimeout(resolve,10));
   await runtime.prompt(stoppedQueue.id, "must remain paused"); await runtime.stop(stoppedQueue.id); await stoppedRun;
   assert.equal(stoppedQueue.pending![0].paused, true); assert.ok(!seenUsers.includes("must remain paused"));
+  runtime.deleteQueued(stoppedQueue.id, stoppedQueue.pending![0].id); assert.equal(stoppedQueue.pending!.length, 0);
   const compacting = runtime.create("project","minimal"); const compactLive = await runtime.get(compacting.id);
   for(let i=0;i<20;i++) { compactLive.session.sessionManager.appendMessage({role:"user",content:[{type:"text",text:`historical task ${i} `+"context ".repeat(100)}],timestamp:Date.now()}); compactLive.session.sessionManager.appendMessage({...snapshot.messages.at(-1),content:[{type:"text",text:"historical result "+"result ".repeat(100)}],timestamp:Date.now()} as any); }
   const historical=compactLive.session.sessionManager.getBranch().find(e=>e.type==="message"&&e.message.role==="user")!;
@@ -401,15 +424,37 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const failureGate=new Promise<void>(resolve=>{releaseFailure=resolve;}),failureStarted=new Promise<void>(resolve=>{startedFailure=resolve;});
   const failingStream=t.mock.method(failedSession.agent,"streamFunction",async()=>{startedFailure();await failureGate;throw new Error(errorMessage);});
   failedSession.setAutoRetryEnabled(true);
+  failedSession.settingsManager.applyOverrides({retry:{maxRetries:3,baseDelayMs:1,maxAgentDelayMs:1}});
   try {
     const failedRun=runtime.prompt(failedGoal.id,"/goal resume");await failureStarted;
     await runtime.prompt(failedGoal.id,"follow-up must wait for recovery");await runtime.prompt(failedGoal.id,"steering must wait for recovery",undefined,"steer");releaseFailure();await failedRun;
-    assert.equal(failedGoal.status,"error");assert.equal(failedGoal.error,errorMessage);assert.equal(failingStream.mock.callCount(),1,"model errors stop before SDK retry or goal continuation");
-    assert.deepEqual(failedGoal.pending?.map(p=>[p.text,p.paused]),[["follow-up must wait for recovery",true],["steering must wait for recovery",true]]);
-    assert.equal(failedSession.pendingMessageCount,0);assert.equal(failedSession.isIdle,true);assert.equal(lastGoal(failedGoal.id).status,"paused");
+    assert.equal(failedGoal.status,"error");assert.equal(failedGoal.error,errorMessage);assert.equal(failingStream.mock.callCount(),4,"stop after the initial request and three SDK retries");
+    assert.equal(runtime.traces(failedGoal.id).filter(e=>e.type==="auto_retry_start").length,3);
+    assert.deepEqual(failedGoal.pending?.map(p=>[p.text,p.paused]),[["follow-up must wait for recovery",true]]);
+    assert.ok((await runtime.snapshot(failedGoal.id)).messages.some(message=>message.role==="user"&&JSON.stringify(message.content).includes("steering must wait for recovery")),"SDK retries consume steering into persisted context");
+    assert.equal(failedSession.pendingMessageCount,0);assert.equal(failedSession.isIdle,true);assert.equal(lastGoal(failedGoal.id).status,"blocked");
+    assert.equal((runtime.traces(failedGoal.id).findLast(e=>e.type==="auto_retry_end")?.data as any)?.finalError,errorMessage);
     assert.equal((await runtime.snapshot(failedGoal.id)).messages.at(-1)?.errorMessage,errorMessage);
   } finally { releaseFailure();failingStream.mock.restore();failedSession.setAutoRetryEnabled(false); }
   await runtime.prompt(failedGoal.id,"manual recovery after OAuth error");assert.equal(failedGoal.status,"idle");assert.equal(failedGoal.error,undefined);assert.ok(failedGoal.pending?.every(p=>p.paused));
+  for(const [prompt,limit,requests,status] of [["retry-http-success",3,3,"idle"],["retry-http-exhausted",1,2,"error"],["retry-invalid-auth",3,1,"error"],["retry-http-disabled",0,1,"error"]] as const){
+    runtime.store.state.preferences.maxRetries=limit;
+    const r=runtime.create("project","minimal"),live=await runtime.get(r.id);
+    live.session.settingsManager.applyOverrides({retry:{baseDelayMs:1,maxAgentDelayMs:1}});
+    const observe=(event:any)=>{if(event.type==="auto_retry_start"){assert.equal(r.status,"running");assert.equal(r.error,undefined,"transient failures must not poison a recovered run");}};
+    const unsubscribe=live.session.subscribe(observe);
+    try{await runtime.prompt(r.id,prompt);assert.equal(retryRequests.get(prompt),requests);assert.equal(r.status,status);assert.equal(Boolean(r.error),status==="error");assert.equal((await runtime.snapshot(r.id)).execution?.retry,undefined);}
+    finally{unsubscribe();}
+  }
+  runtime.store.state.preferences.maxRetries=3;
+  const cancelledRetry=runtime.create("project","minimal"),cancelledLive=await runtime.get(cancelledRetry.id);
+  const retryReady=new Promise<void>(resolve=>{const unsubscribe=cancelledLive.session.subscribe(event=>{if(event.type==="auto_retry_start"){unsubscribe();resolve();}});});
+  const cancelledRun=runtime.prompt(cancelledRetry.id,"retry-http-cancelled");await retryReady;
+  const waiting=(await runtime.snapshot(cancelledRetry.id)).execution?.retry;assert.deepEqual(waiting,runtime.traces(cancelledRetry.id).findLast(trace=>trace.type==="auto_retry_start"));assert.ok(Number.isFinite(Date.parse(waiting!.at)));
+  const waitingData=waiting!.data as {attempt:number;maxAttempts:number;delayMs:number;errorMessage:string};assert.equal(waitingData.attempt,1);assert.equal(waitingData.maxAttempts,3);assert.equal(waitingData.delayMs,2000);assert.match(waitingData.errorMessage,/503.*Service temporarily unavailable/);
+  await runtime.stop(cancelledRetry.id);await cancelledRun;assert.equal((await runtime.snapshot(cancelledRetry.id)).execution?.retry,undefined);
+  assert.equal(cancelledRetry.status,"paused");assert.equal(retryRequests.get("retry-http-cancelled"),1);assert.equal(cancelledRetry.error,undefined);
+  delete runtime.store.state.preferences.maxRetries;
   for(const [name,extra,expected] of [["budget-fixture",{tokenBudget:1},"budget_limited"],["no-progress-fixture",{},"paused"],["complete-fixture",{},"complete"]] as const) {
     const r=runtime.create("project","standard"); await runtime.prompt(r.id,"seed goal history"); (await runtime.get(r.id)).session.sessionManager.appendCustomEntry("pi-desk-goal",goalState(name,extra)); await runtime.reload(r.id); await runtime.prompt(r.id,"/goal resume"); await (await runtime.get(r.id)).session.waitForIdle();
     assert.equal(lastGoal(r.id).status,expected, name); if(name==="no-progress-fixture")assert.equal(lastGoal(r.id).noProgressTurns,3); if(name==="budget-fixture")assert.ok(lastGoal(r.id).tokensUsed>=1);

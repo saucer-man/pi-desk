@@ -121,6 +121,24 @@ test("web streaming: coalesce updates, flush final messages and discard pending 
   }finally{unsubscribe();useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
 });
 
+test("web retries: traces update parent and child status independently and clear on recovery or stop",async()=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");
+  Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState();
+  useApp.setState({activeId:"parent",subagentId:"child",snapshot:{messages:[],execution:{runningTools:[]}} as any,subagentSnapshot:{messages:[],execution:{runningTools:[]}} as any});
+  const trace=(sessionId:string,type:string,data:unknown={})=>{const entry={id:`${sessionId}/${type}`,sessionId,runId:"run",type,label:type,at:new Date().toISOString(),data};useApp.getState().receive({type:"trace",sessionId,data:entry});return entry;};
+  try{
+    const retry=trace("parent","auto_retry_start",{attempt:1,maxAttempts:3,delayMs:2000,errorMessage:"fetch failed"});
+    assert.deepEqual(useApp.getState().snapshot?.execution?.retry,retry);
+    const childRetry=trace("child","auto_retry_start",{attempt:2,maxAttempts:3,delayMs:4000,errorMessage:"503 unavailable"});
+    trace("background","auto_retry_start");assert.deepEqual(useApp.getState().snapshot?.execution?.retry,retry);assert.deepEqual(useApp.getState().subagentSnapshot?.execution?.retry,childRetry);
+    trace("parent","auto_retry_end",{success:true});assert.equal(useApp.getState().snapshot?.execution?.retry,undefined);assert.deepEqual(useApp.getState().subagentSnapshot?.execution?.retry,childRetry);
+    useApp.getState().receive({type:"event",sessionId:"child",data:{type:"agent_settled"}});assert.equal(useApp.getState().subagentSnapshot?.execution?.retry,undefined);
+    trace("parent","auto_retry_start",retry.data);trace("parent","auto_retry_end",{success:false});assert.equal(useApp.getState().snapshot?.execution?.retry,undefined);
+    trace("parent","auto_retry_start",retry.data);trace("parent","run_start");assert.equal(useApp.getState().snapshot?.execution?.retry,undefined);
+  }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
 test("settings errors: refresh failures reach the caller and OAuth errors stay in their dialog",async t=>{
   const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");
   Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
@@ -196,7 +214,8 @@ test("production persistence: acknowledged data survives SIGKILL and an interrup
     const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});
     const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;
   };
-  await start();const workspace=await request("/workspaces",{path:project}),session=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});
+  await start();assert.equal((await request("/state")).preferences.maxRetries??3,3);await request("/preferences",{maxRetries:2});
+  const workspace=await request("/workspaces",{path:project}),session=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});
   await request(`/sessions/${session.id}/prompt?wait=1`,{text:"original durable prompt"});
   const reply=(await request(`/sessions/${session.id}`)).messages.find((message:any)=>message.role==="assistant");
   await request(`/sessions/${session.id}/message`,{operation:"edit",entryId:reply.entryId,text:"edited durable reply"});
@@ -210,6 +229,7 @@ test("production persistence: acknowledged data survives SIGKILL and an interrup
   assert.equal(record.draft,"durable unsent draft");assert.equal(record.lastStats.tokens.output,3);
   await writeFile(join(desk,"state.json.tmp"),'{"interrupted temporary file":');
   await start();const state=await request("/state"),restored=state.sessions.find((item:any)=>item.id===session.id),composer=await request(`/sessions/${session.id}/composer`),snapshot=await request(`/sessions/${session.id}`);
+  assert.equal(state.preferences.maxRetries,2,"retry limit survives a production restart");
   assert.equal(state.preferences.theme,"dark");assert.equal(restored.title,"Durable title");assert.equal(restored.pinned,true);assert.equal(restored.status,"idle");
   assert.equal(state.workspaces.find((item:any)=>item.id===workspace.id).pinned,true);
   assert.equal(composer.text,"durable unsent draft");assert.equal(composer.images[0].data,image);assert.equal(composer.pending[0].text,"durable paused queue");assert.equal(composer.pending[0].paused,true);
@@ -270,6 +290,11 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await fetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);
   assert.equal((await fetch(origin + "/api/state", { headers: { "Sec-Fetch-Site": "cross-site" } })).status, 403);
   const navigation = await new Promise<number>(resolve => { httpRequest(origin, { headers: { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" } }, response => { response.resume(); resolve(response.statusCode!); }).end(); }); assert.equal(navigation, 200);
+  const oldPreferences=(await request("/state")).data.preferences;
+  assert.equal((await request("/preferences",{maxRetries:5})).data.maxRetries,5);
+  for(const maxRetries of [-1,1.5,101,"3",null])assert.equal((await request("/preferences",{maxRetries,theme:"dark"})).status,400);
+  assert.deepEqual((await request("/state")).data.preferences,{...oldPreferences,maxRetries:5},"invalid requests must not change any preferences");
+  assert.equal((await request("/preferences",{maxRetries:0})).data.maxRetries,0);
   const w = (await request("/workspaces", { path: cwd, trusted: false })).data;
   assert.equal(w.trusted,true);
   for(const resource of ["skills","plugins","mcp"])assert.equal((await request(`/${resource}/${w.id}`)).status,200);

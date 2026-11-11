@@ -70,7 +70,7 @@ let state: AppState = ({
       }
       if (data.type === "tool_execution_start" && data.toolCallId) execution.runningTools = [...new Set([...execution.runningTools, data.toolCallId])];
       if (data.type === "tool_execution_end") execution.runningTools = execution.runningTools.filter(id => id !== data.toolCallId);
-      if (data.type === "agent_settled") { execution.streaming = undefined; execution.runningTools = []; }
+      if (data.type === "agent_settled") { execution.streaming = undefined; execution.runningTools = []; execution.retry = undefined; }
       let messages = snapshot.messages;
       if (data.message && ["message_start", "message_update", "message_end"].includes(data.type)) {
         messages = [...snapshot.messages]; const last = messages.at(-1); const message = data.message;
@@ -89,6 +89,9 @@ let state: AppState = ({
         }
       }
       set(s => ({ traces: { ...s.traces, [id]: [...(s.traces[id] || []), trace] } }));
+      if(snapshotKey&&["auto_retry_start","auto_retry_end","settled","run_start"].includes(trace.type)){
+        const snapshot=get()[snapshotKey];if(snapshot)set({[snapshotKey]:{...snapshot,execution:{runningTools:[],...snapshot.execution,retry:trace.type==="auto_retry_start"?trace:undefined}}});
+      }
       if (trace.type === "run_start" && id === get().activeId && get().snapshot) set(s => ({ snapshot: { ...s.snapshot!, metrics: { startedAt: trace.at } } }));
     }
     if (event.type === "notice") { const notice = event.data as { message: string }; set({ error: notice.message }); }

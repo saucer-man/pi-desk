@@ -31,7 +31,7 @@ export interface Stats {
   performance?: { modelMs?: number; toolMs?: number; firstTokenMs?: number; tokensPerSecond?: number; timedResponses: number };
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null; breakdown?: { system: number; tools: number; messages: number } };
 }
-export interface ExecutionState { streaming?: { timestamp: number; thinkingIndex?: number }; runningTools: string[] }
+export interface ExecutionState { streaming?: { timestamp: number; thinkingIndex?: number }; runningTools: string[]; retry?: TraceEntry }
 export interface SessionSnapshot {
   record: SessionRecord; messages: ChatMessage[]; stats: Stats; metrics: RunMetrics; execution?: ExecutionState;
   tools: string[]; resources: { skills: { name: string; description: string }[]; extensions: string[]; prompts: { name: string; description: string }[] };
@@ -46,7 +46,7 @@ export interface OAuthState { provider: string; url?: string; message?: string; 
 export interface UiRequest { id: string; sessionId?: string; type: string; title: string; message?: string; options?: string[]; url?: string; oauth?: { provider: string; kind: string; placeholder?: string; labels?: string[] } }
 export interface ScheduledTask { id:string;name:string;prompt:string;workspaceId:string;model:string;thinking?:string;mode:Mode;frequency:"once"|"daily"|"weekly";time?:string;weekday?:number;runAt?:string;enabled:boolean;nextRunAt?:string;lastRunAt?:string;lastSessionId?:string;lastStatus?:"running"|"idle"|"paused"|"error"|"skipped";lastError?:string;lastSlot?:string;createdAt:string;updatedAt:string }
 export interface ProxyConfig { global?: string; providers?:Record<string,string|null>; models?: Record<string, string | null> }
-export interface State { sshLegacyImported?:boolean; schedules?: ScheduledTask[]; version: 1; workspaces: Workspace[]; sessions: SessionRecord[]; preferences: { theme: "light" | "dark" | "system"; disabledSkills?: string[]; pluginOverrides?:Record<string,boolean>; proxy?: ProxyConfig; modelSelection?:Record<string,string[]> }; migratedFrom?: string }
+export interface State { sshLegacyImported?:boolean; schedules?: ScheduledTask[]; version: 1; workspaces: Workspace[]; sessions: SessionRecord[]; preferences: { theme: "light" | "dark" | "system"; maxRetries?: number; disabledSkills?: string[]; pluginOverrides?:Record<string,boolean>; proxy?: ProxyConfig; modelSelection?:Record<string,string[]> }; migratedFrom?: string }
 export interface ServerEvent { type: string; sessionId?: string; data?: unknown }
 
 export interface ManagedModel { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; input?: string[]; compaction?: Record<string, number>; [key: string]: any }

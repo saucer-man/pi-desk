@@ -195,6 +195,7 @@ export class Runtime {
     if(record.worktree&&!workspace.remote)for(const [path,enabled] of Object.entries(overrides))if(!path.startsWith("builtin:")&&inside(workspace.path,path))overrides[resolve(record.cwd,relative(workspace.path,path))]=enabled;
     const plugins=minimal?[]:await pluginCatalog(contextCwd,overrides);
     const settings = minimal ? SettingsManager.inMemory({ ...diskSettings.getSettings(), packages: [], extensions: [], skills: [] }) : diskSettings;
+    if(this.store.state.preferences.maxRetries!==undefined)settings.applyOverrides({retry:{enabled:true,maxRetries:this.store.state.preferences.maxRetries}});
     let loader:DefaultResourceLoader;
     const remote=workspace.remote?remoteTools(this,workspace,record,contextCwd,()=>loader.getSkills().skills):undefined;
     loader = new DefaultResourceLoader({ cwd: contextCwd, agentDir, settingsManager: settings,
@@ -276,19 +277,22 @@ export class Runtime {
     if (event.type === "message_end") {
       const message = event.message;
       if (message.role === "assistant") {
-        if (message.stopReason === "error") {
-          record.error = safeError(message.errorMessage || "模型调用失败");
-          for (const pending of record.pending || []) pending.paused = true;
-          live.session.clearQueue();
-          void live.session.abort().catch(error => this.emit({ type: "notice", sessionId: record.id, data: { message: safeError(error) } }));
-          this.trace(record.id, "error", record.error);
-        }
+        if (message.stopReason === "error") this.trace(record.id, "error", safeError(message.errorMessage || "模型调用失败"));
         live.streaming = undefined;
         if (live.firstDelta !== undefined && live.lastDelta !== undefined) live.generationMs += Math.max(0, live.lastDelta - live.firstDelta);
         live.output += message.usage?.output || 0;
         if (live.generationMs > 0) live.metrics.tokensPerSecond = live.output / (live.generationMs / 1000);
         this.trace(record.id, "assistant", "模型响应完成", { messageTimestamp: message.timestamp, firstTokenMs: live.firstDelta === undefined ? undefined : live.firstDelta - live.turnStarted, decodeMs: live.firstDelta === undefined || live.lastDelta === undefined ? undefined : live.lastDelta - live.firstDelta }, live.turnStarted ? now - live.turnStarted : undefined);
         this.progress(record.id);
+      }
+    }
+    if (event.type === "agent_end" && !event.willRetry) {
+      const message = event.messages.findLast(message => message.role === "assistant");
+      if (message?.role === "assistant" && message.stopReason === "error") {
+        record.error = safeError(message.errorMessage || "模型调用失败");
+        for (const pending of record.pending || []) pending.paused = true;
+        live.session.clearQueue();
+        this.changed(record);
       }
     }
     if (event.type === "tool_execution_start") { const trace = this.trace(record.id, "tool_start", event.toolName, { toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId }); live.tools.set(event.toolCallId, { started: now, trace }); }
@@ -335,6 +339,7 @@ export class Runtime {
     const { session, loader, metrics, streaming, tools } = await this.get(id);
     const stats = session.getSessionStats();
     const traces = this.traces(id);
+    const retry=traces.findLast(trace=>["auto_retry_start","auto_retry_end","settled","run_start"].includes(trace.type));
     const timing = new Map(traces.filter(t=>t.type === "assistant").map(t=>[(t.data as {messageTimestamp?:number}|undefined)?.messageTimestamp,t]));
     const toolTiming = new Map(traces.filter(t=>t.type === "tool_end" || t.type === "tool_error").map(t=>[(t.data as {toolCallId?:string}|undefined)?.toolCallId,t.durationMs]));
     let modelMs=0, toolMs=0, timedResponses=0, timedTools=0, ttftMs=0, ttftCount=0, decodeMs=0, decodeTokens=0;
@@ -391,7 +396,7 @@ export class Runtime {
     const messages = persisted.filter(m=>!hidden.has(m.entryId!));
     const pending = [...session.messages as ChatMessage[], ...(session.state.streamingMessage ? [session.state.streamingMessage as ChatMessage] : [])];
     for (const message of pending) if (!known.has(key(message))) { messages.push(message); known.add(key(message)); }
-    return { record, messages, stats: own, aggregate, metrics, execution: { streaming, runningTools: [...tools.keys()] }, widgets: this.live.get(id)!.widgets, thinkingLevels: session.getAvailableThinkingLevels(), systemPrompt: session.systemPrompt,
+    return { record, messages, stats: own, aggregate, metrics, execution: { streaming, runningTools: [...tools.keys()], retry:record.status==="running"&&retry?.type==="auto_retry_start"?retry:undefined }, widgets: this.live.get(id)!.widgets, thinkingLevels: session.getAvailableThinkingLevels(), systemPrompt: session.systemPrompt,
       tools: session.getActiveToolNames(), model: session.model && `${session.model.provider}/${session.model.id}`, thinking: session.thinkingLevel,
       resources: { skills: loader.getSkills().skills.map(s => ({ name: s.name, description: s.description })), extensions: loader.getExtensions().extensions.filter(e=>!e.hidden).map(e => e.path), prompts: loader.getPrompts().prompts.map(p => ({ name: p.name, description: p.description })) },
       queue: { steering: session.getSteeringMessages(), followUp: session.getFollowUpMessages() },
@@ -408,6 +413,7 @@ export class Runtime {
       if (model && JSON.stringify(model) !== JSON.stringify(current)) await live.session.setModel(model);
       // Minimal settings are in memory; reload model-specific compaction without enabling resources.
       live.session.settingsManager.applyOverrides({ compaction: SettingsManager.create(record.cwd, agentDir).getSettings().compaction });
+      if(this.store.state.preferences.maxRetries!==undefined)live.session.settingsManager.applyOverrides({retry:{enabled:true,maxRetries:this.store.state.preferences.maxRetries}});
     }
     if (!live.session.model) throw new Error("尚未配置可用模型，请到设置添加认证或选择模型");
     if (live.modelNeedsSelection) throw new Error("原模型不可用，请明确选择一个可用模型后继续");
@@ -553,6 +559,18 @@ export class Runtime {
       const index = seen.indexOf(value); if (index >= 0) seen.splice(index, 1); else pending.push({ id: randomUUID(), text: value, images: [], behavior, paused: true, queuedText: value });
     }
     record.pending = pending; session.clearQueue(); await this.stop(id); this.changed(record); return pending.map(p => ({ ...p, images: this.store.images(p.images) }));
+  }
+  moveQueued(id: string, promptId: string, targetId: string) {
+    const record = this.store.record(id), pending = record.pending || [];
+    const from = pending.findIndex(p => p.id === promptId), to = pending.findIndex(p => p.id === targetId);
+    if (from < 0 || to < 0 || [pending[from], pending[to]].some(p => !p.paused && p.queuedText)) throw new Error("待发送内容已开始处理，请刷新后重试");
+    if (from === to) return;
+    pending.splice(to, 0, pending.splice(from, 1)[0]); this.changed(record);
+  }
+  deleteQueued(id: string, promptId: string) {
+    const record = this.store.record(id), pending = record.pending?.find(p => p.id === promptId);
+    if (!pending || !pending.paused && pending.queuedText) throw new Error("待发送内容已开始处理，请刷新后重试");
+    record.pending = record.pending!.filter(p => p.id !== promptId); this.changed(record);
   }
   editQueued(id: string, promptId: string, draft: string, images: DraftImage[]) {
     const record = this.store.record(id), pending = record.pending?.find(p => p.id === promptId);

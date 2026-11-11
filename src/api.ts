@@ -184,7 +184,16 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     json(res, await runtime.models()); return;
   }
   if (resource === "ui" && id && method === "POST") { const data = await body(req); const pending = runtime.requests.get(id); if (!pending) throw new Error("请求已结束"); pending.resolve(data.value); json(res, { ok: true }); return; }
-  if (path === "/api/preferences" && method === "POST") { const data = await body(req); if (!["light", "dark", "system"].includes(data.theme)) throw new Error("无效主题"); runtime.store.state.preferences.theme = data.theme; runtime.changed(); json(res, runtime.store.state.preferences); return; }
+  if (path === "/api/preferences" && method === "POST") {
+    const data = await body(req);
+    if (data.theme !== undefined && !["light", "dark", "system"].includes(data.theme)) throw new Error("无效主题");
+    if (data.maxRetries !== undefined && (!Number.isSafeInteger(data.maxRetries) || data.maxRetries < 0 || data.maxRetries > 100)) throw new Error("最大重试次数必须是 0–100 的整数");
+    const previous=runtime.store.state.preferences;
+    runtime.store.state.preferences={...previous,...(data.theme!==undefined?{theme:data.theme}:{}),...(data.maxRetries!==undefined?{maxRetries:data.maxRetries}:{})};
+    try{runtime.changed();}catch(error){runtime.store.state.preferences=previous;throw error;}
+    if(data.maxRetries!==undefined)for(const live of runtime.live.values())live.session.settingsManager.applyOverrides({retry:{enabled:true,maxRetries:data.maxRetries}});
+    json(res, runtime.store.state.preferences); return;
+  }
   if (path === "/api/browse" && method === "GET") {
     const dir = await directory(url.searchParams.get("path") || homedir()); const entries = await readdir(dir, { withFileTypes: true });
     json(res, { path: dir, parent: resolve(dir, ".."), entries: entries.filter(e => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules").map(e => ({ name: e.name, path: join(dir, e.name) })) }); return;
@@ -260,6 +269,8 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
       const data = await body(req);
       if (data.operation === "pause") { json(res, await runtime.pauseQueue(id)); return; }
       if (data.operation === "replace") { runtime.updateQueue(id, data.pending); json(res, { ok: true }); return; }
+      if (data.operation === "move") { runtime.moveQueued(id, text(data.id, 100), text(data.targetId, 100)); json(res, { ok: true }); return; }
+      if (data.operation === "delete") { runtime.deleteQueued(id, text(data.id, 100)); json(res, { ok: true }); return; }
       if (data.operation === "edit") { json(res, runtime.editQueued(id, text(data.id, 100), text(data.draft ?? "", 1024 * 1024), data.images || [])); return; }
       if (data.operation === "send") {
         await runtime.sendQueued(id, text(data.id, 100)); json(res, { accepted: true }, 202); return;
