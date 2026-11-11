@@ -138,7 +138,8 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     mutateModelConfig(data, models.getProviders().map(p => p.id));
     const catalog = await runtime.models(); runtime.emit({ type: "models", data: catalog }); json(res, { ...modelConfig(), catalog }); return;
   }
-  if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined)); return; }
+  if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined, url.searchParams.get("refresh")==="1")); return; }
+  if (path === "/api/models/test" && method === "POST") { const data=await body(req);json(res,await runtime.testModel(text(data.provider,150),text(data.model,500),url.searchParams.get("sessionId")||undefined));return; }
   if (path === "/api/models" && method === "POST") {
     const data = await body(req);const provider = text(data.provider, 150); const models = await runtime.modelRuntime();
     if (data.operation === "logout") await models.logout(provider);

@@ -19,7 +19,7 @@ interface AppState {
   snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
   subagentId:string; subagentSnapshot?:SessionSnapshot;
   requests: UiRequest[]; auth?: { url: string; message: string };
-  select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: () => Promise<void>;
+  select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: (refresh?: boolean) => Promise<void>;
   setPage: (page: "workbench" | "trajectory") => void; fail: (error: unknown) => void;
   receive: (event: ServerEvent) => void;
 }
@@ -47,7 +47,7 @@ let state: AppState = ({
     finally { if (get().activeId === id) set({ loading: false }); }
   },
   refresh: async () => { try { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) set({ snapshot }); } } catch (error) { get().fail(error); } },
-  loadModels: async () => { try { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); } catch (error) { get().fail(error); } },
+  loadModels: async (refresh=false) => { try { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); } catch (error) { get().fail(error); } },
   receive: event => {
     if (event.type === "state") {
       const state = event.data as State; const current = get();

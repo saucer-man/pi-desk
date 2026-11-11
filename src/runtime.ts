@@ -69,11 +69,19 @@ export class Runtime {
   emit(event: ServerEvent) { for (const listener of this.listeners) listener(event); }
   changed(record?: SessionRecord) { this.store.save(); this.emit({ type: "state", data: this.store.state }); if (record) this.emit({ type: "record", sessionId: record.id, data: record }); }
   modelRuntime() { return this.catalog ??= ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }); }
-  async models(id?: string) {
+  async models(id?: string, refresh=false) {
     const models = id ? (await this.get(id)).session.modelRuntime : await this.modelRuntime();
-    await models.refresh({ allowNetwork: false });
+    const result = await models.refresh({ allowNetwork: refresh, force: refresh, signal: refresh ? AbortSignal.timeout(15000) : undefined });
     const settings = SettingsManager.create(agentDir, agentDir).getGlobalSettings();
-    return { defaultProvider: settings.defaultProvider, defaultModel: settings.defaultModel, models: models.getAvailableSnapshot().map(m => ({ id: m.id, provider: m.provider, name: m.name, contextWindow: m.contextWindow, reasoning: Boolean(m.reasoning) })), providers: models.getProviders().map(p => ({ id: p.id, name: p.name, configured: models.hasConfiguredAuth(p.id), oauth: Boolean(p.auth.oauth?.login), apiKey: Boolean(p.auth.apiKey?.login) })), warning: models.getError(), agentDir };
+    return { defaultProvider: settings.defaultProvider, defaultModel: settings.defaultModel, models: models.getAvailableSnapshot().map(m => ({ id: m.id, provider: m.provider, name: m.name, contextWindow: m.contextWindow, reasoning: Boolean(m.reasoning) })), providers: models.getProviders().map(p => ({ id: p.id, name: p.name, configured: models.hasConfiguredAuth(p.id), oauth: Boolean(p.auth.oauth?.login), apiKey: Boolean(p.auth.apiKey?.login) })), warning: [models.getError(),...Array.from(result.errors,([provider,error])=>`${provider}: ${safeError(error)}`),result.aborted?"模型刷新超时，请重试":undefined].filter(Boolean).join("；") || undefined, agentDir };
+  }
+  async testModel(provider: string, id: string, sessionId?: string) {
+    const models=sessionId?(await this.get(sessionId)).session.modelRuntime:await this.modelRuntime();await models.refresh({allowNetwork:false});
+    const model=models.getModel(provider,id);if(!model)throw new Error("模型不存在，请刷新后重试");
+    const started=performance.now();
+    const result=await this.withProxy(model,env=>models.completeSimple(model,{messages:[{role:"user",content:[{type:"text",text:"Reply with OK."}],timestamp:Date.now()}]},{maxTokens:16,maxRetries:0,reasoning:"minimal",signal:AbortSignal.timeout(15000),...(env?{env,transport:"sse" as const}:{})}));
+    if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试失败或超时");
+    return {durationMs:Math.round(performance.now()-started)};
   }
   async discover() {
     const known = new Set(this.store.state.sessions.map(r => r.sessionPath));
@@ -195,8 +203,15 @@ export class Runtime {
       if (live.metrics.firstTokenMs === undefined && live.started) { live.metrics.firstTokenMs = now - live.started; this.progress(record.id); }
     }
     if (event.type === "message_end") {
-      const message = event.message as ChatMessage;
+      const message = event.message;
       if (message.role === "assistant") {
+        if (message.stopReason === "error") {
+          record.error = safeError(message.errorMessage || "模型调用失败");
+          for (const pending of record.pending || []) pending.paused = true;
+          live.session.clearQueue();
+          void live.session.abort().catch(error => this.emit({ type: "notice", sessionId: record.id, data: { message: safeError(error) } }));
+          this.trace(record.id, "error", record.error);
+        }
         live.streaming = undefined;
         if (live.firstDelta !== undefined && live.lastDelta !== undefined) live.generationMs += Math.max(0, live.lastDelta - live.firstDelta);
         live.output += message.usage?.output || 0;
@@ -210,7 +225,7 @@ export class Runtime {
     if (["compaction_start", "compaction_end", "auto_retry_start", "auto_retry_end"].includes(event.type)) this.trace(record.id, event.type, event.type.startsWith("compaction") ? "上下文压缩" : "自动重试", Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type" && key !== "result")));
     if (event.type === "agent_settled") {
       live.streaming = undefined; live.tools.clear();
-      record.status = event.aborted ? "paused" : record.error ? "error" : "idle";
+      record.status = record.error ? "error" : event.aborted ? "paused" : "idle";
       live.metrics.endedAt = new Date().toISOString(); live.metrics.durationMs = live.started ? now - live.started : undefined;
       record.unread = true; record.updatedAt = live.metrics.endedAt; this.trace(record.id, "settled", event.aborted ? "运行已停止" : "运行结束", live.metrics); this.changed(record); this.progress(record.id);
     }

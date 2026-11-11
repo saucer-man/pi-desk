@@ -107,6 +107,17 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   let runtime = new Runtime();
   t.after(async () => { await runtime.shutdown(); model.close(); model.closeAllConnections(); });
   runtime.store.state.workspaces.push({ id: "project", name: "Test", path: cwd, trusted: true }); runtime.changed();
+  const {ModelRuntime}=await import("@earendil-works/pi-coding-agent"),oauthAuth=join(temp,"oauth-refresh-auth.json");
+  await writeFile(oauthAuth,JSON.stringify({openai:{type:"oauth",access:"oauth-fixture",refresh:"oauth-fixture",expires:Date.now()+3600000}}));
+  let catalogVersion=1,catalogHits=0;const catalogServer=createServer((req,res)=>{if(!req.url?.startsWith("/api/models/providers/openai?")){res.writeHead(404).end();return;}catalogHits++;res.writeHead(200,{"Content-Type":"application/json","Last-Modified":"Thu, 01 Jan 2099 00:00:00 GMT"});res.end(JSON.stringify([{...oauthModels.getModels("openai")[0],id:`oauth-refresh-fixture-${catalogVersion}`} ]));});
+  catalogServer.listen(0,"127.0.0.1");await once(catalogServer,"listening");
+  const oauthModels=await ModelRuntime.create({authPath:oauthAuth,modelsPath:null,catalogBaseUrl:`http://127.0.0.1:${(catalogServer.address() as {port:number}).port}`,allowModelNetwork:false});
+  const modelRuntimeMock=t.mock.method(runtime,"modelRuntime",async()=>oauthModels);
+  try {
+    assert.ok(!(await runtime.models()).models.some(m=>m.id.startsWith("oauth-refresh-fixture")));assert.equal(catalogHits,0,"background loads remain cache-only");
+    assert.ok((await runtime.models(undefined,true)).models.some(m=>m.id==="oauth-refresh-fixture-1"));
+    catalogVersion=2;assert.ok((await runtime.models(undefined,true)).models.some(m=>m.id==="oauth-refresh-fixture-2"));assert.equal(catalogHits,2,"manual refresh bypasses catalog freshness for OAuth providers");
+  } finally { modelRuntimeMock.mock.restore();catalogServer.close();catalogServer.closeAllConnections(); }
   const minimal = runtime.create("project", "minimal");
   const executionSnapshots: { id: string; type: string; snapshot: any }[] = []; const executionChecks: Promise<void>[] = [];
   runtime.listeners.add(event => { const data=event.data as any; if(event.type === "event" && ["tool_execution_start","tool_execution_end"].includes(data.type)) executionChecks.push(runtime.snapshot(event.sessionId!).then(snapshot=>{executionSnapshots.push({id:event.sessionId!,type:data.type,snapshot});})); });
@@ -381,6 +392,22 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   await runtime.prompt(branchRecord.id,"todo-toggle <!-- pi-desk-keep-todo -->");
   assert.equal(((await runtime.get(branchRecord.id)).session.sessionManager.getEntry(todoA) as any).data.todos[0].done,false);
   const lastGoal=(id:string)=>{ const entries=runtime.live.get(id)!.session.sessionManager.getBranch(); return (entries.filter(e=>e.type==="custom"&&e.customType==="pi-desk-goal").at(-1) as any)?.data; };
+  const failedGoal=runtime.create("project","standard"); await runtime.prompt(failedGoal.id,"seed failed goal");
+  (await runtime.get(failedGoal.id)).session.sessionManager.appendCustomEntry("pi-desk-goal",goalState("failed OAuth goal")); await runtime.reload(failedGoal.id);
+  const failedSession=(await runtime.get(failedGoal.id)).session,errorMessage="OAuth refresh failed for openai: fetch failed";
+  let releaseFailure!:()=>void,startedFailure!:()=>void;
+  const failureGate=new Promise<void>(resolve=>{releaseFailure=resolve;}),failureStarted=new Promise<void>(resolve=>{startedFailure=resolve;});
+  const failingStream=t.mock.method(failedSession.agent,"streamFunction",async()=>{startedFailure();await failureGate;throw new Error(errorMessage);});
+  failedSession.setAutoRetryEnabled(true);
+  try {
+    const failedRun=runtime.prompt(failedGoal.id,"/goal resume");await failureStarted;
+    await runtime.prompt(failedGoal.id,"follow-up must wait for recovery");await runtime.prompt(failedGoal.id,"steering must wait for recovery",undefined,"steer");releaseFailure();await failedRun;
+    assert.equal(failedGoal.status,"error");assert.equal(failedGoal.error,errorMessage);assert.equal(failingStream.mock.callCount(),1,"model errors stop before SDK retry or goal continuation");
+    assert.deepEqual(failedGoal.pending?.map(p=>[p.text,p.paused]),[["follow-up must wait for recovery",true],["steering must wait for recovery",true]]);
+    assert.equal(failedSession.pendingMessageCount,0);assert.equal(failedSession.isIdle,true);assert.equal(lastGoal(failedGoal.id).status,"paused");
+    assert.equal((await runtime.snapshot(failedGoal.id)).messages.at(-1)?.errorMessage,errorMessage);
+  } finally { releaseFailure();failingStream.mock.restore();failedSession.setAutoRetryEnabled(false); }
+  await runtime.prompt(failedGoal.id,"manual recovery after OAuth error");assert.equal(failedGoal.status,"idle");assert.equal(failedGoal.error,undefined);assert.ok(failedGoal.pending?.every(p=>p.paused));
   for(const [name,extra,expected] of [["budget-fixture",{tokenBudget:1},"budget_limited"],["no-progress-fixture",{},"paused"],["complete-fixture",{},"complete"]] as const) {
     const r=runtime.create("project","standard"); await runtime.prompt(r.id,"seed goal history"); (await runtime.get(r.id)).session.sessionManager.appendCustomEntry("pi-desk-goal",goalState(name,extra)); await runtime.reload(r.id); await runtime.prompt(r.id,"/goal resume"); await (await runtime.get(r.id)).session.waitForIdle();
     assert.equal(lastGoal(r.id).status,expected, name); if(name==="no-progress-fixture")assert.equal(lastGoal(r.id).noProgressTurns,3); if(name==="budget-fixture")assert.ok(lastGoal(r.id).tokensUsed>=1);

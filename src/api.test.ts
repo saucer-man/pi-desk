@@ -281,6 +281,11 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const diffs=(await request(`/git/${w.id}`)).data; assert.match(diffs.staged,/\+staged line/); assert.match(diffs.unstaged,/\+unstaged line/);
   const authSave=await request("/models",{operation:"api_key",provider:"mock",key:"local-test-auth"}); assert.equal(authSave.status,200); assert.ok(!JSON.stringify(authSave.data).includes("local-test-auth")); assert.match(await readFile(join(agent,"auth.json"),"utf8"),/local-test-auth/);
   assert.equal((await request("/models",{operation:"logout",provider:"mock"})).status,200);
+  const stateBeforeProbe=(await request("/state")).data;
+  const probe=await request("/models/test",{provider:"mock",model:"mock"});assert.equal(probe.status,200,JSON.stringify(probe.data));assert.ok(probe.data.durationMs>=0);
+  assert.equal((await request("/models/test",{provider:"mock",model:"missing"})).status,400);
+  assert.equal((await request("/models/test",{provider:123,model:"mock"})).status,400);
+  assert.deepEqual((await request("/state")).data,stateBeforeProbe,"model connection probes do not create or alter conversations");
   // Model CRUD stays in Pi's native files, keeps secrets private, and defaults affect new sessions.
   const configUrl = "/model-config";
   const nativeModels = JSON.parse(await readFile(join(agent,"models.json"),"utf8")); nativeModels.customRoot = {preserve:true};
