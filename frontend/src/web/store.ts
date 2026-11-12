@@ -18,6 +18,7 @@ interface AppState {
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
   snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
   subagentId:string; subagentSnapshot?:SessionSnapshot;
+  browserRequest?: { id?:string; version:number };
   requests: UiRequest[]; auth?: OAuthState;
   select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: (refresh?: boolean) => Promise<void>;
   setPage: (page: "workbench" | "trajectory") => void; fail: (error: unknown) => void;
@@ -95,6 +96,7 @@ let state: AppState = ({
       if (trace.type === "run_start" && id === get().activeId && get().snapshot) set(s => ({ snapshot: { ...s.snapshot!, metrics: { startedAt: trace.at } } }));
     }
     if (event.type === "notice") { const notice = event.data as { message: string }; set({ error: notice.message }); }
+    if (event.type === "browser" && (event.sessionId === get().activeId || get().state?.sessions.some(r=>r.id===event.sessionId&&r.parentId===get().activeId))) set(s=>({browserRequest:{id:(event.data as {id?:string}|undefined)?.id,version:(s.browserRequest?.version||0)+1}}));
     if (event.type === "ui") { const request = event.data as UiRequest; set(s => ({ requests: [...s.requests.filter(r => r.id !== request.id), request], ...(request.oauth&&(!s.auth||s.auth.provider!==request.oauth.provider||s.auth.status!=="waiting")?{auth:{provider:request.oauth.provider,url:request.url,status:"waiting" as const}}:{}) })); }
     if (event.type === "ui_done") set(s => ({ requests: s.requests.filter(r => r.id !== (event.data as { id: string }).id) }));
     if (event.type === "models") set({ catalog: event.data as Catalog });

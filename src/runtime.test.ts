@@ -191,6 +191,14 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const disabledChild=runtime.create("project","standard",{parentId:pluginSession.id,depth:1,readOnly:true});assert.ok(!(await runtime.get(disabledChild.id)).session.getActiveToolNames().includes("subagent"));
   assert.equal(new Store().state.preferences.pluginOverrides?.["builtin:subagent"],false);await assert.rejects(delegate(runtime,pluginSession,{task:"blocked",access:"read"}),/已禁用/);
   await runtime.changePlugin(cwd,{id:"builtin:subagent",enabled:true});for(const id of [pluginSession.id,disabledChild.id])assert.ok((await runtime.get(id)).session.getActiveToolNames().includes("subagent"));
+  assert.ok(plugins.some(p=>p.id==="builtin:browser"&&p.name==="desk_browser"&&p.enabled));assert.match((await readPlugin(cwd,"builtin:browser")).text,/class BrowserHost/);
+  for(const id of [pluginSession.id,pluginChild.id])assert.ok((await runtime.get(id)).session.getAllTools().some(t=>t.name==="desk_browser"));
+  const browserRun=runtime.prompt(pluginSession.id,"slow browser toggle");for(let i=0;i<50&&!seenUsers.includes("slow browser toggle");i++)await new Promise(resolve=>setTimeout(resolve,10));
+  await runtime.changePlugin(cwd,{id:"builtin:browser",enabled:false});assert.ok((await runtime.get(pluginSession.id)).session.getAllTools().some(t=>t.name==="desk_browser"),"running sessions retain browser tools until idle");await browserRun;
+  const browserDisabled=runtime.create("project","standard");for(const id of [pluginSession.id,pluginChild.id,browserDisabled.id])assert.ok(!(await runtime.get(id)).session.getAllTools().some(t=>t.name==="desk_browser"));
+  assert.equal(new Store().state.preferences.pluginOverrides?.["builtin:browser"],false);
+  await runtime.changePlugin(cwd,{id:"builtin:browser",enabled:true});for(const id of [pluginSession.id,pluginChild.id,browserDisabled.id])assert.ok((await runtime.get(id)).session.getAllTools().some(t=>t.name==="desk_browser"));
+  for(const record of [disabledChild,runtime.create("project","minimal")])assert.ok(!(await runtime.get(record.id)).session.getAllTools().some(t=>t.name==="desk_browser"));
   const {mutateResource,readResource}=await import("./resources.ts"),{agentDefinitions}=await import("./subagents.ts");
   const defaultWorker=await readResource(cwd,"project","agents/worker.md");assert.equal(defaultWorker.builtin,true);await assert.rejects(access(join(cwd,".pi","agents","worker.md")),"viewing defaults must not create files");
   await mutateResource(cwd,"user",{operation:"save",path:"agents/worker.md",text:"---\nname: worker\n---\nUser worker role fixture"});

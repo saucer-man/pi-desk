@@ -95,6 +95,9 @@ test("web subscriptions: switching sessions, opening children, reconnecting and 
     sources[2].onmessage({data:JSON.stringify({type:"notice",sessionId:"background",data:{message:"background notice"}})});
     assert.equal(useApp.getState().error,"background notice");
     disconnect();assert.equal(sources[2].closed,true);useApp.setState({activeId:"after cleanup"});assert.equal(sources.length,3);
+    useApp.setState({browserRequest:undefined});useApp.getState().receive({type:"browser",sessionId:"after cleanup",data:{id:"managed-tab"}});assert.deepEqual(useApp.getState().browserRequest,{id:"managed-tab",version:1});
+    useApp.getState().receive({type:"browser",sessionId:"background",data:{id:"other-tab"}});assert.equal(useApp.getState().browserRequest?.id,"managed-tab");
+    useApp.getState().receive({type:"browser",sessionId:"after cleanup",data:{id:"managed-tab"}});assert.equal(useApp.getState().browserRequest?.version,2);
   }finally{
     disconnect();useApp.setState(original);
     for(const key of Object.keys(saved)){if(saved[key])Object.defineProperty(globalThis,key,saved[key]!);else Reflect.deleteProperty(globalThis,key);}
@@ -303,6 +306,10 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.ok(pluginList.data.some((p:any)=>p.id==="builtin:subagent"&&p.name==="subagent"&&p.enabled));assert.match((await request(`/plugins/${w.id}?id=builtin%3Asubagent`)).data.text,/function delegate/);
   assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:subagent",enabled:false})).data.plugins.find((p:any)=>p.id==="builtin:subagent").enabled,false);
   assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:subagent",enabled:true})).status,200);
+  assert.ok(pluginList.data.some((p:any)=>p.id==="builtin:browser"&&p.name==="desk_browser"&&p.enabled));assert.match((await request(`/plugins/${w.id}?id=builtin%3Abrowser`)).data.text,/class BrowserHost/);
+  assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:browser",enabled:false})).data.plugins.find((p:any)=>p.id==="builtin:browser").enabled,false);
+  assert.equal((await request("/state")).data.preferences.pluginOverrides["builtin:browser"],false);
+  assert.equal((await request(`/plugins/${w.id}`,{id:"builtin:browser",enabled:true})).status,200);
   const plugin=pluginList.data.find((p:any)=>p.name==="skill-probe");assert.ok(plugin&&plugin.type==="项目插件"&&plugin.enabled);
   assert.match((await request(`/plugins/${w.id}?id=${encodeURIComponent(plugin.id)}`)).data.text,/skill-list-must-not-execute/);await assert.rejects(access(skillExtensionMarker));
   assert.equal((await request(`/plugins/${w.id}?id=${encodeURIComponent(join(temp,"outside.txt"))}`)).status,400);
@@ -657,6 +664,7 @@ test("development HTTP: native Vite config, transformed React entry and isolated
 test("Windows open-with: installed apps, visible launch, PowerShell cwd and startup errors", {skip:process.platform!=="win32"}, async()=>{
   const {api}=await import("./api.ts"),{default:cp}=await import("node:child_process"),{syncBuiltinESMExports}=await import("node:module"),{promisify}=await import("node:util"),{EventEmitter}=await import("node:events"),{Readable}=await import("node:stream");
   const root=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-open-"))),cwd=join(root,"项目 & 'quoted',=100%"),programs=join(root,"Programs"),system=join(root,"Windows");await mkdir(cwd);
+  const file=join(cwd,"file & 'quoted',=100%.txt"),outside=join(root,"outside.txt");await writeFile(file,"file open fixture");await writeFile(outside,"outside preview fixture");const {fileURLToPath}=await import("node:url");
   const paths=[join(system,"explorer.exe"),join(programs,"Cursor/Cursor.exe"),join(programs,"Git/git-bash.exe"),join(programs,"PowerShell/7/pwsh.exe")];
   for(const path of paths){await mkdir(resolve(path,".."),{recursive:true});await writeFile(path,"");}
   const keys=["PATH","LOCALAPPDATA","ProgramFiles","ProgramFiles(x86)","SystemRoot","ELECTRON_RUN_AS_NODE","NODE_OPTIONS","VSCODE_IPC_HOOK_CLI"],before=keys.map(key=>[key,process.env[key]] as const),originalSpawn=cp.spawn,originalExec=cp.execFile;let outcome="ok";const launches:any[]=[];
@@ -668,6 +676,10 @@ test("Windows open-with: installed apps, visible launch, PowerShell cwd and star
     const request=async(path:string,data?:unknown)=>{let value:any;const req=Readable.from(data?[Buffer.from(JSON.stringify(data))]:[]) as any;req.method=data?"POST":"GET";req.headers={"content-type":"application/json"};await api(runtime,req,{writeHead(){},end(raw:string){value=JSON.parse(raw);}} as any,new URL("http://localhost/api"+path));return value;};
     const apps=await request("/applications");assert.deepEqual(apps.map((app:any)=>app.id),["file-manager","cursor","gitbash","powershell"]);assert.ok(apps.every((app:any)=>!("command" in app)));
     for(const id of ["cursor","gitbash","powershell"]){assert.equal((await request("/workspaces/fixture/open",{applicationId:id})).opened,true);const last=launches.at(-1);assert.equal(last.options.cwd,cwd);assert.equal(last.options.windowsHide,false);assert.equal(last.options.env.ELECTRON_RUN_AS_NODE,undefined);assert.equal(last.options.env.NODE_OPTIONS,undefined);assert.equal(last.options.env.VSCODE_IPC_HOOK_CLI,undefined);assert.deepEqual(last.args,id==="powershell"?["-NoLogo","-NoExit","-WindowStyle","Normal"]:[id==="gitbash"?"--cd="+cwd:cwd]);}
+    assert.equal((await request("/workspaces/fixture/open",{applicationId:"cursor",path:"file & 'quoted',=100%.txt"})).opened,true);assert.deepEqual(launches.at(-1).args,[file]);assert.equal(launches.at(-1).options.cwd,cwd);
+    assert.equal((await request("/workspaces/fixture/open",{applicationId:"cursor",path:outside})).opened,true);assert.deepEqual(launches.at(-1).args,[outside]);assert.equal(launches.at(-1).options.cwd,root);
+    assert.equal((await request("/workspaces/fixture/open",{applicationId:"file-manager",path:file})).opened,true);assert.equal(launches.at(-1).args[0],"/select,");assert.equal(fileURLToPath(launches.at(-1).args[1]),file);
+    const fileLaunches=launches.length;await assert.rejects(request("/workspaces/fixture/open",{applicationId:"cursor",path:"."}),/普通文件/);await assert.rejects(request("/workspaces/fixture/open",{applicationId:"powershell",path:file}),/不支持打开文件/);await assert.rejects(request("/workspaces/fixture/open",{applicationId:"cursor",path:"missing.txt"}),/ENOENT/);await assert.rejects(request("/workspaces/fixture/open",{applicationId:"cursor",path:null}),/文本字段/);assert.equal(launches.length,fileLaunches);
     await assert.rejects(request("/workspaces/fixture/open",{applicationId:"vscode"}),/应用未安装/);outcome="fail";await assert.rejects(request("/workspaces/fixture/open",{applicationId:"cursor"}),/退出码 23/);outcome="error";await assert.rejects(request("/workspaces/fixture/open",{applicationId:"powershell"}),/无法启动 PowerShell/);await assert.rejects(request("/workspaces/fixture/open",{applicationId:"file-manager"}),/无法打开文件资源管理器/);
     outcome="explorer";assert.equal((await request("/workspaces/fixture/open",{applicationId:"file-manager"})).opened,true);const shell=launches.at(-1);assert.equal(shell.command,paths[0]);assert.equal(shell.options.cwd,cwd);assert.equal(shell.options.env.NODE_OPTIONS,undefined);assert.equal(shell.options.windowsHide,false);assert.equal(shell.options.timeout,10000);assert.deepEqual(shell.args,["file:///"+cwd.replaceAll("\\","/").replaceAll(" ","%20").replaceAll(",","%2C").replaceAll("=","%3D").replaceAll("100%","100%25")]);
     outcome="ok";assert.equal((await request("/open-url",{url:"https://example.com/a?query=中文&x=1"})).opened,true);const browser=launches.at(-1);assert.equal(browser.command,"rundll32.exe");assert.deepEqual(browser.args,["url.dll,FileProtocolHandler","https://example.com/a?query=%E4%B8%AD%E6%96%87&x=1"]);assert.equal(browser.options.windowsHide,false);assert.equal(browser.options.env.ELECTRON_RUN_AS_NODE,undefined);

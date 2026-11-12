@@ -202,7 +202,7 @@ export class Runtime {
       noExtensions: true, noSkills: minimal, noThemes: true,
       disabledBuiltinExtensions:embeddedPlugins.filter(p=>p.factory&&overrides[p.id]===false).map(p=>p.name),
       // Discover with the native package manager, then pass only enabled entry points to the SDK.
-      additionalExtensionPaths: plugins.filter(p=>p.enabled&&p.id!=="builtin:subagent").map(p=>p.id), additionalSkillPaths: [],
+      additionalExtensionPaths: plugins.filter(p=>p.enabled&&p.id!=="builtin:subagent"&&p.id!=="builtin:browser").map(p=>p.id), additionalSkillPaths: [],
       extensionFactories: [...(minimal ? [] : embeddedPlugins.flatMap(p=>p.factory?[p.factory]:[])),...(remote?[{name:"pi-desk-remote",hidden:true,factory:remote.extension}]:[])],
       appendSystemPrompt: record.instructions ? [record.instructions] : [],
     });
@@ -238,7 +238,7 @@ export class Runtime {
     const selection=this.store.state.preferences.modelSelection;
     const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : !record.sessionPath&&selection ? modelRuntime.getAvailableSnapshot().find(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)) : undefined;
     const subagents=record.depth<2&&overrides["builtin:subagent"]!==false;
-    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(!record.readOnly?[browserTool(this,record)]:[])])];
+    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(!record.readOnly&&overrides["builtin:browser"]!==false?[browserTool(this,record)]:[])])];
     const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
       tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(subagents ? ["subagent"] : [])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
       customTools, excludeTools: workspace.remote?["powershell"]:undefined,

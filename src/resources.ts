@@ -74,6 +74,7 @@ export async function pluginCatalog(cwd:string,overrides:Record<string,boolean>=
     rows.set(id,{id,name:embedded?.name||(name==="index"&&resource.metadata.packageRoot?basename(resource.metadata.packageRoot):name),type,path:embedded?.path||resource.path,source:resource.metadata.source,description:embedded?.description||`${type} · ${resource.metadata.source==="auto"?"自动发现":resource.metadata.source}`,enabled:overrides[id]??resource.enabled});
   }
   rows.set("builtin:subagent",{id:"builtin:subagent",name:"subagent",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./subagents${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"委派子 Agent；在 agent 设置中编辑角色",enabled:overrides["builtin:subagent"]!==false});
+  rows.set("builtin:browser",{id:"builtin:browser",name:"desk_browser",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./browser${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"在右侧面板查看和操作浏览器；默认允许控制",enabled:overrides["builtin:browser"]!==false});
   return [...rows.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 export async function readPlugin(cwd:string,id:string,overrides:Record<string,boolean>={}) {

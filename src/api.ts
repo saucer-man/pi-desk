@@ -93,13 +93,16 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   if(resource==="workspaces" && id && action==="open" && method==="POST") {
     const w=workspace(runtime,id);if(w.remote)throw new Error("SSH 工作区请使用右侧文件面板；本地打开方式不适用于远端目录"); const data=await body(req); const app=(await workspaceApplications()).find(a=>a.id===data.applicationId); if(!app)throw new Error("应用未安装或不可用");
     const record=data.sessionId?runtime.store.record(text(data.sessionId,100)):undefined;if(record && record.workspaceId!==w.id)throw new Error("会话不属于当前工作区");
-    const cwd=await directory(record?.cwd||w.path); const args=[...("prefix" in app?app.prefix||[]:[]),...(app.id==="powershell"?[]:[app.id==="gitbash"?`--cd=${cwd}`:cwd])];
+    const file=data.path!==undefined;let cwd=await directory(record?.cwd||w.path),target=cwd;
+    if(file){if(!["file-manager","cursor","vscode"].includes(app.id))throw new Error("此应用不支持打开文件");target=await realpath(resolve(w.path,text(data.path).replace(/^~(?=[/\\]|$)/,homedir())));if(!(await stat(target)).isFile())throw new Error("仅支持打开普通文件");cwd=dirname(target);}
+    const location=app.id==="file-manager"&&file?cwd:target;
+    const args=[...("prefix" in app?app.prefix||[]:[]),...(app.id==="powershell"?[]:app.id==="gitbash"?[`--cd=${cwd}`]:app.id==="file-manager"&&file&&process.platform==="darwin"?["-R",target]:[location])];
     // Interactive applications must not inherit Electron's Node mode or a hidden window.
     const env={...process.env};for(const key of Object.keys(env))if(["ELECTRON_RUN_AS_NODE","NODE_OPTIONS","VSCODE_IPC_HOOK_CLI"].includes(key.toUpperCase()))delete env[key];
     if(process.platform==="win32"&&app.id==="file-manager") {
       // Match DSH's shell handoff: a file URI avoids Explorer's raw-path parsing.
-      const target=pathToFileURL(cwd).href.replace(/(?:%[89A-F][0-9A-F])+/gi,value=>decodeURIComponent(value)).replaceAll(",","%2C").replaceAll("=","%3D");
-      await promisify(execFile)(app.command,[target],{cwd,env,windowsHide:false,timeout:10000}).catch(error=>{if(error.code!==1)throw new Error(`无法打开文件资源管理器：${safeError(error)}`);});
+      const uri=pathToFileURL(target).href.replace(/(?:%[89A-F][0-9A-F])+/gi,value=>decodeURIComponent(value)).replaceAll(",","%2C").replaceAll("=","%3D");
+      await promisify(execFile)(app.command,[...(file?["/select,"]:[]),uri],{cwd,env,windowsHide:false,timeout:10000}).catch(error=>{if(error.code!==1)throw new Error(`无法打开文件资源管理器：${safeError(error)}`);});
     } else await new Promise<void>((resolve,reject)=>{
       const child=spawn(app.command,args,{cwd,env,detached:true,stdio:"ignore",windowsHide:false});
       const finish=(error?:Error)=>{clearTimeout(timer);child.unref();error?reject(error):resolve();};
