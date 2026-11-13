@@ -1,6 +1,7 @@
 import MarkdownIt from "markdown-it";
 
-export function resolveLink(value: string, base: string): { kind: "file"; path: string } | { kind: "web"; url: string } | undefined {
+export type LinkTarget = { kind: "file"; path: string } | { kind: "web"; url: string };
+export function resolveLink(value: string, base: string): LinkTarget | undefined {
   value=value.trim();if(!value||value.startsWith("#")||/[\0-\x1f\x7f]/.test(value))return;
   try {
     if(/^https?:\/\//i.test(value)||value.startsWith("//")){const url=new URL(value.startsWith("//")?"https:"+value:value);if(!url.username&&!url.password)return {kind:"web",url:url.href};return;}
@@ -17,8 +18,8 @@ export function resolveLink(value: string, base: string): { kind: "file"; path: 
 
 const markdown=new MarkdownIt({html:false,linkify:true,breaks:true});
 const escape=markdown.utils.escapeHtml;
-const fileAnchor=(path:string,label:string)=>'<a href="#" data-file-path="'+escape(path)+'" title="在右侧预览">'+label+"</a>";
-const isFile=(value:string)=>/^(?:file:|[a-z]:[/\\]|[/\\]|~[/\\])|\.[a-z][a-z\d]{0,11}(?:#L\d+|:\d+(?::\d+)?)?$/i.test(value);
+const fileAnchor=(path:string,label:string)=>'<a href="#" role="button" data-file-path="'+escape(path)+'" title="'+escape(path)+'">'+label+"</a>";
+const isFile=(value:string)=>/^(?:file:|[a-z]:[/\\]|[/\\]|~[/\\]|\.{1,2}[/\\])|\.(?:txt|md|markdown|mdown|html?|css|scss|less|[cm]?jsx?|tsx?|jsonc?|ya?ml|toml|ini|conf|xml|csv|tsv|py|go|rs|java|[ch]|[ch]pp|cs|rb|php|sh|bash|zsh|ps1|bat|cmd|sql|vue|svelte|png|jpe?g|webp|gif|svg|ico|pdf|docx|xlsx|pptx|zip)(?:#L\d+|:\d+(?::\d+)?)?$/i.test(value)||/^(?:README|LICENSE|Dockerfile|Makefile)$/i.test(value);
 const nativePaths=/(?<![\w])(?:file:\/\/[^\s<>"\x60]+|[a-z]:[/\\][^\r\n<>"\x60]*?\.[a-z\d]{1,12}|\/(?:[\w.~%-]+\/)+[^\s<>"\x60]*\.[a-z\d]{1,12})(?=$|[\s，。；、"'\x60),;])/gi;
 markdown.inline.ruler.before("text","native_path",(state,silent)=>{
   if(state.linkLevel)return false;nativePaths.lastIndex=0;const match=nativePaths.exec(state.src.slice(state.pos));if(!match)return false;
@@ -28,7 +29,7 @@ markdown.inline.ruler.before("text","native_path",(state,silent)=>{
 });
 const code=markdown.renderer.rules.code_inline!;
 markdown.renderer.rules.code_inline=(tokens,i,options,env,self)=>{const html=code(tokens,i,options,env,self),target=isFile(tokens[i].content)?resolveLink(tokens[i].content,String(env?.base||"/")):undefined;return !env?.inLink&&target?.kind==="file"?fileAnchor(target.path,html):html;};
-markdown.renderer.rules.link_open=(tokens,i,options,env,self)=>{const token=tokens[i],target=resolveLink(String(token.attrGet("href")||""),String(env?.base||"/"));if(env)env.inLink=true;if(target?.kind==="file"){token.attrSet("href","#");token.attrSet("data-file-path",target.path);token.attrSet("title","在右侧预览");}else if(target?.kind==="web"){token.attrSet("href",target.url);token.attrSet("target","_blank");token.attrSet("rel","noopener noreferrer");}return self.renderToken(tokens,i,options);};
+markdown.renderer.rules.link_open=(tokens,i,options,env,self)=>{const token=tokens[i],target=resolveLink(String(token.attrGet("href")||""),String(env?.base||"/"));if(env)env.inLink=true;if(target?.kind==="file"){token.attrSet("href","#");token.attrSet("role","button");token.attrSet("data-file-path",target.path);token.attrSet("title",target.path);}else if(target?.kind==="web"){token.attrSet("href",target.url);token.attrSet("title",target.url);token.attrSet("rel","noopener noreferrer");}return self.renderToken(tokens,i,options);};
 // Local Markdown links often contain unescaped Windows separators or spaces.
 // Keep the library parser for ordinary Markdown and web links.
 markdown.inline.ruler.before("link","local_file_link",(state,silent)=>{

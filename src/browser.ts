@@ -23,7 +23,7 @@ export interface BrowserCommand {action:string;id?:string;url?:string;selector?:
 export class BrowserHost {
   private context?:BrowserContext;
   private starting?:Promise<BrowserContext>;
-  private pages=new Map<string,{page:Page;owner?:string}>();
+  private pages=new Map<string,{page:Page;owner?:string;requestedUrl?:string;openedUrl?:string}>();
   private track(page:Page,owner?:string){let entry=[...this.pages].find(([,p])=>p.page===page);if(entry){if(owner)entry[1].owner=owner;return entry[0];}const id=randomUUID();this.pages.set(id,{page,owner});page.on("close",()=>this.pages.delete(id));page.on("popup",popup=>this.track(popup,this.pages.get(id)?.owner));page.on("dialog",dialog=>void dialog.dismiss().catch(()=>{}));return id;}
   private async start(){
     if(this.context)return this.context;if(this.starting)return this.starting;
@@ -32,11 +32,11 @@ export class BrowserHost {
   }
   private url(value?:string){if(!value)return "about:blank";const url=new URL(value);if(!["http:","https:"].includes(url.protocol)||url.username||url.password)throw new Error("浏览器仅支持不含认证信息的 HTTP / HTTPS 地址");return url.href;}
   private page(id?:string,owner?:string){const entry=id?this.pages.get(id):[...this.pages.values()].find(p=>!owner||p.owner===owner||!p.owner);if(!entry||owner&&entry.owner&&entry.owner!==owner)throw new Error("浏览器标签不存在或不属于此会话");if(owner)entry.owner=owner;return entry.page;}
-  async status(owner?:string){return {available:Boolean(executable()),running:Boolean(this.context),tabs:await Promise.all([...this.pages].filter(([,p])=>!owner||!p.owner||p.owner===owner).map(async([id,p])=>({id,url:p.page.url(),title:await p.page.title().catch(()=>""),owned:Boolean(p.owner)})))};}
+  async status(owner?:string){return {available:Boolean(executable()),running:Boolean(this.context),tabs:await Promise.all([...this.pages].filter(([,p])=>!owner||!p.owner||p.owner===owner).map(async([id,p])=>({id,url:p.page.url(),requestedUrl:p.page.url()===p.openedUrl?p.requestedUrl:undefined,title:await p.page.title().catch(()=>""),owned:Boolean(p.owner)})))};}
   async command(input:BrowserCommand,owner?:string){
     if(input.action==="tabs")return this.status(owner);
     if(input.action==="stop"){if(owner)throw new Error("整个浏览器只能由用户关闭");await this.close();return {closed:true};}
-    if(input.action==="open"){const url=this.url(input.url);const page=await(await this.start()).newPage();const id=this.track(page,owner);if(url!=="about:blank")await page.goto(url,{waitUntil:"domcontentloaded",timeout:20000});return {id,url:page.url()};}
+    if(input.action==="open"){const url=this.url(input.url);const page=await(await this.start()).newPage();const id=this.track(page,owner);if(url!=="about:blank")await page.goto(url,{waitUntil:"domcontentloaded",timeout:20000});Object.assign(this.pages.get(id)!,{requestedUrl:url,openedUrl:page.url()});return {id,url:page.url()};}
     const page=this.page(input.id,owner);const url=page.url();if(url!=="about:blank")this.url(url);
     if(["view","pointer","keyboard","scroll"].includes(input.action)){
       if(owner)throw new Error("此操作仅供浏览器面板使用");
@@ -55,7 +55,7 @@ export class BrowserHost {
       return {url:page.url()};
     }
     const locator=()=>{if(input.selector&&input.selector.length<2000)return page.locator(input.selector);if(input.role&&input.name&&input.name.length<2000)return page.getByRole(input.role as Parameters<Page["getByRole"]>[0],{name:input.name,exact:true});throw new Error("请提供元素角色和名称或 CSS 选择器");};
-    if(input.action==="navigate")await page.goto(this.url(input.url),{waitUntil:"domcontentloaded",timeout:20000});
+    if(input.action==="navigate"){const target=this.url(input.url);await page.goto(target,{waitUntil:"domcontentloaded",timeout:20000});Object.assign([...this.pages.values()].find(entry=>entry.page===page)!,{requestedUrl:target,openedUrl:page.url()});}
     else if(input.action==="back")await page.goBack({waitUntil:"domcontentloaded",timeout:20000});
     else if(input.action==="forward")await page.goForward({waitUntil:"domcontentloaded",timeout:20000});
     else if(input.action==="reload")await page.reload({waitUntil:"domcontentloaded",timeout:20000});

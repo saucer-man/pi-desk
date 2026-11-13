@@ -292,7 +292,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     const content = await readFile(path); const imageType = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" } as Record<string,string>)[extname(path).toLowerCase()];
     if(imageType){json(res,{...metadata,image:`data:${imageType};base64,${content.toString("base64")}`});return;}
     if(content.subarray(0,5).toString()==="%PDF-"){json(res,{...metadata,pdf:content.toString("base64")});return;}
-    try{const text=new TextDecoder("utf-8",{fatal:true}).decode(content);if(text.includes("\0"))throw new Error();json(res,{...metadata,text});}catch{json(res,{...metadata,unsupported:"此文件格式暂不支持预览"});}return;
+    try{const text=new TextDecoder("utf-8",{fatal:true}).decode(content);if(text.includes("\0"))throw new Error();let html:string|undefined;if(/\.html?$/i.test(path)){const token=[...runtime.htmlPreviews].find(([,file])=>file===path)?.[0]||randomUUID();runtime.htmlPreviews.set(token,path);if(runtime.htmlPreviews.size>128)runtime.htmlPreviews.delete(runtime.htmlPreviews.keys().next().value!);html=`/preview/${token}/${encodeURIComponent(basename(path))}`;}json(res,{...metadata,text,html});}catch{json(res,{...metadata,unsupported:"此文件格式暂不支持预览"});}return;
   }
   if (resource === "git" && id && method === "GET") {
     const w = workspace(runtime, id);

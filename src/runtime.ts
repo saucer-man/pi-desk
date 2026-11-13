@@ -44,6 +44,7 @@ export class Runtime {
   readonly store = new Store();
   readonly remote = new RemoteManager(this);
   readonly browser = new BrowserHost();
+  readonly htmlPreviews = new Map<string,string>();
   readonly scheduler = new Scheduler(this);
   readonly live = new Map<string, Live>();
   readonly creating = new Map<string, Promise<Live>>();

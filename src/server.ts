@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { resolve, extname, sep } from "node:path";
+import { resolve, extname, sep, dirname } from "node:path";
 import { openExternal } from "./browser.ts";
 import {attachTerminals} from "./terminals.ts";
 import { Runtime } from "./runtime.ts";
 import { api, json, workspace } from "./api.ts";
-import { safeError } from "./storage.ts";
+import { inside, safeError } from "./storage.ts";
 import { parseArgs } from "node:util";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
@@ -23,7 +23,7 @@ const runtime = new Runtime();
 const root = resolve(fileURLToPath(new URL("../frontend/dist/", import.meta.url)));
 const dev = values.dev;
 const vite = dev ? await (await import("vite")).createServer({ configLoader: "native", configFile: fileURLToPath(new URL("../frontend/vite.config.ts", import.meta.url)), server: { middlewareMode: true } }) : undefined;
-const mime: Record<string,string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".ico": "image/x-icon" };
+const mime: Record<string,string> = { ".html": "text/html; charset=utf-8", ".htm":"text/html; charset=utf-8", ".js": "text/javascript", ".mjs":"text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".woff":"font/woff", ".ttf":"font/ttf", ".png": "image/png", ".ico": "image/x-icon", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".gif":"image/gif", ".webp":"image/webp", ".json":"application/json", ".wasm":"application/wasm" };
 const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
 function allowed(req: import("node:http").IncomingMessage) {
   const navigation = req.method === "GET" && req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && !req.url?.startsWith("/api/");
@@ -31,16 +31,24 @@ function allowed(req: import("node:http").IncomingMessage) {
 }
 const server = createServer(async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("Referrer-Policy", "no-referrer"); res.setHeader("X-Frame-Options", "DENY");
-  if (!allowed(req)) { json(res, { error: "只允许本机同源访问" }, 403); return; }
+  const previewRequest=req.url?.startsWith("/preview/")&&["GET","HEAD"].includes(req.method||"")&&origins().has("http://"+req.headers.host);
+  if (!allowed(req)&&!previewRequest) { json(res, { error: "只允许本机同源访问" }, 403); return; }
   try {
     const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+    if(url.pathname.startsWith("/preview/")){
+      const [, ,token,...parts]=url.pathname.split("/"),file=runtime.htmlPreviews.get(token);if(!file||!["GET","HEAD"].includes(req.method||"")){res.writeHead(404).end();return;}
+      const folder=dirname(file),target=await realpath(resolve(folder,decodeURIComponent(parts.join("/"))));
+      if(!inside(folder,target)||!mime[extname(target).toLowerCase()]||!(await stat(target)).isFile()){res.writeHead(403).end();return;}
+      if((await stat(target)).size>2*1024*1024){res.writeHead(413).end();return;}
+      res.removeHeader("X-Frame-Options");res.setHeader("Access-Control-Allow-Origin","null");res.setHeader("Content-Security-Policy","sandbox allow-scripts; default-src 'self' data: blob: http: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http: https:; style-src 'self' 'unsafe-inline' http: https:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'");res.setHeader("Cache-Control","no-store");res.setHeader("Content-Type",mime[extname(target).toLowerCase()]);res.end(req.method==="HEAD"?undefined:await readFile(target));return;
+    }
     if (url.pathname.startsWith("/api/")) { await api(runtime, req, res, url); return; }
     if (vite) { vite.middlewares(req, res); return; }
     if (!["GET", "HEAD"].includes(req.method || "")) { res.writeHead(405).end(); return; }
     const path = resolve(root, "." + decodeURIComponent(url.pathname));
     if (path !== root && !path.startsWith(root + sep)) { res.writeHead(403).end(); return; }
     const target = extname(path) ? path : resolve(root, "index.html");
-    res.setHeader("Content-Security-Policy", `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}; frame-src blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`);
+    res.setHeader("Content-Security-Policy", `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}; frame-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`);
     res.setHeader("Content-Type", mime[extname(target)] || "application/octet-stream");
     res.end(await readFile(target));
   } catch (error) { if (!res.headersSent) json(res, { error: safeError(error) }, 400); else res.end(); }

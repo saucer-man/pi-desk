@@ -18,7 +18,7 @@ interface AppState {
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
   snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
   subagentId:string; subagentSnapshot?:SessionSnapshot;
-  browserRequest?: { id?:string; version:number };
+  browserRequest?: { id?:string; url?:string; fresh?:boolean; version:number };
   requests: UiRequest[]; auth?: OAuthState;
   select: (id: string) => Promise<void>; refresh: () => Promise<void>; loadModels: (refresh?: boolean) => Promise<void>;
   setPage: (page: "workbench" | "trajectory") => void; fail: (error: unknown) => void;
