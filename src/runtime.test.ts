@@ -519,7 +519,7 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const nativeReply=(await runtime.get(minimal.id)).session.messages.find(m=>m.role==="assistant")!;
   nativeWriter.appendMessage({role:"user",content:"native-client-input-fixture",timestamp:Date.now()});
   nativeWriter.appendMessage({...nativeReply,content:[{type:"text",text:"native-client-reply-fixture"}],timestamp:Date.now()+1});
-  const nativeAfter=await runtime.reload(minimal.id);
+  const nativeAfter=await runtime.snapshot(minimal.id);
   assert.ok(JSON.stringify(nativeAfter.messages).includes("native-client-reply-fixture"));
   assert.equal(nativeAfter.stats.modelRequests,nativeBefore.stats.modelRequests+1,"native client continuation is counted after reload");
   assert.equal(nativeAfter.stats.modelRequestsEstimated,true);

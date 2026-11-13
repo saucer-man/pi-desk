@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
 import { readFile, realpath, stat } from "node:fs/promises";
+import { mkdirSync, watch } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, extname, sep, dirname } from "node:path";
 import { openExternal } from "./browser.ts";
 import {attachTerminals} from "./terminals.ts";
 import { Runtime } from "./runtime.ts";
 import { api, json, workspace } from "./api.ts";
-import { inside, safeError } from "./storage.ts";
+import { inside, safeError, sessionRoot } from "./storage.ts";
 import { parseArgs } from "node:util";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
@@ -20,6 +21,14 @@ if (positionals.length && (positionals.length !== 1 || positionals[0] !== "web")
 let port = Number(values.port ?? (process.env.PORT || process.env.PI_DESK_PORT || 30140));
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("无效端口");
 const runtime = new Runtime();
+mkdirSync(sessionRoot, { recursive: true });
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
+const sessionWatcher = watch(sessionRoot, { recursive: true }, () => {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => void runtime.discover().catch(error => runtime.emit({ type: "notice", data: { message: safeError(error) } })), 300);
+});
+sessionWatcher.on("error", error => console.error(safeError(error)));
+await runtime.discover();
 const root = resolve(fileURLToPath(new URL("../frontend/dist/", import.meta.url)));
 const dev = values.dev;
 const vite = dev ? await (await import("vite")).createServer({ configLoader: "native", configFile: fileURLToPath(new URL("../frontend/vite.config.ts", import.meta.url)), server: { middlewareMode: true } }) : undefined;
@@ -60,5 +69,5 @@ server.listen(port, "127.0.0.1", () => {
 });
 server.on("error", error => { console.error(safeError(error)); process.exitCode = 1; });
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; closeTerminals(); await runtime.shutdown(); await vite?.close(); server.close(); server.closeAllConnections(); }
+async function shutdown() { if (closing) return; closing = true; sessionWatcher.close(); clearTimeout(syncTimer); closeTerminals(); await runtime.shutdown(); await vite?.close(); server.close(); server.closeAllConnections(); }
 process.on("SIGINT", () => void shutdown()); process.on("SIGTERM", () => void shutdown());

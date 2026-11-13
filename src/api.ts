@@ -15,7 +15,7 @@ import { agentDir, deskDir, directory, inside, safeError } from "./storage.ts";
 import { git, agentDefinitions, delegate } from "./subagents.ts";
 import { skillCatalog, pluginCatalog, readPlugin, resources, readResource, mutateResource, modelConfig, mutateModelConfig, mcpCatalog, mcpDefinition, mutateMcp, debugMcp } from "./resources.ts";
 import { sshIdentity } from "./remote.ts";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 export function json(res: ServerResponse, data: unknown, status = 200) { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); res.end(JSON.stringify(data, (key, value) => key === "cost" ? undefined : value)); }
 async function body(req: IncomingMessage): Promise<Record<string, any>> {
@@ -121,7 +121,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(id&&action==="run"&&method==="POST"){void runtime.scheduler.run(id).catch(()=>{});json(res,{accepted:true},202);return;}
     if(id&&action==="stop"&&method==="POST"){const task=runtime.scheduler.find(id);if(task.lastSessionId&&task.lastStatus==="running"){await runtime.stop(task.lastSessionId);}json(res,{ok:true});return;}
   }
-  if (path === "/api/state" && method === "GET") { json(res, runtime.store.state); return; }
+  if (path === "/api/state" && method === "GET") { await runtime.discover(); json(res, runtime.store.state); return; }
   if (path === "/api/proxy" && method === "POST") {
     const data=await body(req),previous=runtime.store.state.preferences.proxy;
     if(data.proxy!==null && (typeof data.proxy!=="string" || data.proxy.length>2048 || /[\x00-\x1f\x7f]/.test(data.proxy)))throw new Error("代理地址无效");
@@ -244,7 +244,12 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
       const data = await body(req);
       if (data.pinned !== undefined && typeof data.pinned !== "boolean") throw new Error("置顶状态必须是布尔值");
       if (data.mode || data.model || data.thinking) { if (data.mode && !["standard", "minimal"].includes(data.mode)) throw new Error("无效模式"); if (data.thinking && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(data.thinking)) throw new Error("无效思考强度"); await runtime.change(id, data); }
-      if (data.title !== undefined) { record.title = text(data.title, 200); runtime.live.get(id)?.session.setSessionName(record.title); }
+      if (data.title !== undefined) {
+        const title = text(data.title, 200), live = runtime.live.get(id);
+        if (live) live.session.setSessionName(title);
+        else if (record.sessionPath) { if (!statSync(record.sessionPath, { throwIfNoEntry: false })) throw new Error("Pi 会话文件已删除，请刷新会话列表"); SessionManager.open(record.sessionPath).appendSessionInfo(title); }
+        record.title = title;
+      }
       if (data.draft !== undefined) record.draft = text(data.draft, 1024 * 1024);
       if (data.draftImages !== undefined) record.draftImages = runtime.store.cacheImages(data.draftImages);
       if (data.pinned !== undefined) record.pinned = data.pinned;

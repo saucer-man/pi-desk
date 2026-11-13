@@ -32,6 +32,7 @@ const set = (update: Update, streaming=false) => { state = { ...state, ...(typeo
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); };
 const get = () => state;
 const notified=new Set<string>();
+let snapshotRevision=0;
 let state: AppState = ({
   code: readCodePreferences(),
   setCode: update => { const code = { ...get().code, ...update }; localStorage.setItem("pi-desk.code", JSON.stringify(code)); set({ code }); },
@@ -39,15 +40,16 @@ let state: AppState = ({
   fail: error => set({ error: error instanceof Error ? error.message : String(error) }),
   setPage: page => { localStorage.setItem("pi-desk.page",page);set({ page }); },
   select: async id => {
+    const revision=++snapshotRevision;
     let record = get().state?.sessions.find(r => r.id === id);const subagentId=record?.parentId?id:"";
     while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
     id=record?.id||id;localStorage.setItem("pi-desk.active", id);
     set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, loading: true, error: "" });
-    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) { set({ snapshot }); void get().loadModels().catch(get().fail); } }
+    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) { set({ snapshot }); void get().loadModels().catch(get().fail); } }
     catch (error) { if (get().activeId === id) get().fail(error); }
     finally { if (get().activeId === id) set({ loading: false }); }
   },
-  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id) set({ snapshot }); } },
+  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const revision=++snapshotRevision; const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot }); } },
   loadModels: async (refresh=false) => { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); },
   receive: event => {
     if (event.type === "state") {
@@ -58,6 +60,7 @@ let state: AppState = ({
       if (!current.snapshot && activeId && !current.loading) void get().select(activeId);
     }
     const snapshotKey=event.sessionId===get().activeId?"snapshot":event.sessionId===get().subagentId?"subagentSnapshot":undefined;
+    if (snapshotKey==="snapshot" && (event.type==="snapshot" || event.type==="event" && get().snapshot)) snapshotRevision++;
     if (event.type === "snapshot" && snapshotKey) set({ [snapshotKey]: event.data as SessionSnapshot });
     if (event.type === "event" && snapshotKey) {
       const data = event.data as { type: string; message?: ChatMessage; steering?: string[]; followUp?: string[]; toolCallId?: string; assistantMessageEvent?: { type: string; contentIndex?: number } };

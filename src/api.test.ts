@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, mkdir, writeFile, readFile, access } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, writeFile, readFile, access, appendFile, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFile } from "node:child_process";
@@ -122,6 +123,24 @@ test("web streaming: coalesce updates, flush final messages and discard pending 
     update("message_update","old session");useApp.setState({activeId:"next",snapshot:undefined});assert.equal(notifications,3);
     t.mock.timers.tick(32);assert.equal(notifications,3);assert.equal(useApp.getState().snapshot,undefined);
   }finally{unsubscribe();useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
+test("web native synchronization: late HTTP snapshots cannot replace newer pushed messages",async t=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState(),record={id:"native",workspaceId:"project"},state={sessions:[record],workspaces:[{id:"project"}]};
+  const old={record,messages:[{role:"user",content:"old"}]},latest={record,messages:[{role:"user",content:"native continuation"}]};
+  let finish!:(response:Response)=>void;
+  t.mock.method(globalThis,"fetch",async(url:unknown)=>String(url)==="/api/sessions/native"?new Promise<Response>(resolve=>finish=resolve):new Response(JSON.stringify(String(url)==="/api/state"?state:{})));
+  try{for(const action of ["refresh","select"] as const){
+    useApp.setState({state:state as any,activeId:"native",snapshot:old as any,loading:false});finish=undefined!;
+    const pending=action==="refresh"?useApp.getState().refresh():useApp.getState().select("native");
+    while(!finish)await new Promise(resolve=>setImmediate(resolve));
+    useApp.getState().receive({type:"snapshot",sessionId:"native",data:latest});finish(new Response(JSON.stringify(old)));await pending;
+    assert.deepEqual(useApp.getState().snapshot,latest,`${action} must retain the newer native continuation`);
+  }
+    const pending=useApp.getState().select("native");useApp.getState().receive({type:"event",sessionId:"native",data:{type:"session_info_changed",name:"native"}});finish(new Response(JSON.stringify(old)));await pending;
+    assert.deepEqual(useApp.getState().snapshot,old,"setup events before the first snapshot must not cancel initial loading");
+  }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
 });
 
 test("web retries: traces update parent and child status independently and clear on recovery or stop",async()=>{
@@ -755,6 +774,39 @@ test("terminal startup: early input survives asynchronous SSH attachment",{timeo
   const echoed=once(socket,"message");socket.send(JSON.stringify({type:"input",data:"first command\r"}));
   await new Promise(resolve=>setTimeout(resolve,100));attach();
   assert.equal(JSON.parse(String((await echoed)[0])).data,"first command\r");socket.close();
+});
+
+test("native sessions: startup discovery, watched changes, shared names and deletion", {timeout:45000}, async t=>{
+  const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-sync-"))),agent=join(temp,"agent"),root=join(temp,"native-sessions"),cwd=join(temp,"project");
+  await mkdir(cwd);await mkdir(agent);await mkdir(join(root,"--project--"),{recursive:true});await mkdir(join(root,"--ssh-fixture--"));
+  await writeFile(join(agent,"settings.json"),JSON.stringify({extensions:[],packages:[],skills:[]}));
+  const native=(name:string)=>{const id=randomUUID(),messageId=randomUUID(),timestamp=new Date().toISOString();return [{type:"session",version:3,id,cwd,timestamp},{type:"message",id:messageId,parentId:null,timestamp,message:{role:"user",content:[{type:"text",text:name}],timestamp:Date.now()}},{type:"session_info",id:randomUUID(),parentId:messageId,timestamp,name}];};
+  const write=async(path:string,entries:unknown[])=>writeFile(path,entries.map(e=>JSON.stringify(e)).join("\n")+"\n");
+  const first=native("native startup"),firstPath=join(root,"--project--","first.jsonl"),flat=native("flat root session"),flatPath=join(root,"flat.jsonl");
+  await write(firstPath,first);await write(flatPath,flat);await write(join(root,"--ssh-fixture--","ignored.jsonl"),native("SSH private cache"));
+  const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:root,PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
+  const controller=new AbortController();let reading=Promise.resolve();t.after(async()=>{controller.abort();await reading;await stopChild(child);});let errors="",output="";child.stderr.on("data",chunk=>errors+=chunk);
+  const origin=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(errors||"sync server did not start")),20000);child.stdout.on("data",chunk=>{output+=chunk;const url=/http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0];if(url){clearTimeout(timer);resolve(url);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`sync server exited ${code}: ${errors}`));});});
+  const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.equal(response.ok,true,JSON.stringify(body));return body;};
+  const initial=await request("/state");assert.equal(initial.sessions.length,2);assert.ok(initial.sessions.some((r:any)=>r.id===first[0].id));
+  // Rename a cold record: its native name must be written even before opening it in Desk.
+  await request(`/sessions/${flat[0].id}`,{title:"Desk renamed native"},"PATCH");assert.match(await readFile(flatPath,"utf8"),/Desk renamed native/);
+  await request(`/sessions/${first[0].id}`,{mode:"minimal"},"PATCH");
+  const empty=await request("/sessions",{workspaceId:initial.workspaces[0].id,mode:"minimal"});await request(`/sessions/${empty.id}`);await request("/discover",{});
+  assert.ok((await request("/state")).sessions.some((r:any)=>r.id===empty.id),"opening an empty draft must not make synchronization delete it");
+  const response=await fetch(origin+`/api/events?sessionId=${first[0].id}`,{signal:controller.signal});
+  const events:any[]=[];const reader=response.body!.getReader();let buffer="";
+  reading=(async()=>{try{while(true){const {done,value}=await reader.read();if(done)break;buffer+=new TextDecoder().decode(value);let end:number;while((end=buffer.indexOf("\n\n"))>=0){const part=buffer.slice(0,end);buffer=buffer.slice(end+2);if(part.startsWith("data: "))events.push(JSON.parse(part.slice(6)));}}}catch(error){if(!controller.signal.aborted)throw error;}})();
+  const wait=async(predicate:()=>boolean)=>{const end=Date.now()+10000;while(!predicate()){assert.ok(Date.now()<end,"watched native change did not reach SSE: "+errors);await new Promise(resolve=>setTimeout(resolve,50));}};
+  const added=native("native added while running"),addedPath=join(root,"--project--","added.jsonl");await write(addedPath,added);
+  await wait(()=>events.some(e=>e.type==="state"&&e.data.sessions.some((r:any)=>r.id===added[0].id)));
+  const timestamp=new Date().toISOString(),messageId=randomUUID();await appendFile(firstPath,[{type:"message",id:messageId,parentId:first[2].id,timestamp,message:{role:"user",content:[{type:"text",text:"external continuation"}],timestamp:Date.now()}},{type:"session_info",id:randomUUID(),parentId:messageId,timestamp,name:"native renamed while open"}].map(e=>JSON.stringify(e)).join("\n")+"\n");
+  await wait(()=>events.some(e=>e.type==="snapshot"&&JSON.stringify(e.data.messages).includes("external continuation")));
+  assert.equal((await request(`/sessions/${first[0].id}`)).record.title,"native renamed while open");
+  await Promise.all([request("/discover",{}),request("/discover",{})]);assert.equal((await request("/state")).sessions.filter((r:any)=>r.sessionPath===firstPath).length,1);
+  await unlink(firstPath);await wait(()=>events.some(e=>e.type==="state"&&!e.data.sessions.some((r:any)=>r.id===first[0].id)));
+  assert.equal((await fetch(origin+`/api/sessions/${first[0].id}`)).status,400);await assert.rejects(access(firstPath));
+  await request(`/sessions/${added[0].id}`,undefined,"DELETE");await assert.rejects(access(addedPath));await request("/discover",{});assert.ok(!(await request("/state")).sessions.some((r:any)=>r.id===added[0].id));
 });
 
 test("composer IME guard: composing, late confirmation, key release, blur and cleanup",async()=>{

@@ -1,8 +1,9 @@
 import {createReadTool,createWriteTool,createEditTool,createBashTool,createFindTool,createGrepTool,createLsTool,type ToolDefinition,type ExtensionFactory} from "@earendil-works/pi-coding-agent";
 import {createHash} from "node:crypto";
-import {relative,isAbsolute,dirname,extname,posix} from "node:path";
+import {relative,isAbsolute,dirname,extname,posix,resolve} from "node:path";
 import {realpath} from "node:fs/promises";
-import {inside} from "./storage.ts";
+import {existsSync} from "node:fs";
+import {inside,sessionRoot} from "./storage.ts";
 import type {Runtime} from "./runtime.ts";
 import type {SessionRecord,Workspace} from "./types.ts";
 
@@ -33,6 +34,19 @@ export function remoteTools(runtime:Runtime,w:Workspace,record:SessionRecord,anc
   const tools:ToolDefinition[]=Object.entries(factory).map(([name,create])=>{
     const base=create(anchor);
     return {...base,execute:async(id,params:any,signal,onUpdate)=>{
+      if(isAbsolute(params.path)&&inside(sessionRoot,params.path)){
+        if(name!=="read")throw Error("本机 Pi 历史仅允许读取");
+        const root=await realpath(sessionRoot),path=await realpath(params.path);
+        if(!inside(root,path))throw Error("历史引用越出本机 Pi 会话目录");
+        if(path===root){
+          await runtime.discover();
+          const index=runtime.store.state.sessions.filter(r=>r.sessionPath&&inside(sessionRoot,r.sessionPath)&&existsSync(r.sessionPath)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).map(r=>JSON.stringify({id:r.id,title:r.title,cwd:r.cwd,updatedAt:r.updatedAt,path:r.sessionPath})).join("\n");
+          const reader=createReadTool(anchor,{operations:{access:async()=>{},readFile:async()=>Buffer.from(index)}});
+          return reader.execute(id,{...params,path},signal,onUpdate);
+        }
+        if(extname(path)!==".jsonl")throw Error("本机历史只允许读取 Pi 会话 JSONL 文件");
+        return localRead.execute(id,{...params,path},signal,onUpdate);
+      }
       if(name==="read"&&isAbsolute(params.path)){
         for(const skill of skills()){
           const root=await realpath(dirname(skill.filePath)).catch(()=>undefined);if(!root||!inside(root,params.path))continue;
@@ -62,7 +76,7 @@ export function remoteTools(runtime:Runtime,w:Workspace,record:SessionRecord,anc
   }} as ToolDefinition);
   tools.push({...ls,execute:async(_id,params:any,signal)=>{const reply=await manager.operation(w,"file.list",{path:logical(params.path||".")},{signal},cwd);return text(reply.value.entries.slice(0,Math.max(1,params.limit||500)).map((entry:any)=>posix.basename(entry.path)+(entry.kind==="directory"?"/":"")).join("\n")+(reply.value.truncated?"\n[Directory listing truncated.]":""));}} as ToolDefinition);
   const extension:ExtensionFactory=pi=>{
-    pi.on("before_agent_start",async event=>({systemPrompt:event.systemPrompt+`\n\nRemote workspace: ${cwd}\nPi local anchor: ${anchor}\nUse the registered remote tools for project files and commands. Local enabled skills can be read, but shell commands always run remotely. Local plugins and MCP servers run on the host; they are not automatically remote.\n\n`+await manager.context(w,cwd)}));
+    pi.on("before_agent_start",async event=>({systemPrompt:event.systemPrompt+`\n\nRemote workspace: ${cwd}\nPi local anchor: ${anchor}\nUse the registered remote tools for project files and commands. Local enabled skills can be read, but shell commands always run remotely. Local plugins and MCP servers run on the host; they are not automatically remote.\nLocal Pi history (read-only, includes local and SSH sessions): ${resolve(sessionRoot)}\nUse read with that absolute directory path to list histories (one JSON object per line, newest first; offset/limit paginate), then read the listed absolute .jsonl path for its transcript.\n\n`+await manager.context(w,cwd)}));
     pi.on("user_bash",()=>({operations:bashOps}));
   };
   return {tools,extension};

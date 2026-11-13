@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Agent, ProxyAgent, fetch as proxyFetch } from "undici";
-import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, ModelRuntime, Theme, getPackageDir,
@@ -20,6 +21,8 @@ import { BrowserHost, browserTool } from "./browser.ts";
 const themeTokens = JSON.parse(readFileSync(join(getPackageDir(), "dist/modes/interactive/theme/dark.json"), "utf8")).colors;
 const plainColors = Object.fromEntries(Object.keys(themeTokens).map(key => [key, ""]));
 const webTheme = new Theme(plainColors as ConstructorParameters<typeof Theme>[0], plainColors as ConstructorParameters<typeof Theme>[1], "truecolor", { name: "web", appearance: "light" });
+const sessionKey = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+function sessionVersion(path?: string) { const stat = path && statSync(path, { throwIfNoEntry: false }); return stat ? `${stat.mtimeMs}:${stat.size}` : undefined; }
 
 // Google adapters use global fetch; async context keeps concurrent model routes isolated.
 const proxyContext = new AsyncLocalStorage<Agent | ProxyAgent>();
@@ -38,6 +41,7 @@ interface Live {
   progressTimer?: ReturnType<typeof setTimeout>;
   modelNeedsSelection?: boolean;
   resourcesStale?: boolean;
+  fileVersion?: string;
   streaming?: ExecutionState["streaming"];
 }
 export class Runtime {
@@ -55,6 +59,8 @@ export class Runtime {
   private sessionOwners = new Map<string, string>();
   private stopping = new Set<string>();
   private closing = false;
+  private discovering?: Promise<void>;
+  private discoverAgain = false;
   private proxyAgents = new Map<string, Agent | ProxyAgent>();
   withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
     const config=this.store.state.preferences.proxy, key=`${model.provider}/${model.id}`;
@@ -154,15 +160,54 @@ export class Runtime {
       const value={durationMs:Math.round(performance.now()-started),status,text:result.content.filter(p=>p.type==="text").map(p=>p.text).join("")};log("result",value);return value;
     } catch(error){const message=redact(error instanceof Error?error.message:String(error));log("error",{message,durationMs:Math.round(performance.now()-started)});throw new Error(message);}
   }
-  async discover() {
-    const known = new Set(this.store.state.sessions.map(r => r.sessionPath));
-    for (const info of await SessionManager.listAll(sessionRoot)) {
-      if (known.has(info.path) || !info.cwd || relative(sessionRoot,info.path).split(/[/\\]/)[0].startsWith("--ssh-")) continue;
-      let workspace = this.store.state.workspaces.find(w => w.path.toLowerCase() === info.cwd.toLowerCase());
+  discover(): Promise<void> {
+    this.discoverAgain = true;
+    return this.discovering ??= (async () => {
+      do { this.discoverAgain = false; await this.syncSessions(); } while (this.discoverAgain && !this.closing);
+    })().finally(() => { this.discovering = undefined; });
+  }
+  private async syncSessions() {
+    const entries = await readdir(sessionRoot, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+    // Pi's custom-directory listing is flat; include its per-project directories explicitly.
+    // ponytail: rescan on debounced changes; use an incremental index if large histories make this slow.
+    const infos = (await Promise.all([sessionRoot, ...entries.filter(e => e.isDirectory() && !e.name.startsWith("--ssh-")).map(e => join(sessionRoot, e.name))].map(dir => SessionManager.listAll(dir)))).flat();
+    if (this.closing) return;
+    const before = JSON.stringify(this.store.state);
+    const known = new Map(this.store.state.sessions.filter(r => r.sessionPath).map(r => [sessionKey(r.sessionPath!), r]));
+    for (const info of infos) {
+      if (!info.cwd || !existsSync(info.path)) continue;
+      const record = known.get(sessionKey(info.path));
+      if (record) {
+        if (!this.remote.workspaceFor(record.id) && record.status !== "running" && !this.creating.has(record.id)) {
+          record.title = info.name || info.firstMessage.slice(0, 80) || "历史会话";
+          if (info.modified.toISOString() > record.updatedAt) record.updatedAt = info.modified.toISOString();
+        }
+        continue;
+      }
+      let workspace = this.store.state.workspaces.find(w => !w.remote && sessionKey(w.path) === sessionKey(info.cwd));
       if (!workspace) { workspace = { id: randomUUID(), name: info.cwd.split(/[/\\]/).filter(Boolean).at(-1) || info.cwd, path: info.cwd, trusted: true }; this.store.state.workspaces.push(workspace); }
-      this.store.state.sessions.push({ id: info.id, title: info.name || info.firstMessage.slice(0, 80) || "历史会话", workspaceId: workspace.id, cwd: info.cwd, mode: "standard", depth: 0, status: "idle", sessionPath: info.path, draft: "", createdAt: info.created.toISOString(), updatedAt: info.modified.toISOString() });
+      const imported: SessionRecord = { id: this.store.state.sessions.some(r => r.id === info.id) ? randomUUID() : info.id, title: info.name || info.firstMessage.slice(0, 80) || "历史会话", workspaceId: workspace.id, cwd: info.cwd, mode: "standard", depth: 0, status: "idle", sessionPath: info.path, draft: "", createdAt: info.created.toISOString(), updatedAt: info.modified.toISOString() };
+      this.store.state.sessions.push(imported); known.set(sessionKey(info.path), imported);
     }
-    this.changed();
+    for (const record of [...this.store.state.sessions]) {
+      if (!record.sessionPath || !inside(sessionRoot, record.sessionPath) || this.remote.workspaceFor(record.id) || existsSync(record.sessionPath) || record.status === "running" || this.creating.has(record.id)) continue;
+      const live = this.live.get(record.id);
+      if (live && !live.fileVersion) { record.sessionPath = undefined; continue; }
+      if (live) { await this.release(live, "quit"); this.live.delete(record.id); }
+      this.sessionOwners.delete(sessionKey(record.sessionPath));
+      // Keep unsent input when its native conversation was removed elsewhere.
+      if (record.draft || record.draftImages?.length || record.pending?.length) record.sessionPath = undefined;
+      else this.store.state.sessions = this.store.state.sessions.filter(r => r.id !== record.id);
+    }
+    const ids = new Set(this.store.state.sessions.map(r => r.id));
+    for (const record of this.store.state.sessions) if (record.parentId && !ids.has(record.parentId)) { record.parentId = undefined; record.depth = 0; }
+    if (JSON.stringify(this.store.state) !== before) this.changed();
+    for (const [id, live] of this.live) {
+      const record = this.store.record(id);
+      if (!this.remote.workspaceFor(id) && record.sessionPath && live.fileVersion !== sessionVersion(record.sessionPath) && live.session.isIdle && record.status !== "running" && !this.creating.has(id) && [...this.listeners].some(listener => !listener.sessions || listener.sessions.has(id))) {
+        this.emit({ type: "snapshot", sessionId: id, data: await this.snapshot(id) });
+      }
+    }
   }
   create(workspaceId: string, mode: Mode, extra: Partial<SessionRecord> = {}) {
     const w = this.store.state.workspaces.find(w => w.id === workspaceId);
@@ -173,8 +218,14 @@ export class Runtime {
   }
   async get(id: string): Promise<Live> {
     const pending = this.creating.get(id); if (pending) return pending;
-    const existing = this.live.get(id); if (existing&&(!existing.resourcesStale||!existing.session.isIdle||this.store.record(id).status==="running")) return existing;
+    const existing = this.live.get(id);
     const record = this.store.record(id);
+    if (existing && existing.session.isIdle && record.status !== "running" && !this.remote.workspaceFor(id) && record.sessionPath && existing.fileVersion !== sessionVersion(record.sessionPath)) {
+      if (!existsSync(record.sessionPath)) throw new Error("Pi 会话文件已删除，请刷新会话列表");
+      existing.resourcesStale = true;
+    }
+    if (existing&&(!existing.resourcesStale||!existing.session.isIdle||record.status==="running")) return existing;
+    if (record.sessionPath && !existsSync(record.sessionPath)) throw new Error("Pi 会话文件已删除，请刷新会话列表");
     const source = record.sessionPath && existsSync(record.sessionPath) ? realpathSync(record.sessionPath) : undefined;
     const key = source && (process.platform === "win32" ? source.toLowerCase() : source);
     if (key) { const owner = this.sessionOwners.get(key); if (owner && owner !== id) throw new Error("此原生会话已在另一个入口打开，请切换使用或创建独立分支"); this.sessionOwners.set(key, id); }
@@ -213,6 +264,11 @@ export class Runtime {
     const manager = record.sessionPath && existsSync(record.sessionPath)
       ? SessionManager.open(record.sessionPath, undefined, contextCwd)
       : SessionManager.create(contextCwd, workspace.remote?join(sessionRoot,"--ssh-"+workspace.id+"--"):join(sessionRoot, `--${record.cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`));
+    if (record.sessionPath && !workspace.remote) {
+      const context = manager.buildSessionContext();
+      record.model = context.model ? `${context.model.provider}/${context.model.modelId}` : undefined;
+      record.thinking = context.thinkingLevel;
+    }
     const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
     record.modelRequests = 0; record.modelRequestsEstimated = false;
     let requested = false;
@@ -254,7 +310,9 @@ export class Runtime {
     try { await result.session.bindExtensions({ mode: "rpc", uiContext: this.ui(id), onError: error => { record.error = safeError(error); this.emit({ type: "notice", sessionId: id, data: { type: "error", message: record.error } }); this.changed(record); } }); }
     catch (error) { await this.release(live, "quit").catch(() => {}); this.live.delete(id); throw error; }
     if (record.thinking) result.session.setThinkingLevel(record.thinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
-    record.sessionPath = manager.getSessionFile(); this.changed(record);
+    if (!record.sessionPath && record.title !== "新会话") result.session.setSessionName(record.title);
+    live.fileVersion = sessionVersion(manager.getSessionFile());
+    record.sessionPath = live.fileVersion ? manager.getSessionFile() : undefined; this.changed(record);
     return live;
   }
   private onEvent(record: SessionRecord, live: Live, event: AgentSessionEvent) {
@@ -305,7 +363,8 @@ export class Runtime {
       live.metrics.endedAt = new Date().toISOString(); live.metrics.durationMs = live.started ? now - live.started : undefined;
       record.unread = true; record.updatedAt = live.metrics.endedAt; this.trace(record.id, "settled", event.aborted ? "运行已停止" : "运行结束", live.metrics); this.changed(record); this.progress(record.id);
     }
-    record.sessionPath = live.session.sessionManager.getSessionFile();
+    live.fileVersion = sessionVersion(live.session.sessionManager.getSessionFile());
+    record.sessionPath = live.fileVersion ? live.session.sessionManager.getSessionFile() : undefined;
     this.emit({ type: "event", sessionId: record.id, data: event });
   }
   trace(id: string, type: string, label: string, data?: unknown, durationMs?: number) {
@@ -538,6 +597,7 @@ export class Runtime {
     // createBranchedSession mutates its manager: fork on a separate reader, never the live parent.
     const path = SessionManager.open(source, undefined, parent.cwd).createBranchedSession(leaf);
     if (!path) throw new Error("无法创建会话分支");
+    SessionManager.open(path).appendSessionInfo(parent.title + " · 分支");
     return this.create(parent.workspaceId, parent.mode, { cwd: parent.cwd, title: parent.title + " · 分支", sessionPath: path, model: parent.model });
   }
   async remove(id: string | string[], descendants: boolean) {
