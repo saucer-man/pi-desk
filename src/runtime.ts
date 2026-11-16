@@ -62,9 +62,14 @@ export class Runtime {
   private discovering?: Promise<void>;
   private discoverAgain = false;
   private proxyAgents = new Map<string, Agent | ProxyAgent>();
-  withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
+  private proxyRoute(model: {provider:string;id:string}) {
     const config=this.store.state.preferences.proxy, key=`${model.provider}/${model.id}`;
-    const proxy=config?.models && Object.hasOwn(config.models,key) ? config.models[key] : config?.providers&&Object.hasOwn(config.providers,model.provider)?config.providers[model.provider]:config?.global;
+    if(config?.models&&Object.hasOwn(config.models,key))return {source:"model",proxy:config.models[key]};
+    if(config?.providers&&Object.hasOwn(config.providers,model.provider))return {source:"provider",proxy:config.providers[model.provider]};
+    return {source:config?.global?"global":"process",proxy:config?.global};
+  }
+  withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
+    const {proxy}=this.proxyRoute(model);
     if(proxy===undefined || proxy==="")return proxyContext.exit(()=>request());
     const route=proxy??"";
     let agent=this.proxyAgents.get(route);
@@ -132,23 +137,25 @@ export class Runtime {
   async testModel(provider:string,id:string,sessionId?:string,options:{prompt?:string;draft?:Record<string,any>;signal?:AbortSignal;log?:(log:ModelProbeLog)=>void}={}) {
     const models=await this.probeRuntime(options.draft,sessionId);await models.refresh({allowNetwork:false});
     const model=models.getModel(provider,id);if(!model)throw new Error("模型不存在，请刷新后重试");
-    const started=performance.now(),secrets=new Set<string>(),signal=AbortSignal.any([AbortSignal.timeout(15000),...(options.signal?[options.signal]:[])]);
-    const redact=(value:unknown)=>JSON.parse(JSON.stringify(value,(key,value)=>{
-      if(key.toLowerCase()==="headers"&&value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([name,content])=>[name,/^(accept|content-type|user-agent|anthropic-version)$/i.test(name)?content:"[已隐藏]"]));
-      if(/^(authorization|proxy-authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|client[-_]?secret|password|cookie|set-cookie|access|refresh)$/i.test(key))return "[已隐藏]";
-      if(typeof value==="string"){for(const secret of secrets)if(secret.length>=4)value=value.replaceAll(secret,"[已隐藏]");return value.replace(/Bearer\s+[^\s"']+/gi,"Bearer [已隐藏]");}return value;
-    }));
-    const log=(kind:ModelProbeLog["kind"],data:unknown)=>options.log?.({at:new Date().toISOString(),kind,data:redact(data)});
-    log("info",{provider,model:id,prompt:options.prompt||"Reply with OK."});
+    const started=performance.now(),signal=AbortSignal.any([AbortSignal.timeout(15000),...(options.signal?[options.signal]:[])]);
+    const connection=()=>{const {source,proxy}=this.proxyRoute(model);return {source,mode:proxy===null?"direct":proxy?"proxy":"process",url:proxy||undefined,...(proxy===undefined||proxy===""?{environment:Object.fromEntries(["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy","NODE_USE_ENV_PROXY","NODE_OPTIONS"].map(key=>[key,process.env[key]])),execArgv:process.execArgv}:{})};};
+    const log=(kind:ModelProbeLog["kind"],data:unknown)=>{
+      const seen=new WeakSet<object>();
+      options.log?.({at:new Date().toISOString(),kind,data:JSON.parse(JSON.stringify(data,(_key,value)=>{
+        if(value&&typeof value==="object"){if(seen.has(value))return "[Circular]";seen.add(value);if(value instanceof Error)return {name:value.name,...Object.fromEntries(Object.getOwnPropertyNames(value).map(key=>[key,(value as any)[key]]))};}return typeof value==="bigint"?String(value):value;
+      }))});
+    };
+    log("info",{provider,model:id,prompt:options.prompt||"Reply with OK.",proxy:connection(),timeoutMs:15000,node:process.version,platform:process.platform,arch:process.arch});
+    let transportError:unknown,status:number|undefined;
     try {
-      const auth=await this.withProxy(model,()=>models.getAuth(model,{signal}));if(auth?.auth.apiKey)secrets.add(auth.auth.apiKey);for(const value of Object.values(auth?.auth.headers||{}))if(value)secrets.add(value);
-      let status:number|undefined,sawHTTP=false;
+      const auth=await this.withProxy(model,()=>models.getAuth(model,{signal}));
+      let sawHTTP=false;
       const loggedFetch:typeof fetch=async(input,init)=>{
         const request=input instanceof Request?input:undefined,url=String(request?.url||input),headers=new Headers(init?.headers||request?.headers);
-        headers.forEach((value,key)=>{if(!/^(accept|content-type|user-agent|anthropic-version|x-stainless-.*)$/i.test(key))secrets.add(value.replace(/^Bearer\s+/i,""));});
         const body=typeof init?.body==="string"?init.body:request?await request.clone().text():undefined;
-        log("request",{method:init?.method||request?.method||"POST",url,headers:Object.fromEntries(headers),body});
-        const response=await fetch(input,init);sawHTTP=true;status=response.status;log("response",{url:response.url,status,headers:Object.fromEntries(response.headers)});return response;
+        log("request",{method:init?.method||request?.method||"POST",url,headers:Object.fromEntries(headers),body,proxy:connection()});
+        try{const response=await fetch(input,init);sawHTTP=true;status=response.status;log("response",{url:response.url,status,headers:Object.fromEntries(response.headers)});return response;}
+        catch(error){transportError=error;throw error;}
       };
       const result=await this.withProxy(model,async env=>{
         const usesFetch=/^(openai|anthropic|google)/.test(model.api);
@@ -156,9 +163,9 @@ export class Runtime {
         for await(const event of stream)if(event.type==="text_delta")log("output",event.delta);
         return stream.result();
       });
-      if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试已取消或超时");
+      if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试已取消或超时",{cause:transportError});
       const value={durationMs:Math.round(performance.now()-started),status,text:result.content.filter(p=>p.type==="text").map(p=>p.text).join("")};log("result",value);return value;
-    } catch(error){const message=redact(error instanceof Error?error.message:String(error));log("error",{message,durationMs:Math.round(performance.now()-started)});throw new Error(message);}
+    } catch(error){const message=error instanceof Error?error.message:String(error);log("error",{message,error,status,proxy:connection(),aborted:signal.aborted,abortReason:signal.reason,durationMs:Math.round(performance.now()-started)});throw error;}
   }
   discover(): Promise<void> {
     this.discoverAgain = true;
@@ -373,6 +380,24 @@ export class Runtime {
     const entryId = live.session.sessionManager.appendCustomEntry("pi-desk-event", event);
     const entry: TraceEntry = { ...event, id: entryId, sessionId: id, at: live.session.sessionManager.getEntry(entryId)!.timestamp };
     this.emit({ type: "trace", sessionId: id, data: entry }); return entry;
+  }
+  searchSessions(query: string): string[] {
+    query = query.trim().toLowerCase();
+    const matches = (value: string) => value.toLowerCase().includes(query);
+    return this.store.state.sessions.filter(record => {
+      if (record.parentId) return false;
+      if (!query || matches(record.title) || matches(this.store.state.workspaces.find(w => w.id === record.workspaceId)?.name || "")) return true;
+      const live = this.live.get(record.id);
+      const manager = live?.session.sessionManager || (record.sessionPath && existsSync(record.sessionPath) ? SessionManager.open(record.sessionPath) : undefined);
+      const messages = new Map<string, ChatMessage["content"]>();
+      for (const entry of manager?.getBranch() || []) {
+        if (entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")) messages.set(entry.id, entry.message.content as ChatMessage["content"]);
+        if (entry.type === "context_edit" && entry.replacement && messages.has(entry.targetId)) messages.set(entry.targetId, entry.replacement.content as ChatMessage["content"]);
+        if (entry.type === "custom" && entry.customType === "pi-desk-message-delete") messages.delete((entry.data as {entryId:string}).entryId);
+      }
+      const streaming = live?.session.state.streamingMessage, pending: ChatMessage["content"][] = streaming?.role === "assistant" ? [streaming.content] : [];
+      return [...messages.values(), ...pending].some(content => matches(typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text || "").join("\n")));
+    }).map(record => record.id);
   }
   traces(id: string): TraceEntry[] {
     const record = this.store.record(id);

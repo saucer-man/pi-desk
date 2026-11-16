@@ -421,7 +421,12 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const discovered=await request("/models/discover",{provider:draftProvider});assert.equal(discovered.status,200,JSON.stringify(discovered.data));assert.deepEqual(discovered.data.map((m:any)=>m.id),["discovered-one","discovered-two"]);
   const streamed=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",prompt:"editable probe prompt",draft:{provider:draftProvider,model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
   assert.equal(streamed.status,200);const probeLogs=await streamed.text(),events=probeLogs.trim().split("\n").map(line=>JSON.parse(line));
-  assert.ok(events.some(e=>e.kind==="request"&&JSON.stringify(e.data).includes("editable probe prompt")),probeLogs);assert.ok(events.some(e=>e.kind==="response"&&e.data.status===200));assert.ok(events.some(e=>e.kind==="output"));assert.ok(events.some(e=>e.kind==="result"));assert.ok(!probeLogs.includes("draft-secret-key")&&!probeLogs.includes("draft-header-secret"),"draft credentials never appear in streamed logs");
+  assert.ok(events.some(e=>e.kind==="request"&&JSON.stringify(e.data).includes("editable probe prompt")),probeLogs);assert.ok(events.some(e=>e.kind==="response"&&e.data.status===200));assert.ok(events.some(e=>e.kind==="output"));assert.ok(events.some(e=>e.kind==="result"));assert.ok(probeLogs.includes("draft-secret-key")&&probeLogs.includes("draft-header-secret"),"connection diagnostics preserve raw credentials");
+  assert.equal(events.find(e=>e.kind==="info").data.proxy.mode,"process");
+  const closed=createServer();closed.listen(0,"127.0.0.1");await once(closed,"listening");const closedPort=(closed.address() as {port:number}).port;await new Promise<void>(resolve=>closed.close(()=>resolve()));
+  const failedProbe=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",draft:{provider:{...draftProvider,baseUrl:`http://127.0.0.1:${closedPort}/v1`},model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
+  const failureEvents=(await failedProbe.text()).trim().split("\n").map(line=>JSON.parse(line)),failure=failureEvents.find(e=>e.kind==="error").data;
+  assert.equal(failureEvents.filter(e=>e.kind==="error").length,1);assert.equal(failure.error.cause.cause.code,"ECONNREFUSED");assert.equal(failure.error.cause.cause.address,"127.0.0.1");assert.equal(failure.error.cause.cause.port,closedPort);assert.ok(failure.error.cause.stack);assert.equal(failure.proxy.mode,"process");assert.equal(failure.aborted,false);
   assert.equal(await readFile(join(agent,"models.json"),"utf8"),beforeDraftConfig,"discovering and probing drafts do not save configuration");
   assert.equal((await request("/models/selection",{provider:"mock",models:[]})).status,400,"the default model cannot be removed from the picker");
   const imported=await request("/model-config",{operation:"import",createProvider:true,provider:{...draftProvider,id:"import-fixture"},models:discovered.data});assert.equal(imported.status,200,JSON.stringify(imported.data));
@@ -434,7 +439,14 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await request(`/sessions/${autoSelected.id}`)).data.model,"import-fixture/discovered-one","automatic model choice for a new conversation respects imported models");
   await writeFile(join(agent,"settings.json"),settingsWithDefault);assert.equal((await request("/models/selection",{provider:"mock",models:["mock"]})).status,200);
   const beforeInvalidImport=await readFile(join(agent,"models.json"),"utf8");assert.equal((await request("/model-config",{operation:"import",provider:{...draftProvider,id:"import-fixture"},models:[discovered.data[0],{id:"invalid",contextWindow:-1,maxTokens:10}]})).status,400);assert.equal(await readFile(join(agent,"models.json"),"utf8"),beforeInvalidImport);
-  assert.equal((await request("/model-config",{operation:"delete_provider",provider:"import-fixture"})).status,200);
+  const importProvider=(await request("/model-config")).data.providers.find((p:any)=>p.id==="import-fixture"),importModels=JSON.parse(beforeInvalidImport).providers["import-fixture"].models;
+  assert.equal((await request("/proxy",{provider:"import-fixture",proxy:null})).status,200);
+  const providerRenamed=await request("/model-config",{operation:"save_provider",originalProvider:"import-fixture",provider:{...importProvider,id:"import-renamed",apiKey:"provider-visible-key"}});
+  assert.equal(providerRenamed.status,200,JSON.stringify(providerRenamed.data));assert.equal(providerRenamed.data.providers.find((p:any)=>p.id==="import-renamed").apiKey,"provider-visible-key");
+  assert.deepEqual(JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers["import-renamed"].models,importModels);
+  const renamedPreferences=(await request("/state")).data.preferences;assert.deepEqual(renamedPreferences.modelSelection["import-renamed"],["discovered-one"]);assert.equal(renamedPreferences.modelSelection["import-fixture"],undefined);assert.equal(renamedPreferences.proxy.providers["import-renamed"],null);assert.equal(renamedPreferences.proxy.providers["import-fixture"],undefined);
+  const beforeInvalidProvider=await readFile(join(agent,"models.json"),"utf8");assert.equal((await request("/model-config",{operation:"save_provider",provider:{...importProvider,id:"import-renamed",baseUrl:"file:///invalid"}})).status,400);assert.equal(await readFile(join(agent,"models.json"),"utf8"),beforeInvalidProvider);
+  assert.equal((await request("/model-config",{operation:"delete_provider",provider:"import-renamed"})).status,200);
   // Model CRUD stays in Pi's native files, keeps secrets private, and defaults affect new sessions.
   const configUrl = "/model-config";
   const nativeModels = JSON.parse(await readFile(join(agent,"models.json"),"utf8")); nativeModels.customRoot = {preserve:true};
@@ -443,8 +455,8 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const modelConfig = {id:"alpha",name:"Alpha",contextWindow:64000,maxTokens:1000,reasoning:true,input:["text","image"],thinkingLevelMap:{high:"high"},inputLimits:{images:{resize:{maxWidth:1200}}},cost:{input:1,output:2,cacheRead:0,cacheWrite:0},customModel:true};
   const added = await request(configUrl,{operation:"save",createProvider:true,provider,model:modelConfig,compaction:{reserveTokens:0,keepRecentTokens:300}});
   assert.equal(added.status,200,JSON.stringify(added.data)); assert.ok(added.data.catalog.models.some((m:any)=>m.provider==="custom"&&m.id==="alpha"));
-  assert.ok(!JSON.stringify(added.data).includes("model-config-secret")); assert.ok(!JSON.stringify(added.data).includes("header-config-secret"));
-  const managed=added.data.providers.find((p:any)=>p.id==="custom"); assert.equal(managed.hasApiKey,true); assert.equal(managed.headers["X-Private"],"[已保存]");
+  assert.ok(!JSON.stringify(added.data).includes("header-config-secret"));
+  const managed=added.data.providers.find((p:any)=>p.id==="custom"); assert.equal(managed.apiKey,"model-config-secret"); assert.equal(managed.hasApiKey,true); assert.equal(managed.headers["X-Private"],"[已保存]");
   assert.equal((await request(configUrl,{operation:"default",provider:"custom",model:"alpha"})).status,200);
   const newSession=(await request("/sessions",{workspaceId:w.id,mode:"minimal"})).data;
   assert.equal((await request(`/sessions/${newSession.id}`)).data.model,"custom/alpha");
@@ -468,6 +480,9 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const renamedProvider=modelEdited.data.providers.find((p:any)=>p.id==="renamed");
   const second=await request(configUrl,{operation:"save",provider:renamedProvider,model:{...modelConfig,id:"gamma"},compaction:{reserveTokens:200}}); assert.equal(second.status,200);
   assert.equal(second.data.providers.find((p:any)=>p.id==="renamed").models.length,2);
+  const modelsBeforeProviderSave=JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers.renamed.models,settingsBeforeProviderSave=JSON.parse(await readFile(join(agent,"settings.json"),"utf8"));
+  assert.equal((await request(configUrl,{operation:"save_provider",provider:second.data.providers.find((p:any)=>p.id==="renamed")})).status,200);
+  assert.deepEqual(JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers.renamed.models,modelsBeforeProviderSave);assert.deepEqual(JSON.parse(await readFile(join(agent,"settings.json"),"utf8")),settingsBeforeProviderSave,"saving provider settings preserves every model and compaction override");
   assert.equal((await request(configUrl,{operation:"delete_model",provider:"renamed",model:"beta"})).status,400);
   assert.equal((await request(configUrl,{operation:"default",provider:"mock",model:"mock"})).status,200);
   assert.equal((await request(configUrl,{operation:"delete_model",provider:"renamed",model:"beta"})).status,200);
@@ -683,6 +698,18 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await request("/proxy",{provider:"mock",proxy:null})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,globalHits);assert.equal(proxyHits[1].length,providerHits,"provider direct ignores global proxy");
   assert.equal(JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).preferences.proxy.providers.mock,null);
   assert.equal((await request("/proxy",{provider:"mock",proxy:""})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,++globalHits,"clearing provider proxy restores global inheritance");
+  for(const [settings,expected] of [
+    [[],{source:"global",mode:"proxy",url:globalProxy}],
+    [[{provider:"mock",proxy:modelProxy}],{source:"provider",mode:"proxy",url:modelProxy}],
+    [[{model:"mock/mock",proxy:globalProxy}],{source:"model",mode:"proxy",url:globalProxy}],
+    [[{model:"mock/mock",proxy:null}],{source:"model",mode:"direct"}],
+    [[{model:"mock/mock",proxy:""},{provider:"mock",proxy:null}],{source:"provider",mode:"direct"}],
+  ] as const){
+    for(const setting of settings)assert.equal((await request("/proxy",setting)).status,200);
+    const response=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:"mock",model:"mock"})});
+    const logs=(await response.text()).trim().split("\n").map(line=>JSON.parse(line));assert.ok(logs.some(e=>e.kind==="result"),JSON.stringify(logs));assert.deepEqual(logs.find(e=>e.kind==="info").data.proxy,expected);assert.deepEqual(logs.find(e=>e.kind==="request").data.proxy,expected);
+  }
+  assert.equal((await request("/proxy",{provider:"mock",proxy:""})).status,200);
   assert.equal((await request("/proxy",{proxy:""})).status,200);
   assert.equal((await request(`/workspaces/${w.id}`,{name:"  Renamed workspace  "},"PATCH")).data.name,"Renamed workspace");
   assert.equal((await request(`/workspaces/${w.id}`,{name:"   "},"PATCH")).status,400);
@@ -783,12 +810,18 @@ test("native sessions: startup discovery, watched changes, shared names and dele
   const native=(name:string)=>{const id=randomUUID(),messageId=randomUUID(),timestamp=new Date().toISOString();return [{type:"session",version:3,id,cwd,timestamp},{type:"message",id:messageId,parentId:null,timestamp,message:{role:"user",content:[{type:"text",text:name}],timestamp:Date.now()}},{type:"session_info",id:randomUUID(),parentId:messageId,timestamp,name}];};
   const write=async(path:string,entries:unknown[])=>writeFile(path,entries.map(e=>JSON.stringify(e)).join("\n")+"\n");
   const first=native("native startup"),firstPath=join(root,"--project--","first.jsonl"),flat=native("flat root session"),flatPath=join(root,"flat.jsonl");
+  first[1].message!.content[0].text="仅正文可见 SearchBodyFixture";
   await write(firstPath,first);await write(flatPath,flat);await write(join(root,"--ssh-fixture--","ignored.jsonl"),native("SSH private cache"));
   const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:root,PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
   const controller=new AbortController();let reading=Promise.resolve();t.after(async()=>{controller.abort();await reading;await stopChild(child);});let errors="",output="";child.stderr.on("data",chunk=>errors+=chunk);
   const origin=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(errors||"sync server did not start")),20000);child.stdout.on("data",chunk=>{output+=chunk;const url=/http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0];if(url){clearTimeout(timer);resolve(url);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`sync server exited ${code}: ${errors}`));});});
   const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.equal(response.ok,true,JSON.stringify(body));return body;};
   const initial=await request("/state");assert.equal(initial.sessions.length,2);assert.ok(initial.sessions.some((r:any)=>r.id===first[0].id));
+  const search=(value:string)=>request(`/sessions?search=${encodeURIComponent(value)}`);
+  assert.deepEqual(await search("NATIVE STARTUP"),[first[0].id]);
+  assert.deepEqual(await search("仅正文可见 searchbodyfixture"),[first[0].id],"search reads unopened native conversation bodies");
+  assert.deepEqual(new Set(await search(initial.workspaces[0].name)),new Set(initial.sessions.map((r:any)=>r.id)),"workspace names match all their conversations");
+  assert.deepEqual(await search("not-present-in-any-conversation"),[]);
   // Rename a cold record: its native name must be written even before opening it in Desk.
   await request(`/sessions/${flat[0].id}`,{title:"Desk renamed native"},"PATCH");assert.match(await readFile(flatPath,"utf8"),/Desk renamed native/);
   await request(`/sessions/${first[0].id}`,{mode:"minimal"},"PATCH");
@@ -803,6 +836,7 @@ test("native sessions: startup discovery, watched changes, shared names and dele
   const timestamp=new Date().toISOString(),messageId=randomUUID();await appendFile(firstPath,[{type:"message",id:messageId,parentId:first[2].id,timestamp,message:{role:"user",content:[{type:"text",text:"external continuation"}],timestamp:Date.now()}},{type:"session_info",id:randomUUID(),parentId:messageId,timestamp,name:"native renamed while open"}].map(e=>JSON.stringify(e)).join("\n")+"\n");
   await wait(()=>events.some(e=>e.type==="snapshot"&&JSON.stringify(e.data.messages).includes("external continuation")));
   assert.equal((await request(`/sessions/${first[0].id}`)).record.title,"native renamed while open");
+  assert.deepEqual(await search("external continuation"),[first[0].id],"search sees external edits to an open conversation");
   await Promise.all([request("/discover",{}),request("/discover",{})]);assert.equal((await request("/state")).sessions.filter((r:any)=>r.sessionPath===firstPath).length,1);
   await unlink(firstPath);await wait(()=>events.some(e=>e.type==="state"&&!e.data.sessions.some((r:any)=>r.id===first[0].id)));
   assert.equal((await fetch(origin+`/api/sessions/${first[0].id}`)).status,400);await assert.rejects(access(firstPath));

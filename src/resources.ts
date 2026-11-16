@@ -181,7 +181,7 @@ function modelDocument() {
 }
 export function modelConfig() {
   const root = modelDocument(), settings = configJson(settingsPath);
-  return { path: modelsPath, providers: Object.entries(root.providers).map(([id, provider]: [string, any]) => ({ ...protect(provider), id, hasApiKey: Boolean(provider.apiKey), models: (provider.models || []).map((model: any) => ({ ...protect(model), compaction: settings.compaction?.modelOverrides?.[`${id}/${model.id}`] || {} })) })) };
+  return { path: modelsPath, providers: Object.entries(root.providers).map(([id, provider]: [string, any]) => ({ ...protect(provider), apiKey: provider.apiKey, id, hasApiKey: Boolean(provider.apiKey), models: (provider.models || []).map((model: any) => ({ ...protect(model), compaction: settings.compaction?.modelOverrides?.[`${id}/${model.id}`] || {} })) })) };
 }
 function identifier(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || value.length > 256 || /[\x00-\x1f\x7f]/.test(value) || ["__proto__", "constructor", "prototype"].includes(value)) throw new Error(`${label} 无效`);
@@ -232,12 +232,13 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
     const models=[...(root.providers[id]?.models||[])],seen=new Set<string>();
     for(const input of data.models){const {model}=modelDraft({provider:data.provider,model:input,clearApiKey:data.clearApiKey},root);if(seen.has(model.id))throw new Error("模型 ID 重复");seen.add(model.id);const index=models.findIndex(m=>m.id===model.id);if(index<0)models.push(model);else models[index]={...models[index],...model};}
     root.providers[id]={...first.provider,models};
-  } else if (data.operation === "save") {
-    const input = configObject(data.provider, "提供商"), modelInput = configObject(data.model, "模型");
-    const id = identifier(input.id, "提供商 ID"), modelId = identifier(modelInput.id, "模型 ID");
+  } else if (data.operation === "save" || data.operation === "save_provider") {
+    const providerOnly = data.operation === "save_provider";
+    const input = configObject(data.provider, "提供商"), modelInput = providerOnly ? {} : configObject(data.model, "模型");
+    const id = identifier(input.id, "提供商 ID"), modelId = providerOnly ? "" : identifier(modelInput.id, "模型 ID");
     if (data.createProvider && (Object.hasOwn(root.providers, id) || knownProviders.includes(id))) throw new Error("提供商 ID 已存在，请使用其他 ID 或在已有提供商下添加模型");
     const original = oldProvider ? root.providers[oldProvider] : root.providers[id];
-    if (oldProvider && !original) throw new Error("原提供商不存在，请刷新后重试");
+    if ((oldProvider || providerOnly) && !original) throw new Error("原提供商不存在，请刷新后重试");
     if (oldProvider && oldProvider !== id && Object.hasOwn(root.providers, id)) throw new Error("目标提供商已存在");
     const models = original?.models || [], index = oldModel ? models.findIndex((m: any) => m.id === oldModel) : -1;
     if (oldModel && index < 0) throw new Error("原模型不存在，请刷新后重试");
@@ -246,27 +247,33 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
     const provider = protect(providerFields, original, false, false);
     if (!Object.hasOwn(provider, "apiKey")) provider.apiKey = original?.apiKey;
     if (data.clearApiKey) delete provider.apiKey;
-    const { compaction: _compaction, ...modelFields } = modelInput;
-    const model = protect(modelFields, models[index], false, false); model.id = modelId;
-    if (model.cost === undefined && models[index]?.cost !== undefined) model.cost = models[index].cost;
-    validateModel(model);validateEndpoint(provider.baseUrl);
-    if (!knownProviders.includes(id) || oldProvider && oldProvider !== id) {
-      if (!(provider.baseUrl || model.baseUrl) || !(provider.api || model.api)) throw new Error("自定义提供商必须填写 API 地址与协议");
+    validateEndpoint(provider.baseUrl);
+    if (!providerOnly) {
+      const { compaction: _compaction, ...modelFields } = modelInput;
+      const model = protect(modelFields, models[index], false, false); model.id = modelId;
+      if (model.cost === undefined && models[index]?.cost !== undefined) model.cost = models[index].cost;
+      validateModel(model);
+      if (!knownProviders.includes(id) || oldProvider && oldProvider !== id) {
+        if (!(provider.baseUrl || model.baseUrl) || !(provider.api || model.api)) throw new Error("自定义提供商必须填写 API 地址与协议");
+      }
+      if (index < 0) models.push(model); else models[index] = model;
     }
-    if (index < 0) models.push(model); else models[index] = model;
+    if (providerOnly && !knownProviders.includes(id) && models.some((m: any) => !(provider.baseUrl || m.baseUrl) || !(provider.api || m.api))) throw new Error("自定义提供商必须填写 API 地址与协议");
     provider.models = models;
     if (oldProvider && oldProvider !== id) delete root.providers[oldProvider];
     root.providers[id] = provider;
     const overrides = settings.compaction?.modelOverrides;
     if (oldProvider && oldProvider !== id && overrides) for (const key of Object.keys(overrides)) if (key.startsWith(oldProvider + "/")) { overrides[id + key.slice(oldProvider.length)] = overrides[key]; delete overrides[key]; }
     if (settings.defaultProvider === oldProvider && oldProvider !== id) settings.defaultProvider = id;
-    from = `${id}/${oldModel || modelId}`; to = `${id}/${modelId}`;
-    if (settings.defaultProvider === id && settings.defaultModel === oldModel) settings.defaultModel = modelId;
-    const compaction = configObject(data.compaction || {}, "压缩参数");
-    for (const [key, value] of Object.entries(compaction)) if (!["reserveTokens", "keepRecentTokens"].includes(key) || !Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000_000) throw new Error("压缩参数必须是 0–10000000 的整数");
-    if (overrides && from !== to) delete overrides[from];
-    if (Object.keys(compaction).length) { settings.compaction ??= {}; settings.compaction.modelOverrides ??= {}; settings.compaction.modelOverrides[to] = compaction; }
-    else if (overrides) delete overrides[to];
+    if (!providerOnly) {
+      from = `${id}/${oldModel || modelId}`; to = `${id}/${modelId}`;
+      if (settings.defaultProvider === id && settings.defaultModel === oldModel) settings.defaultModel = modelId;
+      const compaction = configObject(data.compaction || {}, "压缩参数");
+      for (const [key, value] of Object.entries(compaction)) if (!["reserveTokens", "keepRecentTokens"].includes(key) || !Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 10_000_000) throw new Error("压缩参数必须是 0–10000000 的整数");
+      if (overrides && from !== to) delete overrides[from];
+      if (Object.keys(compaction).length) { settings.compaction ??= {}; settings.compaction.modelOverrides ??= {}; settings.compaction.modelOverrides[to] = compaction; }
+      else if (overrides) delete overrides[to];
+    }
   } else if (data.operation === "delete_model" || data.operation === "delete_provider") {
     const id = identifier(data.provider, "提供商 ID"), provider = root.providers[id];
     if (!provider) throw new Error("提供商配置不存在");

@@ -143,15 +143,15 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(data.operation==="import")runtime.assertModelSelection(data.provider?.id,data.models?.map((m:any)=>m.id));
     mutateModelConfig(data, models.getProviders().map(p => p.id));
     const selection=runtime.store.state.preferences.modelSelection;
-    if(data.operation==="save"&&selection?.[data.originalProvider||data.provider.id]){
-      const previous=data.originalProvider||data.provider.id,ids=selection[previous].map(id=>id===data.originalModel?data.model.id:id);
+    if((data.operation==="save"||data.operation==="save_provider")&&selection?.[data.originalProvider||data.provider.id]){
+      const previous=data.originalProvider||data.provider.id,ids=selection[previous].map(id=>data.operation==="save"&&id===data.originalModel?data.model.id:id);
       if(previous!==data.provider.id)delete selection[previous];selection[data.provider.id]=ids;runtime.changed();
     }
     if(data.operation==="import")await runtime.selectModels(data.provider.id,data.models.map((m:any)=>m.id));
     if(data.operation==="delete_provider"&&selection){delete selection[data.provider];runtime.changed();}
     if(data.operation==="delete_model"&&selection?.[data.provider]){selection[data.provider]=selection[data.provider].filter(id=>id!==data.model);runtime.changed();}
     const providerProxies=runtime.store.state.preferences.proxy?.providers;
-    if(data.operation==="save"&&data.originalProvider&&data.originalProvider!==data.provider.id&&providerProxies&&Object.hasOwn(providerProxies,data.originalProvider)){providerProxies[data.provider.id]=providerProxies[data.originalProvider];delete providerProxies[data.originalProvider];runtime.changed();}
+    if((data.operation==="save"||data.operation==="save_provider")&&data.originalProvider&&data.originalProvider!==data.provider.id&&providerProxies&&Object.hasOwn(providerProxies,data.originalProvider)){providerProxies[data.provider.id]=providerProxies[data.originalProvider];delete providerProxies[data.originalProvider];runtime.changed();}
     if(data.operation==="delete_provider"&&providerProxies){delete providerProxies[data.provider];runtime.changed();}
     const catalog = await runtime.models(); runtime.emit({ type: "models", data: catalog }); json(res, { ...modelConfig(), catalog }); return;
   }
@@ -234,6 +234,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(method==="POST") { await mutateResource(cwd,scope,await body(req)); json(res,await resources(cwd,scope)); return; }
   }
   if (resource === "sessions") {
+    if (!id && method === "GET") { json(res, runtime.searchSessions(text(url.searchParams.get("search") ?? "", 1000))); return; }
     if (!id && method === "POST") { const data = await body(req);if (!["standard", "minimal"].includes(data.mode)) throw new Error("无效模式"); json(res, runtime.create(text(data.workspaceId), data.mode, typeof data.model === "string" && data.model ? { model: data.model } : {})); return; }
     if (!id) throw new Error("缺少会话 id"); const record = runtime.store.record(id);
     if (!action && method === "DELETE") { json(res, await runtime.remove(id, url.searchParams.get("children") === "1")); return; }
