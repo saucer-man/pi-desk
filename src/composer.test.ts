@@ -62,7 +62,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await editor.evaluate(element=>{const data=new DataTransfer();data.setData("text/plain","/todo");element.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));});
   assert.equal((await editor.innerText()).trim(),"/todo","slash commands remain ordinary text on paste");
   assert.equal(await page.getByRole("button",{name:/^预览文件：/}).count(),0);
-  await editor.click();await editor.press("ControlOrMeta+a");await editor.press("Backspace");await editor.fill("请检查 @app");await options.first().waitFor();assert.equal(await options.count(),2);
+  await editor.click();await editor.press("ControlOrMeta+a");await editor.press("Backspace");await editor.pressSequentially("请检查 @app");await options.first().waitFor();assert.equal(await options.count(),2);
   await editor.press("ArrowDown");const path=await options.nth(1).getAttribute("title");await editor.press("Enter");
   await page.getByRole("button",{name:`预览文件：${path}`,exact:true}).waitFor();assert.equal(await picker.count(),0);assert.match(await editor.innerText(),/请检查/);
   // A single backspace removes the whole reference; undo restores the node.
