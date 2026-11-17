@@ -90,7 +90,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   // Real SDK tool execution waits for choice/free-text responses and cancels on stop.
   const interactive=await request("/sessions",{workspaceId:workspace.id,mode:"standard"});
   await request(`/sessions/${interactive.id}`,{title:"Question fixture"},"PATCH");await page.reload();
-  await page.getByRole("region",{name:"工作区会话"}).getByRole("button",{name:/^Question fixture/}).click();
+  const loaded=page.waitForResponse(response=>response.url().endsWith(`/sessions/${interactive.id}/composer`));await page.getByRole("region",{name:"工作区会话"}).getByRole("button",{name:/^Question fixture/}).click();await loaded;
   const card=page.getByRole("form",{name:"助手提问"}),answer=page.getByRole("textbox",{name:"提问回答"});
   for(const scenario of ["choice","text","cancel","stop","delegate"]){
     await editor.fill(`question-${scenario}`);await page.getByRole("button",{name:"发送任务",exact:true}).click();await card.waitFor();
