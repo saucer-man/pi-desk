@@ -7,8 +7,9 @@ import { join, resolve, relative } from "node:path";
 import {
   createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, ModelRuntime, Theme, getPackageDir,
   estimateTokens, convertToLlm, sessionEntryToContextMessages, buildSessionProjection,
-  type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
+  defineTool, type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { Store, agentDir, deskDir, sessionRoot, safeError, inside } from "./storage.ts";
 import type { Mode, SessionRecord, SessionSnapshot, ServerEvent, TraceEntry, RunMetrics, UiRequest, ChatMessage, PendingPrompt, DraftImage, ExecutionState, ModelProbeLog } from "./types.ts";
 import { subagentTool } from "./subagents.ts";
@@ -63,8 +64,7 @@ export class Runtime {
   private discoverAgain = false;
   private proxyAgents = new Map<string, Agent | ProxyAgent>();
   private proxyRoute(model: {provider:string;id:string}) {
-    const config=this.store.state.preferences.proxy, key=`${model.provider}/${model.id}`;
-    if(config?.models&&Object.hasOwn(config.models,key))return {source:"model",proxy:config.models[key]};
+    const config=this.store.state.preferences.proxy;
     if(config?.providers&&Object.hasOwn(config.providers,model.provider))return {source:"provider",proxy:config.providers[model.provider]};
     return {source:config?.global?"global":"process",proxy:config?.global};
   }
@@ -261,7 +261,7 @@ export class Runtime {
       noExtensions: true, noSkills: minimal, noThemes: true,
       disabledBuiltinExtensions:embeddedPlugins.filter(p=>p.factory&&overrides[p.id]===false).map(p=>p.name),
       // Discover with the native package manager, then pass only enabled entry points to the SDK.
-      additionalExtensionPaths: plugins.filter(p=>p.enabled&&p.id!=="builtin:subagent"&&p.id!=="builtin:browser").map(p=>p.id), additionalSkillPaths: [],
+      additionalExtensionPaths: plugins.filter(p=>p.enabled&&!['builtin:subagent','builtin:browser','builtin:question'].includes(p.id)).map(p=>p.id), additionalSkillPaths: [],
       extensionFactories: [...(minimal ? [] : embeddedPlugins.flatMap(p=>p.factory?[p.factory]:[])),...(remote?[{name:"pi-desk-remote",hidden:true,factory:remote.extension}]:[])],
       appendSystemPrompt: record.instructions ? [record.instructions] : [],
     });
@@ -302,9 +302,13 @@ export class Runtime {
     const selection=this.store.state.preferences.modelSelection;
     const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : !record.sessionPath&&selection ? modelRuntime.getAvailableSnapshot().find(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)) : undefined;
     const subagents=record.depth<2&&overrides["builtin:subagent"]!==false;
-    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(!record.readOnly&&overrides["builtin:browser"]!==false?[browserTool(this,record)]:[])])];
+    const question=defineTool({name:"request_user_input",label:"向用户提问",description:"Ask the user when clarification or a decision is needed before proceeding. Supply options for a choice, or omit options for free text. The user may also enter a custom answer. Wait for the response; never invent the user's answer.",parameters:Type.Object({question:Type.String({minLength:1,maxLength:2000}),options:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:500}),{minItems:2,maxItems:8}))}),execute:async(_id,args,signal)=>{
+      const answer=await this.ask({sessionId:id,type:"question",title:args.question,options:args.options},signal);
+      return {content:[{type:"text" as const,text:answer===undefined?"The user cancelled this question.":String(answer)}],details:{answer,cancelled:answer===undefined}};
+    }});
+    const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(overrides["builtin:question"]!==false?[question]:[]),...(!record.readOnly&&overrides["builtin:browser"]!==false?[browserTool(this,record)]:[])])];
     const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
-      tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(subagents ? ["subagent"] : [])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
+      tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(subagents ? ["subagent"] : []),...(overrides["builtin:question"]!==false?["request_user_input"]:[])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
       customTools, excludeTools: workspace.remote?["powershell"]:undefined,
     });
     if (result.extensionsResult.errors.length) { result.session.dispose(); throw new Error("扩展加载失败：" + result.extensionsResult.errors.map(e => safeError(e.error)).join("；")); }
@@ -370,8 +374,10 @@ export class Runtime {
       live.metrics.endedAt = new Date().toISOString(); live.metrics.durationMs = live.started ? now - live.started : undefined;
       record.unread = true; record.updatedAt = live.metrics.endedAt; this.trace(record.id, "settled", event.aborted ? "运行已停止" : "运行结束", live.metrics); this.changed(record); this.progress(record.id);
     }
-    live.fileVersion = sessionVersion(live.session.sessionManager.getSessionFile());
-    record.sessionPath = live.fileVersion ? live.session.sessionManager.getSessionFile() : undefined;
+    if(event.type!=="message_update"){
+      live.fileVersion = sessionVersion(live.session.sessionManager.getSessionFile());
+      record.sessionPath = live.fileVersion ? live.session.sessionManager.getSessionFile() : undefined;
+    }
     this.emit({ type: "event", sessionId: record.id, data: event });
   }
   trace(id: string, type: string, label: string, data?: unknown, durationMs?: number) {
@@ -547,7 +553,7 @@ export class Runtime {
     if (options.model) { const runtime = live.session.modelRuntime; await runtime.refresh({ allowNetwork: false }); const model = runtime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === options.model); if (!model) throw new Error("模型不可用"); await live.session.setModel(model); record.model = options.model; live.modelNeedsSelection = false; }
     if (options.thinking) { if (!live.session.getAvailableThinkingLevels().includes(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0])) throw new Error("当前模型不支持此思考强度"); live.session.setThinkingLevel(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0]); record.thinking = live.session.thinkingLevel; }
     if (options.mode && options.mode !== record.mode) { try { await this.release(live, "reload"); } finally { this.live.delete(id); } record.mode = options.mode; await this.get(id); }
-    this.changed(record); return this.snapshot(id);
+    this.changed(record); const snapshot=await this.snapshot(id);this.emit({type:"snapshot",sessionId:id,data:snapshot});return snapshot;
   }
   async mutateMessage(id:string, entryId:string, operation:"edit"|"resend"|"delete"|"exclude", text?:string) {
     const record=this.store.record(id); const {session}=await this.get(id);

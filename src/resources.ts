@@ -75,6 +75,7 @@ export async function pluginCatalog(cwd:string,overrides:Record<string,boolean>=
   }
   rows.set("builtin:subagent",{id:"builtin:subagent",name:"subagent",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./subagents${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"委派子 Agent；在 agent 设置中编辑角色",enabled:overrides["builtin:subagent"]!==false});
   rows.set("builtin:browser",{id:"builtin:browser",name:"desk_browser",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./browser${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"在右侧面板查看和操作浏览器；默认允许控制",enabled:overrides["builtin:browser"]!==false});
+  rows.set("builtin:question",{id:"builtin:question",name:"request_user_input",type:"Pi Desk 内置工具",path:fileURLToPath(new URL(`./runtime${extname(fileURLToPath(import.meta.url))}`,import.meta.url)),source:"pi-desk",description:"对话提问：在编辑框上方选择选项或输入回答",enabled:overrides["builtin:question"]!==false});
   return [...rows.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 export async function readPlugin(cwd:string,id:string,overrides:Record<string,boolean>={}) {
@@ -206,7 +207,6 @@ export function modelDraft(data:Record<string,any>,document=modelDocument()) {
   const input=configObject(data.provider,"提供商"),id=identifier(input.id,"提供商 ID"),original=document.providers[data.originalProvider?identifier(data.originalProvider,"原提供商 ID"):id];
   const {id:_id,models:_models,hasApiKey:_has,...fields}=input;
   const provider=protect(fields,original,false,false);if(!Object.hasOwn(provider,"apiKey"))provider.apiKey=original?.apiKey;
-  if(data.clearApiKey)delete provider.apiKey;
   validateEndpoint(provider.baseUrl);
   const definition=configObject(data.model||{id:"connection-test"},"模型");
   const model={name:definition.id,reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:16384,...definition};validateModel(model);
@@ -226,11 +226,11 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
     settings.defaultProvider = identifier(data.provider, "提供商 ID"); settings.defaultModel = identifier(data.model, "模型 ID");
   } else if (data.operation === "import") {
     if(!Array.isArray(data.models)||!data.models.length||data.models.length>10000)throw new Error("请选择要导入的模型");
-    const first=modelDraft({provider:data.provider,model:data.models[0],clearApiKey:data.clearApiKey},root),id=first.id;
+    const first=modelDraft({provider:data.provider,model:data.models[0]},root),id=first.id;
     if(data.createProvider&&(Object.hasOwn(root.providers,id)||knownProviders.includes(id)))throw new Error("提供商 ID 已存在，请使用其他 ID");
     if(!knownProviders.includes(id)&&(!first.provider.baseUrl||!first.provider.api))throw new Error("自定义提供商必须填写 API 地址与协议");
     const models=[...(root.providers[id]?.models||[])],seen=new Set<string>();
-    for(const input of data.models){const {model}=modelDraft({provider:data.provider,model:input,clearApiKey:data.clearApiKey},root);if(seen.has(model.id))throw new Error("模型 ID 重复");seen.add(model.id);const index=models.findIndex(m=>m.id===model.id);if(index<0)models.push(model);else models[index]={...models[index],...model};}
+    for(const input of data.models){const {model}=modelDraft({provider:data.provider,model:input},root);if(seen.has(model.id))throw new Error("模型 ID 重复");seen.add(model.id);const index=models.findIndex(m=>m.id===model.id);if(index<0)models.push(model);else models[index]={...models[index],...model};}
     root.providers[id]={...first.provider,models};
   } else if (data.operation === "save" || data.operation === "save_provider") {
     const providerOnly = data.operation === "save_provider";
@@ -246,7 +246,6 @@ export function mutateModelConfig(data: Record<string, any>, knownProviders: rea
     const { id: _id, hasApiKey: _has, models: _models, ...providerFields } = input;
     const provider = protect(providerFields, original, false, false);
     if (!Object.hasOwn(provider, "apiKey")) provider.apiKey = original?.apiKey;
-    if (data.clearApiKey) delete provider.apiKey;
     validateEndpoint(provider.baseUrl);
     if (!providerOnly) {
       const { compaction: _compaction, ...modelFields } = modelInput;

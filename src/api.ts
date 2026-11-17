@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve, join, basename, relative, extname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -127,10 +127,10 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(data.proxy!==null && (typeof data.proxy!=="string" || data.proxy.length>2048 || /[\x00-\x1f\x7f]/.test(data.proxy)))throw new Error("代理地址无效");
     const proxy=typeof data.proxy==="string"?data.proxy.trim():null;
     if(proxy)try{const url=new URL(proxy);if(!["http:","https:"].includes(url.protocol)||url.pathname!=="/"||url.search||url.hash)throw 0;}catch{throw new Error("代理地址必须是 HTTP / HTTPS URL，例如 http://127.0.0.1:7890");}
-    const config={...previous,models:{...previous?.models},providers:{...previous?.providers}};
-    if(data.provider!==undefined){const provider=text(data.provider,256).trim();if(!provider||/[\x00-\x1f\x7f]/.test(provider)||["__proto__","constructor","prototype"].includes(provider)||data.model!==undefined)throw new Error("供应商 ID 无效");if(proxy==="")delete config.providers[provider];else config.providers[provider]=proxy;}
-    else if(data.model===undefined){if(proxy===null)throw new Error("全局代理请留空以清除");config.global=proxy;}
-    else {const model=text(data.model,600);if(!model.includes("/")||/[\x00-\x1f\x7f]/.test(model))throw new Error("模型 ID 无效");if(proxy==="")delete config.models[model];else config.models[model]=proxy;}
+    if(data.model!==undefined)throw new Error("仅支持全局代理和供应商代理");
+    const config={...previous,providers:{...previous?.providers}};
+    if(data.provider!==undefined){const provider=text(data.provider,256).trim();if(!provider||/[\x00-\x1f\x7f]/.test(provider)||["__proto__","constructor","prototype"].includes(provider))throw new Error("供应商 ID 无效");if(proxy==="")delete config.providers[provider];else config.providers[provider]=proxy;}
+    else {if(proxy===null)throw new Error("全局代理请留空以清除");config.global=proxy;}
     runtime.store.state.preferences.proxy=config;
     try{runtime.changed();}catch(error){runtime.store.state.preferences.proxy=previous;throw error;}
     json(res,config);return;
@@ -186,7 +186,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     } else throw new Error("未知认证操作");
     json(res, await runtime.models()); return;
   }
-  if (resource === "ui" && id && method === "POST") { const data = await body(req); const pending = runtime.requests.get(id); if (!pending) throw new Error("请求已结束"); pending.resolve(data.value); json(res, { ok: true }); return; }
+  if (resource === "ui" && id && method === "POST") { const data = await body(req); const pending = runtime.requests.get(id); if (!pending) throw new Error("请求已结束"); if(pending.request.type==="question"&&data.value!==undefined&&(typeof data.value!=="string"||!data.value.trim()||data.value.length>10000))throw new Error("请填写有效回答（最多 10000 字符）"); pending.resolve(data.value); json(res, { ok: true }); return; }
   if (path === "/api/preferences" && method === "POST") {
     const data = await body(req);
     if (data.theme !== undefined && !["light", "dark", "system"].includes(data.theme)) throw new Error("无效主题");
@@ -286,6 +286,26 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
       }
       throw new Error("未知队列操作");
     }
+  }
+  if(resource==="files"&&id&&action==="attach"&&method==="POST"){
+    const w=workspace(runtime,id),data=await body(req);
+    if(data.clipboard===true){
+      if(w.remote){json(res,{paths:[]});return;}
+      let paths:string[]=[];
+      if(process.platform==="win32"){
+        const {stdout}=await promisify(execFile)("powershell.exe",["-NoProfile","-NonInteractive","-STA","-Command","[Console]::OutputEncoding=[Text.Encoding]::UTF8; ConvertTo-Json -Compress -InputObject @((Get-Clipboard -Format FileDropList) | ForEach-Object { $_.FullName })"],{windowsHide:true,timeout:5000,maxBuffer:1024*1024});
+        paths=JSON.parse(stdout.trim()||"[]");
+      }
+      if(!Array.isArray(paths)||paths.some(p=>typeof p!=="string")||paths.length>100)throw new Error("剪贴板文件列表无效");
+      if(data.names!==undefined&&(!Array.isArray(data.names)||data.names.length&& (paths.length!==data.names.length||paths.some(p=>!data.names.includes(basename(p))))))paths=[];
+      json(res,{paths});return;
+    }
+    if(w.remote)throw new Error("本机文件不能直接引用到 SSH 工作区，请先将文件传到远端再引用");
+    if(!Array.isArray(data.files)||!data.files.length||data.files.length>20)throw new Error("一次最多引用 20 个文件");
+    for(const file of data.files)if(typeof file?.name!=="string"||!file.name.trim()||file.name.length>255||file.name==="."||file.name===".."||/[\\/:*?"<>|\x00-\x1f]/.test(file.name)||typeof file.data!=="string"||file.data.length>4*Math.ceil(10*1024*1024/3)||!/^[A-Za-z0-9+/]*={0,2}$/.test(file.data))throw new Error("文件格式无效或超过 10 MiB");
+    const folder=join(deskDir,"attachments",randomUUID());await mkdir(folder,{recursive:true});
+    const paths:string[]=[];for(const file of data.files){const path=join(folder,file.name);await writeFile(path,Buffer.from(file.data,"base64"),{flag:"wx"});paths.push(path);}
+    json(res,{paths});return;
   }
   if (resource === "files" && id && (method === "GET"&&!action || method === "POST"&&action==="preview")) {
     const w = workspace(runtime, id); if(w.remote){json(res,await runtime.remote.files(w,method==="POST"?text((await body(req)).path):url.searchParams.get("path")||".",url.searchParams.get("search")));return;} if (url.searchParams.has("search")) { json(res, await findFiles(w.path, text(url.searchParams.get("search"), 200))); return; }

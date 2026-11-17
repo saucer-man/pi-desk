@@ -21,6 +21,7 @@ export class Store {
     this.state = existsSync(this.path) ? JSON.parse(this.saved = readFileSync(this.path, "utf8")) : { version: 1, workspaces: [], sessions: [], preferences: { theme: "light" } };
     if (this.state.version !== 1 || !Array.isArray(this.state.sessions) || !Array.isArray(this.state.workspaces)) throw new Error("不支持的 Pi Desk 状态文件，原文件已保留");
     if (!existsSync(this.path) && (legacyStatePath || !process.env.PI_DESK_DIR)) this.migrate(legacyStatePath);
+    if(this.state.preferences.proxy)delete (this.state.preferences.proxy as Record<string,unknown>).models;
     const preserved = join(deskDir, "legacy-state.json");
     const legacy = existsSync(preserved) ? JSON.parse(readFileSync(preserved, "utf8")) : undefined;
     for(const old of legacy?.workspaces||[]){if(old.location?.kind!=="ssh"||this.state.workspaces.some(w=>w.id===old.id))continue;const target=legacy.targets?.find((t:any)=>t.id===old.location.ssh?.targetId)?.hostAlias;const path=old.location.ssh?.canonicalRoot;if(!target||typeof path!=="string"||!path.startsWith("/"))continue;this.state.workspaces.push({id:old.id,name:old.name||target,path,trusted:true,remote:{target,hostFingerprint:old.location.ssh?.hostKeyBinding?.sha256,connected:false,error:undefined}});}

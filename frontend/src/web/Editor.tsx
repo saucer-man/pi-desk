@@ -1,12 +1,15 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { createEditor, DecoratorNode, $getRoot, $getNodeByKey, $createParagraphNode, $createTextNode, $createLineBreakNode, $getSelection, $isRangeSelection, $isTextNode, KEY_ENTER_COMMAND, KEY_DOWN_COMMAND, CLEAR_HISTORY_COMMAND, COMMAND_PRIORITY_HIGH, type LexicalEditor, type NodeKey, type SerializedLexicalNode } from "lexical";
+import { createEditor, DecoratorNode, $getRoot, $getNodeByKey, $createParagraphNode, $createTextNode, $createLineBreakNode, $getSelection, $isRangeSelection, $isTextNode, KEY_ENTER_COMMAND, KEY_DOWN_COMMAND, PASTE_COMMAND, CLEAR_HISTORY_COMMAND, COMMAND_PRIORITY_HIGH, type LexicalEditor, type NodeKey, type SerializedLexicalNode } from "lexical";
 import { registerPlainText } from "@lexical/plain-text";
 import { registerHistory, createEmptyHistoryState } from "@lexical/history";
 import { observeComposition } from "./dsh/keyboard-composition";
 import { FileCode2, FolderOpen, LoaderCircle, X } from "./icons";
 import { api } from "./store";
+import { resolveLink } from "./lib/links";
 import css from "./ui.module.css";
+
+export const fileReference=(path:string)=>`[@${path.replaceAll("\\","/").split("/").at(-1)!.replace(/[\\[\]]/g,"\\$&")}](${path.replaceAll("\\","/").split("/").map(part=>encodeURIComponent(part).replace(/[()]/g,c=>"%"+c.charCodeAt(0).toString(16))).join("/")})`;
 
 // References stay ordinary Markdown in saved drafts, queues and model input.
 class FileReference extends DecoratorNode<ReactNode> {
@@ -16,7 +19,7 @@ class FileReference extends DecoratorNode<ReactNode> {
   static clone(node:FileReference){return new FileReference(node.__path,node.__key);}
   static importJSON(node:SerializedLexicalNode & Record<string,unknown>){if(typeof node.path!=="string")throw Error("无效的文件引用");return new FileReference(node.path);}
   exportJSON(){return {...super.exportJSON(),path:this.__path};}
-  getTextContent(){return `[@${this.__path.split("/").at(-1)!.replace(/[\\[\]]/g,"\\$&")}](${this.__path.split("/").map(part=>encodeURIComponent(part).replace(/[()]/g,c=>"%"+c.charCodeAt(0).toString(16))).join("/")})`;}
+  getTextContent(){return fileReference(this.__path); }
   isInline(){return true;}
   createDOM(){const element=document.createElement("span");element.className=css.fileReference;element.contentEditable="false";return element;}
   updateDOM(){return false;}
@@ -30,7 +33,7 @@ function $draftParagraph(text:string){
     let offset=0;
     for(const match of line.matchAll(/\[@(?:\\.|[^\]\\\n])+\]\(([^()\s]+)\)/g)){
       let path:string;try{path=decodeURIComponent(match[1]);}catch{continue;}
-      if(/^[a-z][\w+.-]*:/i.test(path))continue;
+      if(/^[a-z][\w+.-]*:/i.test(path)&&!/^[a-z]:[/\\]/i.test(path))continue;
       if(match.index!>offset)paragraph.append($createTextNode(line.slice(offset,match.index)));
       paragraph.append(new FileReference(path));offset=match.index!+match[0].length;
     }
@@ -40,8 +43,9 @@ function $draftParagraph(text:string){
 }
 
 type Mention={key:string;start:number;end:number;query:string};
-export function Editor({value,onChange,onSend,onFiles,workspaceId,fileRequest=0,disabled=false,placeholder}:{value:string;onChange:(text:string)=>void;onSend:()=>void;onFiles:(files:File[])=>void;workspaceId?:string;fileRequest?:number;disabled?:boolean;placeholder:string}) {
+export function Editor({value,onChange,onSend,onFiles,onError,workspaceId,fileRequest=0,disabled=false,placeholder}:{value:string;onChange:(text:string)=>void;onSend:()=>void;onFiles:(files:File[])=>Promise<string[]>;onError:(error:unknown)=>void;workspaceId?:string;fileRequest?:number;disabled?:boolean;placeholder:string}) {
   const root=useRef<HTMLDivElement>(null),list=useRef<HTMLDivElement>(null);const change=useRef(onChange);change.current=onChange;const send=useRef(onSend);send.current=onSend;
+  const handlers=useRef({onFiles,onError,workspaceId,disabled});handlers.current={onFiles,onError,workspaceId,disabled};
   const [decorators,setDecorators]=useState<Record<string,ReactNode>>({}),[mention,setMention]=useState<Mention>(),[matches,setMatches]=useState<string[]>([]),[selected,setSelected]=useState(0),[loading,setLoading]=useState(false),[error,setError]=useState("");
   const id=useId(),dismissed=useRef(""),requested=useRef(fileRequest);
   const editor=useRef<ReturnType<typeof createEditor>>();if(!editor.current)editor.current=createEditor({namespace:"pi-desk-dsh",nodes:[FileReference],onError:error=>{throw error;}});
@@ -68,6 +72,21 @@ export function Editor({value,onChange,onSend,onFiles,workspaceId,fileRequest=0,
         if(key!==dismissed.current){dismissed.current="";setMention(current=>current?.key===next?.key&&current?.start===next?.start&&current?.end===next?.end&&current?.query===next?.query?current:next);}
       });
     });
+    const paste=e.registerCommand(PASTE_COMMAND,event=>{
+      if(!(event instanceof ClipboardEvent)||!event.clipboardData||handlers.current.disabled)return false;
+      const data=event.clipboardData,files=Array.from(data.files),text=data.getData("text/plain"),uri=data.getData("text/uri-list");
+      const lines=(uri||text).trim().split(/\r?\n/).filter(line=>line&&!line.startsWith("#")).map(line=>line.replace(/^"|"$/g,""));
+      const paths=lines.length&&lines.every(line=>/^(?:file:\/\/|[a-z]:[/\\]|\/[^/\s]+\/|~[/\\]|\\\\)/i.test(line))?lines.map(line=>resolveLink(line,"/")).filter(target=>target?.kind==="file").map(target=>target!.kind==="file"?target.path:""):[];
+      if(!paths.length&&!files.length&&(text||data.types.includes("text/html")))return false;
+      event.preventDefault();const selection=$getSelection()?.clone();
+      const insert=(paths:string[])=>{if(!paths.length||!e.getRootElement()||!e.isEditable())return;e.update(()=>{const target=selection&&$isRangeSelection(selection)&&$getNodeByKey(selection.anchor.key)?.isAttached()?selection:$getRoot().selectEnd();target.insertNodes(paths.flatMap(path=>[new FileReference(path.replaceAll("\\","/")),$createTextNode(" ")]));});};
+      void (async()=>{
+        if(paths.length){insert(paths);return;}
+        const h=handlers.current;
+        if(h.workspaceId){const result=await api<{paths:string[]}>(`/files/${h.workspaceId}/attach`,{clipboard:true,names:files.map(file=>file.name)}).catch(error=>{if(files.length)return {paths:[]};throw error;});if(result.paths.length){insert(result.paths);return;}}
+        if(files.length)insert(await h.onFiles(files));
+      })().catch(error=>handlers.current.onError(error));return true;
+    },COMMAND_PRIORITY_HIGH);
     const enter=e.registerCommand(KEY_ENTER_COMMAND,event=>{
       if(!event||composition.guards(event)||e.isComposing())return false;
       event.preventDefault();const p=picker.current;
@@ -81,7 +100,7 @@ export function Editor({value,onChange,onSend,onFiles,workspaceId,fileRequest=0,
       if(!["ArrowDown","ArrowUp"].includes(event.key))return false;
       event.preventDefault();setSelected(index=>p.matches.length?(index+(event.key==="ArrowDown"?1:-1)+p.matches.length)%p.matches.length:0);return true;
     },COMMAND_PRIORITY_HIGH);
-    return()=>{plain();history();decorated();update();enter();keys();composition.dispose();e.setRootElement(null);};
+    return()=>{plain();history();decorated();update();paste();enter();keys();composition.dispose();e.setRootElement(null);};
   },[]);
   useEffect(()=>{const e=editor.current!;e.setEditable(!disabled);setDecorators({...e.getDecorators()});},[disabled]);
   useEffect(()=>{const e=editor.current!;if(e.getEditorState().read(()=>$getRoot().getTextContent())===value)return;e.update(()=>{$getRoot().clear().append($draftParagraph(value));},{tag:"external",onUpdate:()=>e.dispatchCommand(CLEAR_HISTORY_COMMAND,undefined)});setMention(undefined);},[value]);
@@ -102,7 +121,7 @@ export function Editor({value,onChange,onSend,onFiles,workspaceId,fileRequest=0,
   useEffect(()=>{list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({block:"nearest"});},[selected]);
   return <div className={css.editorWrap} onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node))close();}}>
     {open&&<section className={css.filePicker} aria-label="引用项目文件"><header><FolderOpen size={14}/><span>项目文件</span><small>输入名称或路径</small></header><div className={css.filePickerList} ref={list} role="listbox" id={id} aria-label="项目文件搜索结果" aria-busy={loading}>{!loading&&!error&&matches.map((path,index)=><button type="button" role="option" id={`${id}-${index}`} aria-selected={selected===index} key={path} title={path} onMouseDown={event=>event.preventDefault()} onPointerMove={()=>setSelected(index)} onClick={()=>choose(path)}><FileCode2 size={18}/><span><strong>{path.split("/").at(-1)}</strong><small>{path.includes("/")?path.slice(0,path.lastIndexOf("/")):"项目根目录"}</small></span>{selected===index&&<kbd>↵</kbd>}</button>)}{(loading||error||!matches.length)&&<p role={error?"alert":"status"}>{loading?<><LoaderCircle size={14}/>正在搜索文件…</>:error?`无法搜索：${error}`:"未找到匹配文件，试试文件名或路径。"}</p>}</div><footer><span>↑ ↓ 选择 · Enter 插入</span><span>Esc 关闭</span></footer></section>}
-    <div ref={root} className={css.editor} role="textbox" aria-label="任务输入" aria-multiline="true" aria-disabled={disabled} aria-autocomplete="list" aria-controls={open?id:undefined} aria-expanded={open} aria-activedescendant={open&&!loading&&matches[selected]?`${id}-${selected}`:undefined} contentEditable={!disabled} suppressContentEditableWarning onPaste={e=>{const files=Array.from(e.clipboardData.files);if(files.length&&!disabled){e.preventDefault();onFiles(files);}}}/>
+    <div ref={root} className={css.editor} role="textbox" aria-label="任务输入" aria-multiline="true" aria-disabled={disabled} aria-autocomplete="list" aria-controls={open?id:undefined} aria-expanded={open} aria-activedescendant={open&&!loading&&matches[selected]?`${id}-${selected}`:undefined} contentEditable={!disabled} suppressContentEditableWarning/>
     {!value&&<div className={css.placeholder} aria-hidden="true">{placeholder}</div>}
     {Object.entries(decorators).map(([key,node])=>{const element=editor.current!.getElementByKey(key);return element?createPortal(node,element,key):null;})}
   </div>;

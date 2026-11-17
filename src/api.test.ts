@@ -491,7 +491,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   let currentProvider=(await request(configUrl)).data.providers.find((p:any)=>p.id==="renamed");
   assert.deepEqual(currentProvider.models.map((m:any)=>m.id),["gamma"]);
   assert.equal((await request(configUrl,{operation:"save",originalProvider:"renamed",originalModel:"gamma",provider:currentProvider,model:currentProvider.models[0],clearApiKey:true})).status,200);
-  assert.equal(JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers.renamed.apiKey,undefined);
+  assert.ok(JSON.parse(await readFile(join(agent,"models.json"),"utf8")).providers.renamed.apiKey,"the removed clearApiKey option cannot erase credentials");
   currentProvider=(await request(configUrl)).data.providers.find((p:any)=>p.id==="renamed");
   assert.equal((await request(configUrl,{operation:"save",originalProvider:"renamed",originalModel:"gamma",provider:{...currentProvider,apiKey:"replacement-secret"},model:currentProvider.models[0],compaction:{reserveTokens:200}})).status,200);
   assert.equal((await request(configUrl,{operation:"default",provider:"renamed",model:"gamma"})).status,200);
@@ -675,15 +675,11 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
     assert.equal((await request(`/sessions/${id}/prompt`,{text:"proxy route fixture"})).status,202);
     for(let attempt=0;attempt<100;attempt++){const result=(await request(`/sessions/${id}`)).data;assert.notEqual(result.record.status,"error",JSON.stringify(result));if(result.record.status==="idle"&&result.stats.assistantMessages>before){assert.equal(result.messages.at(-1).role,"assistant");assert.ok(!result.messages.at(-1).errorMessage,JSON.stringify(result.messages.at(-1)));return;}await new Promise(resolve=>setTimeout(resolve,50));}assert.fail("proxy request timed out");
   };
-  assert.equal((await request("/proxy",{model:"mock/proxy-other",proxy:modelProxy})).status,200);
+  assert.equal((await request("/proxy",{model:"mock/proxy-other",proxy:modelProxy})).status,400);
   await Promise.all([runProxy(session.id),runProxy(other.id),runProxy(google.id)]);
-  assert.equal(proxyHits[0].length,2);assert.equal(proxyHits[1].length,1);assert.ok(proxyAuth.includes("Basic "+Buffer.from("user:password").toString("base64")));
-  assert.equal((await request("/proxy",{model:"mock/mock",proxy:null})).status,200);
-  await runProxy(session.id);assert.equal(proxyHits[0].length,2);
-  assert.equal((await request("/proxy",{model:"mock/mock",proxy:""})).status,200);
-  await runProxy(session.id);assert.equal(proxyHits[0].length,3);
+  assert.equal(proxyHits[0].length,3);assert.equal(proxyHits[1].length,0);assert.ok(proxyAuth.includes("Basic "+Buffer.from("user:password").toString("base64")));
   const savedProxy=JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).preferences;
-  assert.equal(savedProxy.proxy.global,globalProxy);assert.equal(savedProxy.proxy.models["mock/proxy-other"],modelProxy);assert.ok(!Object.hasOwn(savedProxy.proxy.models,"mock/mock"));assert.equal(savedProxy.theme,"light");
+  assert.equal(savedProxy.proxy.global,globalProxy);assert.equal(savedProxy.proxy.models,undefined);assert.equal(savedProxy.theme,"light");
   assert.equal((await request("/proxy",{proxy:""})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,3);
   for(const provider of ["", "constructor", "__proto__", "bad\nprovider"])assert.equal((await request("/proxy",{provider,proxy:modelProxy})).status,400);
   assert.equal((await request("/proxy",{proxy:globalProxy})).status,200);
@@ -692,18 +688,15 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   await runProxy(session.id);assert.equal(proxyHits[1].length,++providerHits);assert.equal(proxyHits[0].length,globalHits,"provider proxy overrides global proxy");
   assert.equal((await request("/models/test",{provider:"mock",model:"mock"})).status,200);assert.equal(proxyHits[1].length,++providerHits,"connection tests use the provider proxy");
   assert.equal((await request("/models/discover",{provider:{...routes.providers.mock,id:"mock"}})).status,200);assert.equal(proxyHits[1].length,++providerHits,"model discovery uses the provider proxy");
-  assert.equal((await request("/proxy",{model:"mock/mock",proxy:null})).status,200);await runProxy(session.id);assert.equal(proxyHits[1].length,providerHits,"a model's direct setting overrides the provider proxy");
-  assert.equal((await request("/proxy",{model:"mock/mock",proxy:globalProxy})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,++globalHits,"model proxy overrides provider proxy");
-  assert.equal((await request("/proxy",{model:"mock/mock",proxy:""})).status,200);
+  assert.equal((await request("/proxy",{model:"mock/mock",proxy:null})).status,400);
+  await runProxy(session.id);assert.equal(proxyHits[1].length,++providerHits,"removed model routes cannot override the supplier");
   assert.equal((await request("/proxy",{provider:"mock",proxy:null})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,globalHits);assert.equal(proxyHits[1].length,providerHits,"provider direct ignores global proxy");
   assert.equal(JSON.parse(await readFile(join(temp,"desk/state.json"),"utf8")).preferences.proxy.providers.mock,null);
   assert.equal((await request("/proxy",{provider:"mock",proxy:""})).status,200);await runProxy(session.id);assert.equal(proxyHits[0].length,++globalHits,"clearing provider proxy restores global inheritance");
   for(const [settings,expected] of [
     [[],{source:"global",mode:"proxy",url:globalProxy}],
     [[{provider:"mock",proxy:modelProxy}],{source:"provider",mode:"proxy",url:modelProxy}],
-    [[{model:"mock/mock",proxy:globalProxy}],{source:"model",mode:"proxy",url:globalProxy}],
-    [[{model:"mock/mock",proxy:null}],{source:"model",mode:"direct"}],
-    [[{model:"mock/mock",proxy:""},{provider:"mock",proxy:null}],{source:"provider",mode:"direct"}],
+    [[{provider:"mock",proxy:null}],{source:"provider",mode:"direct"}],
   ] as const){
     for(const setting of settings)assert.equal((await request("/proxy",setting)).status,200);
     const response=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:"mock",model:"mock"})});

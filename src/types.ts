@@ -45,7 +45,7 @@ export interface ModelProbeLog { at:string; kind:"info"|"request"|"response"|"ou
 export interface OAuthState { provider: string; url?: string; message?: string; userCode?: string; status: "waiting" | "complete" | "error" | "cancelled" }
 export interface UiRequest { id: string; sessionId?: string; type: string; title: string; message?: string; options?: string[]; url?: string; oauth?: { provider: string; kind: string; placeholder?: string; labels?: string[] } }
 export interface ScheduledTask { id:string;name:string;prompt:string;workspaceId:string;model:string;thinking?:string;mode:Mode;frequency:"once"|"daily"|"weekly";time?:string;weekday?:number;runAt?:string;enabled:boolean;nextRunAt?:string;lastRunAt?:string;lastSessionId?:string;lastStatus?:"running"|"idle"|"paused"|"error"|"skipped";lastError?:string;lastSlot?:string;createdAt:string;updatedAt:string }
-export interface ProxyConfig { global?: string; providers?:Record<string,string|null>; models?: Record<string, string | null> }
+export interface ProxyConfig { global?: string; providers?:Record<string,string|null> }
 export interface State { sshLegacyImported?:boolean; schedules?: ScheduledTask[]; version: 1; workspaces: Workspace[]; sessions: SessionRecord[]; preferences: { theme: "light" | "dark" | "system"; maxRetries?: number; disabledSkills?: string[]; pluginOverrides?:Record<string,boolean>; proxy?: ProxyConfig; modelSelection?:Record<string,string[]> }; migratedFrom?: string }
 export interface ServerEvent { type: string; sessionId?: string; data?: unknown }
 
