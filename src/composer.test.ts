@@ -224,6 +224,32 @@ test("composer: project file search, references, file paste, reasoning sync and 
   const plugins=await request(`/plugins/${workspace.id}`);assert.ok(plugins.some((plugin:any)=>plugin.id==="builtin:question"&&plugin.enabled));
   await request(`/plugins/${workspace.id}`,{id:"builtin:question",enabled:false});assert.ok(!(await request(`/sessions/${interactive.id}`)).tools.includes("request_user_input"));
   await request(`/plugins/${workspace.id}`,{id:"builtin:question",enabled:true});assert.ok((await request(`/sessions/${interactive.id}`)).tools.includes("request_user_input"));
+  // Repeated retry failures collapse visually; their native entries and final action target survive.
+  const {SessionManager}=await import("@earendil-works/pi-coding-agent"),retryHistory=SessionManager.create(project,join(agent,"sessions"));
+  const firstRetryUser=retryHistory.appendMessage({role:"user",content:"Repeated connection errors",timestamp:Date.now()});retryHistory.appendSessionInfo("Repeated connection errors");
+  const appendFailures=(count:number,errorMessage="Connection error.",excludeAll=false,content:any[]=[])=>{let id="";for(let i=0;i<count;i++){id=retryHistory.appendMessage({role:"assistant",api:"openai-completions",provider:"mock",model:"mock",stopReason:"error",usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content,errorMessage,timestamp:Date.now()});if(excludeAll||i<count-1)retryHistory.appendContextEdit(id,null);}return id;};
+  const lastFailure=appendFailures(4);
+  const nextRetryUser=retryHistory.appendMessage({role:"user",content:"Separate retry round",timestamp:Date.now()});retryHistory.appendContextEdit(nextRetryUser,null);const excludedFailure=appendFailures(1,"Connection error.",true);
+  const interruptedUser=retryHistory.appendMessage({role:"user",content:"Interrupted retries",timestamp:Date.now()});appendFailures(2,"Connection error.",true);
+  appendFailures(1,"Connection error.",false,[{type:"toolCall",id:"retry-read",name:"read",arguments:{path:"src/app.tsx"}}]);
+  retryHistory.appendMessage({role:"toolResult",toolCallId:"retry-read",toolName:"read",content:[{type:"text",text:"retry tool result"}],isError:false,timestamp:Date.now()});
+  appendFailures(2,"Connection error.",true);appendFailures(1,"Request timeout.");appendFailures(1,"Connection error.",false,[{type:"text",text:"Partial answer before failure"}]);appendFailures(1);
+  retryHistory.appendCompaction("Retry compaction boundary",interruptedUser,1000);appendFailures(1);
+  const retryPath=retryHistory.getSessionFile()!,retryBytes=await readFile(retryPath,"utf8");await request("/discover",{});
+  await page.getByTitle("Repeated connection errors",{exact:true}).click();
+  const retryConversation=page.getByRole("tabpanel",{name:"对话",exact:true}),firstRetryTurn=retryConversation.locator(`[data-message-id="${firstRetryUser}"]`);
+  await firstRetryTurn.getByText("连续出现 4 次",{exact:false}).waitFor();
+  assert.equal(await firstRetryTurn.locator("article").count(),2);assert.equal(await firstRetryTurn.getByText("已从上下文排除",{exact:true}).count(),0,"the merged error uses the final attempt's context state");
+  const excludedTurn=retryConversation.locator(`[data-message-id="${nextRetryUser}"]`);
+  assert.equal(await excludedTurn.locator("article").filter({hasText:"Connection error."}).getByText("已从上下文排除",{exact:true}).count(),0,"connection errors hide the exclusion note");
+  assert.equal(await excludedTurn.locator("article").filter({hasText:"Separate retry round"}).getByText("已从上下文排除",{exact:true}).count(),1,"ordinary excluded messages retain their note");
+  const interrupted=retryConversation.locator(`[data-message-id="${interruptedUser}"]`);await interrupted.getByLabel(/展开或收起执行过程/).click();
+  assert.equal(await interrupted.getByText("连续出现 2 次",{exact:false}).count(),2,"tool calls split repeated error groups");await interrupted.getByText("Request timeout.",{exact:true}).waitFor();await interrupted.getByText("Partial answer before failure",{exact:true}).waitFor();
+  const retryFork=page.waitForResponse(r=>r.url().endsWith(`/sessions/${retryHistory.getSessionId()}/fork`));await firstRetryTurn.getByRole("button",{name:"fork",exact:true}).last().click();const retryBranch=await(await retryFork).json();
+  assert.equal((await request(`/sessions/${retryBranch.id}`)).messages.at(-1).entryId,lastFailure,"merged actions target the final failed attempt");
+  await page.getByTitle("Repeated connection errors",{exact:true}).click();await page.reload();await firstRetryTurn.getByText("连续出现 4 次",{exact:false}).waitFor();
+  const retrySnapshot=await request(`/sessions/${retryHistory.getSessionId()}`);assert.equal(retrySnapshot.messages.find((m:any)=>m.entryId===excludedFailure).contextExcluded,true,"hiding the note preserves the actual exclusion");assert.equal(retrySnapshot.messages.filter((m:any)=>m.errorMessage).length,14,"all original errors remain available to the trajectory");assert.ok((await readFile(retryPath,"utf8")).startsWith(retryBytes),"display merging preserves every original entry");await retryConversation.getByText("上下文已压缩",{exact:true}).waitFor();
+  await page.screenshot({path:join(temp,"merged-retry-errors.png")});
   for(const name of ["../escape.txt","a:stream",".."]){const response=await fetch(url+`/api/files/${workspace.id}/attach`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({files:[{name,data:"aGk="}]})});assert.equal(response.status,400);}
   await page.getByRole("button",{name:"设置",exact:true}).click();await page.getByRole("navigation",{name:"设置",exact:true}).getByRole("button",{name:"模型管理",exact:true}).click();
   await page.getByRole("button",{name:"编辑 mock/mock",exact:true}).click();const modelDialog=page.getByRole("dialog",{name:"编辑模型",exact:true});
