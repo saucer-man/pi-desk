@@ -17,6 +17,8 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await mkdir(join(project,"src"),{recursive:true});await mkdir(join(project,"docs"));await mkdir(agent);
   for(const path of ["src/app.tsx","docs/app.tsx","docs/设计 (草稿) [v1].md"])await writeFile(join(project,path),"fixture content");
   const answers:string[]=[],requests:any[]=[];
+  let releaseSwitch!:()=>void,startedSwitch!:()=>void;const switchGate=new Promise<void>(resolve=>releaseSwitch=resolve),switchStarted=new Promise<void>(resolve=>startedSwitch=resolve);t.after(()=>releaseSwitch());
+  let releaseFork!:()=>void;const forkGate=new Promise<void>(resolve=>releaseFork=resolve);t.after(()=>releaseFork());
   const model=createServer(async(req,res)=>{
     if(req.url==="/mcp"&&req.method!=="POST"){res.writeHead(405).end();return;}
     let body="";for await(const chunk of req)body+=chunk;const request=JSON.parse(body);
@@ -28,12 +30,18 @@ test("composer: project file search, references, file paste, reasoning sync and 
       res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:request.id,result}));return;
     }
     const last=request.messages.at(-1);requests.push(request);
+    if(last.role!=="tool"&&JSON.stringify(last).includes("live-switch")){startedSwitch();await switchGate;}
     res.writeHead(200,{"Content-Type":"text/event-stream"});
-    const tool=last.role!=="tool"&&JSON.stringify(last).includes("question-");
+    if(last.role!=="tool"&&JSON.stringify(last).includes("live-fork")){
+      res.write(`data: ${JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:"mock",choices:[{index:0,delta:{role:"assistant",content:"fork-streaming-fixture"},finish_reason:null}]})}\n\n`);
+      await forkGate;
+    }
+    const switching=last.role!=="tool"&&JSON.stringify(last).includes("live-switch");
+    const tool=switching||last.role!=="tool"&&JSON.stringify(last).includes("question-");
     if(last.role==="tool")answers.push(last.content);
     const delegated=last.role!=="tool"&&JSON.stringify(last).includes("question-delegate");
-    const args=delegated?{tasks:[{task:JSON.stringify(last).includes("question-delegate-child")?"question-choice":"question-delegate-child",mode:"standard",access:"read"}]}:{question:"请选择实现方式",...(JSON.stringify(last).includes("question-choice")?{options:["最小修改","完整重写"]}:{})};
-    for(const chunk of [{choices:[{index:0,delta:tool?{role:"assistant",tool_calls:[{index:0,id:"ask",type:"function",function:{name:delegated?"subagent":"request_user_input",arguments:JSON.stringify(args)}}]}:{role:"assistant",content:"回答已收到"},finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:tool?"tool_calls":"stop"}]},{choices:[],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}])res.write(`data: ${JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:"mock",...chunk})}\n\n`);
+    const args=switching?{path:"src/app.tsx"}:delegated?{tasks:[{task:JSON.stringify(last).includes("question-delegate-child")?"question-choice":"question-delegate-child",mode:"standard",access:"read"}]}:{question:"请选择实现方式",...(JSON.stringify(last).includes("question-choice")?{options:["最小修改","完整重写"]}:{})};
+    for(const chunk of [{choices:[{index:0,delta:tool?{role:"assistant",tool_calls:[{index:0,id:"ask",type:"function",function:{name:switching?"read":delegated?"subagent":"request_user_input",arguments:JSON.stringify(args)}}]}:{role:"assistant",content:"回答已收到"},finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:tool?"tool_calls":"stop"}]},{choices:[],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}])res.write(`data: ${JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:"mock",...chunk})}\n\n`);
     res.end("data: [DONE]\n\n");
   });model.listen(0,"127.0.0.1");await once(model,"listening");t.after(()=>{model.close();model.closeAllConnections();});
   await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as {port:number}).port}/v1`,apiKey:"fixture",models:[{id:"mock",reasoning:true,contextWindow:100000,maxTokens:1000},{id:"plain",reasoning:false},{id:"limited",reasoning:true,thinkingLevelMap:{high:null,xhigh:"high"}}]}}}));
@@ -48,7 +56,12 @@ test("composer: project file search, references, file paste, reasoning sync and 
   const workspace=await request("/workspaces",{path:project});
   const browser=await chromium.launch({executablePath,headless:true});t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors:string[]=[];page.setDefaultTimeout(8000);page.on("pageerror",error=>errors.push(error.message));
+  let releaseCatalog!:()=>void;const catalogGate=new Promise<void>(resolve=>releaseCatalog=resolve);t.after(()=>releaseCatalog());
+  await page.route("**/api/models{,?*}",async route=>{await catalogGate;await route.continue().catch(()=>{});});
   await page.goto(url);
+  await page.getByRole("button",{name:"选择模型",exact:true}).click();
+  const loadingThinking=page.getByRole("menuitem",{name:"推理等级",exact:true});await loadingThinking.waitFor();assert.match(await loadingThinking.innerText(),/加载中/);assert.equal(await loadingThinking.isDisabled(),true);assert.equal(await loadingThinking.getAttribute("aria-busy"),"true");
+  await page.keyboard.press("Escape");releaseCatalog();await page.unroute("**/api/models{,?*}");
   const editor=page.getByRole("textbox",{name:"任务输入",exact:true}),options=page.getByRole("option"),picker=page.getByRole("listbox",{name:"项目文件搜索结果"});
   await editor.waitFor();
   await mkdir(join(project,".pi","extensions"));const shutdownHook=join(project,".pi","extensions","shutdown.ts");await writeFile(shutdownHook,'export default function(pi){pi.on("session_shutdown",()=>new Promise(()=>{}));}');
@@ -74,6 +87,62 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));
   assert.equal((await request(`/sessions/${session.id}`)).thinking,"low");
+  // Switching updates capabilities without any prompt; the previous snapshot must not supply the old list.
+  const countBefore=requests.length;let releaseModel!:()=>void;const modelGate=new Promise<void>(resolve=>releaseModel=resolve);t.after(()=>releaseModel());
+  await page.route(`**/api/sessions/${session.id}`,async route=>{if(route.request().method()==="PATCH"&&route.request().postDataJSON().model)await modelGate;await route.continue();});
+  await chooseModel("plain");await page.getByRole("button",{name:"选择模型",exact:true}).click();
+  assert.match(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/加载中/);await page.keyboard.press("Escape");releaseModel();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("plain"));
+  await openThinking();assert.equal(await page.getByRole("menuitemradio").count(),1);await page.getByRole("menuitemradio",{name:"Off",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  await page.unroute(`**/api/sessions/${session.id}`);await chooseModel("limited");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).count(),0);await page.getByRole("menuitemradio",{name:"XHigh",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  await chooseModel("mock");await openThinking();await page.getByRole("menuitemradio",{name:"High",exact:true}).click();assert.equal(requests.length,countBefore,"capability changes never require a prompt");
+  // A temporarily incomplete snapshot falls back to the SDK model catalog.
+  await page.route(`**/api/sessions/${session.id}`,async route=>{if(route.request().method()!=="GET"){await route.continue();return;}const response=await route.fetch();await route.fulfill({response,json:{...await response.json(),thinkingLevels:[]}});});
+  const capabilities=page.waitForResponse(r=>r.url().includes("/api/models")&&r.status()===200);await page.reload();await capabilities;
+  await openThinking();await page.getByRole("menuitemradio",{name:"High",exact:true}).waitFor();await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));await page.unroute(`**/api/sessions/${session.id}`);
+  // Hold an actual provider request while selecting settings for its automatic tool continuation.
+  await request(`/sessions/${session.id}`,{thinking:"high"},"PATCH");const beforeSwitch=requests.length;
+  await request(`/sessions/${session.id}/prompt`,{text:"live-switch"});await switchStarted;
+  await chooseModel("limited");await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("limited"));
+  await openThinking();await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));
+  assert.equal((await request(`/sessions/${session.id}`)).record.status,"running");assert.equal(requests[beforeSwitch].model,"mock");assert.equal(requests[beforeSwitch].reasoning_effort,"high");
+  const modeChange=await fetch(url+`/api/sessions/${session.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:session.mode==="standard"?"minimal":"standard"})});assert.equal(modeChange.status,400);
+  releaseSwitch();await page.getByRole("button",{name:"停止运行及所有子任务",exact:true}).waitFor({state:"detached"});
+  assert.equal(requests[beforeSwitch+1].model,"limited");assert.equal(requests[beforeSwitch+1].reasoning_effort,"low");assert.equal(requests[beforeSwitch].reasoning_effort,"high");
+  await request(`/sessions/${session.id}`,{model:"mock/mock",thinking:"low"},"PATCH");
+  // Fork persisted messages during a real stream; selecting a fork must leave the parent running.
+  const parent=await request(`/sessions/${session.id}`),reply=parent.messages.find((m:any)=>m.role==="assistant"),user=parent.messages.find((m:any)=>m.role==="user");
+  await request(`/sessions/${session.id}/prompt`,{text:"live-fork"});
+  const streamingReply=page.locator("article").filter({hasText:"fork-streaming-fixture"});await streamingReply.waitFor();
+  assert.equal(await streamingReply.getByRole("toolbar").count(),0,"unfinished replies have no fork action");
+  assert.equal((await request(`/sessions/${session.id}`)).messages.at(-1).entryId,undefined);
+  const invalidFork=await fetch(url+`/api/sessions/${session.id}/fork`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:"unsaved-entry"})});assert.equal(invalidFork.status,400);
+  const source=await readFile(parent.record.sessionPath,"utf8"),branchIds:string[]=[];
+  for(const [label,entry] of [["回复操作",reply],["用户消息操作",user]] as const){
+    const toolbar=page.getByRole("toolbar",{name:label,exact:true}).first();
+    for(const name of ["编辑","删除","从上下文中排除"])assert.equal(await toolbar.getByRole("button",{name,exact:true}).isDisabled(),true);
+    assert.equal(await toolbar.getByRole("button",{name:"fork",exact:true}).isEnabled(),true);
+    const forkResponse=page.waitForResponse(r=>r.url().endsWith(`/sessions/${session.id}/fork`)&&r.request().method()==="POST");
+    await toolbar.getByRole("button",{name:"fork",exact:true}).click();const response=await forkResponse;assert.equal(response.status(),200);const branch=await response.json();branchIds.push(branch.id);
+    await page.waitForFunction(id=>localStorage.getItem("pi-desk.active")===id,branch.id);
+    assert.equal((await request(`/sessions/${branch.id}`)).messages.at(-1).entryId,entry.entryId,"fork ends at the selected historical message");
+    assert.equal((await request(`/sessions/${session.id}`)).record.status,"running");assert.equal(await readFile(parent.record.sessionPath,"utf8"),source,"fork never rewrites the live parent");
+    await page.getByTitle(parent.record.title,{exact:true}).click();await streamingReply.waitFor();
+  }
+  for(const operation of ["edit","delete","exclude"]){const response=await fetch(url+`/api/sessions/${session.id}/message`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:reply.entryId,operation,text:"blocked while running"})});assert.equal(response.status,400);}
+  await page.getByRole("button",{name:`更多操作：${parent.record.title}`,exact:true}).focus();await page.keyboard.press("Enter");
+  assert.equal(await page.getByRole("menuitem",{name:"分叉会话",exact:true}).isEnabled(),true);
+  const latestFork=page.waitForResponse(r=>r.url().endsWith(`/sessions/${session.id}/fork`)&&r.request().method()==="POST");await page.getByRole("menuitem",{name:"分叉会话",exact:true}).click();const latestResponse=await latestFork;assert.equal(latestResponse.status(),200);const latestBranch=await latestResponse.json();branchIds.push(latestBranch.id);
+  await page.waitForFunction(id=>localStorage.getItem("pi-desk.active")===id,latestBranch.id);
+  assert.ok(!(await request(`/sessions/${latestBranch.id}`)).messages.some((m:any)=>JSON.stringify(m.content).includes("fork-streaming-fixture")));
+  const branchFiles=await Promise.all(branchIds.map(async id=>{const snapshot=await request(`/sessions/${id}`);return {path:snapshot.record.sessionPath,text:await readFile(snapshot.record.sessionPath,"utf8")};}));
+  assert.equal((await request(`/sessions/${session.id}`)).record.status,"running");releaseFork();
+  const forkDeadline=Date.now()+8000;let completed;do{completed=await request(`/sessions/${session.id}`);if(completed.record.status!=="running")break;await new Promise(resolve=>setTimeout(resolve,25));}while(Date.now()<forkDeadline);
+  assert.equal(completed.record.status,"idle");assert.ok(JSON.stringify(completed.messages.at(-1).content).includes("fork-streaming-fixture回答已收到"),"the parent completes after switching to a fork");
+  for(const branch of branchFiles)assert.equal(await readFile(branch.path,"utf8"),branch.text,"later parent output never enters existing forks");
+  await page.getByTitle(parent.record.title,{exact:true}).click();await page.getByRole("button",{name:"发送任务",exact:true}).waitFor();
   // Windows native file drops retain their absolute paths; blob-only pastes get a real cached path.
   const nativePath=join(project,"docs","设计 (草稿) [v1].md").replaceAll("\\","/");
   await page.route("**/api/files/*/attach",async route=>{if(route.request().postDataJSON().clipboard)await route.fulfill({json:{paths:[nativePath]}});else await route.continue();});
@@ -190,6 +259,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
     await history.waitFor();const elapsed=Math.round(performance.now()-started);
     const deadline=Date.now()+8000;while(!existsSync(entered)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
     assert.ok(existsSync(entered),snapshotReady?await (await full).text():"the real SDK did not enter the startup hook");assert.equal(snapshotReady,false,"saved history is visible before the SDK snapshot");
+    await page.getByRole("button",{name:"选择模型",exact:true}).click();assert.doesNotMatch(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/不可用/);await page.keyboard.press("Escape");
     const conversation=page.getByRole("tabpanel",{name:"对话",exact:true});await conversation.getByLabel(/展开或收起执行过程/).click();
     const bashRows=conversation.locator("details").filter({has:page.locator(":scope > summary > code",{hasText:/^bash$/})});
     assert.equal(await bashRows.count(),2,"identical commands with distinct toolCallIds stay separate");
@@ -204,7 +274,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
     assert.ok(pluginPending()?.elapsedMs>=4900,"a blocked plugin is named before the request ends");
     console.log(`Cold history visible in ${elapsed} ms with SDK startup blocked`);
   }finally{await writeFile(gate,"");await full.catch(()=>{});}
-  assert.equal((await full).ok(),true);
+  assert.equal((await full).ok(),true);await openThinking();await page.getByRole("menuitemradio",{name:"High",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
   const mcpDeadline=Date.now()+6000;
   const mcpDone=()=>timings().some(row=>row.sessionId===coldId&&row.server==="slow-fixture"&&row.phase==="mcp.tools/list"&&row.event==="end");
   while(!mcpDone()&&Date.now()<mcpDeadline)await new Promise(resolve=>setTimeout(resolve,50));

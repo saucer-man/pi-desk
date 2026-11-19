@@ -575,8 +575,8 @@ export class Runtime {
   }
   async change(id: string, options: { model?: string; thinking?: string; mode?: Mode }) {
     const record = this.store.record(id); const live = await this.get(id);
-    if (!live.session.isIdle || record.status === "running") throw new Error("请先停止运行，再修改模型或模式");
-    if (options.model) { const runtime = live.session.modelRuntime; await runtime.refresh({ allowNetwork: false }); const model = runtime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === options.model); if (!model) throw new Error("模型不可用"); await live.session.setModel(model); record.model = options.model; live.modelNeedsSelection = false; }
+    if (options.mode && options.mode !== record.mode && (!live.session.isIdle || record.status === "running")) throw new Error("请先停止运行，再修改模式");
+    if (options.model) { const runtime = live.session.modelRuntime; await runtime.refresh({ allowNetwork: false }); const model = runtime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === options.model); if (!model) throw new Error("模型不可用"); await live.session.setModel(model); record.model = options.model; record.thinking = live.session.thinkingLevel; live.modelNeedsSelection = false; }
     if (options.thinking) { if (!live.session.getAvailableThinkingLevels().includes(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0])) throw new Error("当前模型不支持此思考强度"); live.session.setThinkingLevel(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0]); record.thinking = live.session.thinkingLevel; }
     if (options.mode && options.mode !== record.mode) { try { await this.release(live, "reload"); } finally { this.live.delete(id); } record.mode = options.mode; await this.get(id); }
     this.changed(record); const snapshot=await this.snapshot(id);this.emit({type:"snapshot",sessionId:id,data:snapshot});return snapshot;
@@ -646,13 +646,14 @@ export class Runtime {
   }
   async fork(id: string, entryId?: string) {
     const parent = this.store.record(id); const { session } = await this.get(id);
-    if (!session.isIdle || parent.status === "running") throw new Error("运行期间不能修改历史或创建分支");
-    const leaf = entryId || session.sessionManager.getLeafId();
-    if (!leaf) throw new Error("当前会话没有可分支的历史");
     const source = session.sessionManager.getSessionFile();
     if (!source || !existsSync(source)) throw new Error("原始会话尚未保存");
     // createBranchedSession mutates its manager: fork on a separate reader, never the live parent.
-    const path = SessionManager.open(source, undefined, parent.cwd).createBranchedSession(leaf);
+    const reader = SessionManager.open(source, undefined, parent.cwd);
+    const leaf = entryId || reader.getLeafId();
+    if (!leaf) throw new Error("当前会话没有可分支的历史");
+    if (!reader.getEntry(leaf)) throw new Error("所选历史尚未保存，暂时无法创建分支");
+    const path = reader.createBranchedSession(leaf);
     if (!path) throw new Error("无法创建会话分支");
     SessionManager.open(path).appendSessionInfo(parent.title + " · 分支");
     return this.create(parent.workspaceId, parent.mode, { cwd: parent.cwd, title: parent.title + " · 分支", sessionPath: path, model: parent.model });
