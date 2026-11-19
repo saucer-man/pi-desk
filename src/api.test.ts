@@ -405,6 +405,12 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
       const redirected=page.getByRole("link",{name:"重定向",exact:true});await redirected.click();await pane.getByRole("tab",{name:"Sidebar fixture",exact:true}).nth(2).waitFor();const redirectedCount=(await request("/browser")).data.tabs.length;await redirected.click();await pane.getByRole("tab",{name:"Sidebar fixture",exact:true,selected:true}).waitFor();assert.equal((await request("/browser")).data.tabs.length,redirectedCount,"redirected links reuse the original requested URL");
       await page.getByRole("button",{name:"HTML",exact:true}).click();const html=page.frameLocator('iframe[title="HTML 网页预览"]');await html.getByRole("heading",{name:"HTML fixture ready",exact:true}).waitFor();assert.equal(await html.getByRole("heading").evaluate(node=>getComputedStyle(node).color),"rgb(12, 34, 56)");assert.equal(await html.getByRole("heading").evaluate(()=>{try{return Boolean(parent.document.body);}catch{return false;}}),false,"HTML scripts cannot access the app document");
       await pane.getByRole("button",{name:"文件显示方式",exact:true}).click();await page.getByRole("menuitemradio",{name:"源代码",exact:true}).click();assert.equal(await pane.locator('iframe[title="HTML 网页预览"]').count(),0);assert.match((await pane.getByRole("tabpanel",{name:"index.html",exact:true}).textContent())!,/main.js/);await pane.getByRole("button",{name:"文件显示方式",exact:true}).click();await page.getByRole("menuitemradio",{name:"网页效果",exact:true}).click();await html.getByRole("heading",{name:"HTML fixture ready",exact:true}).waitFor();assert.deepEqual(errors,[]);
+      // Closing Start keeps other tabs, restores focus, and collapses an otherwise empty pane.
+      const tabCount=await pane.getByRole("tab").count();await pane.getByRole("tab",{name:"开始",exact:true}).click();await page.screenshot({path:join(temp,"inspector-start-close.png")});await pane.getByRole("button",{name:"关闭开始页",exact:true}).focus();await page.keyboard.press("Enter");
+      await pane.getByRole("tab",{name:"开始",exact:true}).waitFor({state:"detached"});assert.equal(await pane.getByRole("tab").count(),tabCount-1);await pane.getByRole("tab",{name:"index.html",exact:true,selected:true}).waitFor();await page.waitForFunction(()=>document.activeElement?.getAttribute("role")==="tab"&&document.activeElement?.getAttribute("aria-selected")==="true");
+      await pane.getByRole("button",{name:"收起右侧面板",exact:true}).click();await page.getByRole("button",{name:"打开右侧面板",exact:true}).click();await pane.getByRole("tab",{name:"index.html",exact:true}).click();await pane.getByRole("button",{name:"关闭开始页",exact:true}).click();await pane.getByRole("tab",{name:"开始",exact:true}).waitFor({state:"detached"});assert.equal(await pane.getByRole("tab",{name:"index.html",exact:true}).getAttribute("aria-selected"),"true");
+      await pane.getByRole("button",{name:"收起右侧面板",exact:true}).click();await page.evaluate(key=>localStorage.removeItem(key),`pi-desk.layout.${w.id}`);await page.getByRole("button",{name:"打开右侧面板",exact:true}).click();assert.equal(await pane.getByRole("tab").count(),1);await pane.getByRole("button",{name:"关闭开始页",exact:true}).click();await pane.waitFor({state:"detached"});
+      await page.setViewportSize({width:375,height:812});await page.getByRole("button",{name:"打开右侧面板",exact:true}).click();await pane.getByRole("button",{name:"关闭开始页",exact:true}).click();await pane.waitFor({state:"detached"});assert.deepEqual(errors,[]);console.log(`Inspector close visual fixture: ${join(temp,"inspector-start-close.png")}`);
     }catch(error){await page.screenshot({path:join(temp,"resource-menu-failure.png")}).catch(()=>{});throw error;}finally{await browser.close();await request("/browser",{action:"stop"});await request(`/sessions/${linked.id}`,undefined,"DELETE");}
   });
   const { git } = await import("./subagents.ts"); await git(cwd,["init","-b","main"]); await git(cwd,["config","user.name","Test"]); await git(cwd,["config","user.email","test@localhost"]); await git(cwd,["add","."]); await git(cwd,["commit","-m","fixture"]);
@@ -794,6 +800,15 @@ test("terminal startup: early input survives asynchronous SSH attachment",{timeo
   const echoed=once(socket,"message");socket.send(JSON.stringify({type:"input",data:"first command\r"}));
   await new Promise(resolve=>setTimeout(resolve,100));attach();
   assert.equal(JSON.parse(String((await echoed)[0])).data,"first command\r");socket.close();
+});
+
+test("session deletion: a stalled extension shutdown is bounded and SDK resources are disposed",async t=>{
+  const {Runtime}=await import("./runtime.ts");t.mock.timers.enable({apis:["setTimeout"]});
+  const record={id:"empty",status:"idle"},dispose=t.mock.fn(),emit=t.mock.fn(()=>new Promise(()=>{}));
+  const runtime=Object.assign(Object.create(Runtime.prototype),{store:{state:{sessions:[record]},record:()=>record,save(){}},creating:new Map(),live:new Map([[record.id,{session:{abort:async()=>{},extensionRunner:{emit},dispose}}]]),sessionOwners:new Map(),listeners:new Set()}) as InstanceType<typeof Runtime>;
+  const deleting=runtime.remove(record.id,false);await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.equal(emit.mock.callCount(),1);t.mock.timers.tick(4999);assert.equal(dispose.mock.callCount(),0);
+  t.mock.timers.tick(1);assert.deepEqual(await deleting,{deleted:[record.id]});assert.equal(dispose.mock.callCount(),1);assert.equal(runtime.live.size,0);assert.equal(runtime.store.state.sessions.length,0);
 });
 
 test("native sessions: startup discovery, watched changes, shared names and deletion", {timeout:45000}, async t=>{

@@ -1,12 +1,13 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {existsSync} from "node:fs";
-import {mkdtemp,mkdir,writeFile,readFile} from "node:fs/promises";
+import {mkdtemp,mkdir,writeFile,readFile,unlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 import {spawn} from "node:child_process";
 import {once} from "node:events";
 import {createServer} from "node:http";
+import {randomUUID} from "node:crypto";
 import {chromium} from "playwright-core";
 
 test("composer: project file search, references, file paste, reasoning sync and interactive questions",{timeout:60000},async t=>{
@@ -15,9 +16,18 @@ test("composer: project file search, references, file paste, reasoning sync and 
   const temp=await mkdtemp(join(tmpdir(),"pi-desk-composer-")),project=join(temp,"project"),agent=join(temp,"agent");
   await mkdir(join(project,"src"),{recursive:true});await mkdir(join(project,"docs"));await mkdir(agent);
   for(const path of ["src/app.tsx","docs/app.tsx","docs/设计 (草稿) [v1].md"])await writeFile(join(project,path),"fixture content");
-  const answers:string[]=[];
+  const answers:string[]=[],requests:any[]=[];
   const model=createServer(async(req,res)=>{
-    let body="";for await(const chunk of req)body+=chunk;const request=JSON.parse(body),last=request.messages.at(-1);
+    if(req.url==="/mcp"&&req.method!=="POST"){res.writeHead(405).end();return;}
+    let body="";for await(const chunk of req)body+=chunk;const request=JSON.parse(body);
+    if(req.url==="/mcp"){
+      if(req.headers.authorization!=="Bearer timing-fixture-secret"){res.writeHead(401).end();return;}
+      if(request.id===undefined){res.writeHead(202).end();return;}
+      if(request.method==="initialize")await new Promise(resolve=>setTimeout(resolve,150));
+      const result=request.method==="initialize"?{protocolVersion:request.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:"timing",version:"1"}}:{tools:[]};
+      res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:request.id,result}));return;
+    }
+    const last=request.messages.at(-1);requests.push(request);
     res.writeHead(200,{"Content-Type":"text/event-stream"});
     const tool=last.role!=="tool"&&JSON.stringify(last).includes("question-");
     if(last.role==="tool")answers.push(last.content);
@@ -26,23 +36,44 @@ test("composer: project file search, references, file paste, reasoning sync and 
     for(const chunk of [{choices:[{index:0,delta:tool?{role:"assistant",tool_calls:[{index:0,id:"ask",type:"function",function:{name:delegated?"subagent":"request_user_input",arguments:JSON.stringify(args)}}]}:{role:"assistant",content:"回答已收到"},finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:tool?"tool_calls":"stop"}]},{choices:[],usage:{prompt_tokens:10,completion_tokens:3,total_tokens:13}}])res.write(`data: ${JSON.stringify({id:"fixture",object:"chat.completion.chunk",created:1,model:"mock",...chunk})}\n\n`);
     res.end("data: [DONE]\n\n");
   });model.listen(0,"127.0.0.1");await once(model,"listening");t.after(()=>{model.close();model.closeAllConnections();});
-  await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as {port:number}).port}/v1`,apiKey:"fixture",models:[{id:"mock",reasoning:true,contextWindow:100000,maxTokens:1000}]}}}));
+  await writeFile(join(agent,"models.json"),JSON.stringify({providers:{mock:{api:"openai-completions",baseUrl:`http://127.0.0.1:${(model.address() as {port:number}).port}/v1`,apiKey:"fixture",models:[{id:"mock",reasoning:true,contextWindow:100000,maxTokens:1000},{id:"plain",reasoning:false},{id:"limited",reasoning:true,thinkingLevelMap:{high:null,xhigh:"high"}}]}}}));
   await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"mock",defaultModel:"mock"}));
-  const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_DESK_DIR:join(temp,"desk"),PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(agent,"sessions")},stdio:["ignore","pipe","pipe"]});
+  await mkdir(join(project,".pi"));await writeFile(join(project,".pi","settings.json"),JSON.stringify({defaultThinkingLevel:"minimal"}));
+  const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_DESK_SESSION_TIMING:"1",PI_DESK_DIR:join(temp,"desk"),PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(agent,"sessions")},stdio:["ignore","pipe","pipe"]});
+  let stderr="";child.stderr.setEncoding("utf8").on("data",chunk=>stderr+=chunk);
+  const timings=()=>stderr.split(/\r?\n/).filter(line=>line.startsWith("[session-timing] ")&&line.endsWith("}")).map(line=>JSON.parse(line.slice(17)));
   t.after(async()=>{if(child.exitCode===null){const exited=once(child,"exit");child.kill();await exited;}});
   const url=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("production server startup timeout")),15000);child.once("error",reject);child.stdout.on("data",chunk=>{const match=String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`production server exited: ${code}`));});});
   const request=async(path:string,data?:unknown,method=data?"POST":"GET")=>{const response=await fetch(url+"/api"+path,{method,headers:data?{"Content-Type":"application/json"}:undefined,body:data?JSON.stringify(data):undefined});const body=await response.json();assert.ok(response.ok,JSON.stringify(body));return body;};
-  const workspace=await request("/workspaces",{path:project}),session=await request("/sessions",{workspaceId:workspace.id,mode:"minimal"});
+  const workspace=await request("/workspaces",{path:project});
   const browser=await chromium.launch({executablePath,headless:true});t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors:string[]=[];page.setDefaultTimeout(8000);page.on("pageerror",error=>errors.push(error.message));
-  const restored=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/composer`));await page.goto(url);await restored;
+  await page.goto(url);
   const editor=page.getByRole("textbox",{name:"任务输入",exact:true}),options=page.getByRole("option"),picker=page.getByRole("listbox",{name:"项目文件搜索结果"});
   await editor.waitFor();
+  await mkdir(join(project,".pi","extensions"));const shutdownHook=join(project,".pi","extensions","shutdown.ts");await writeFile(shutdownHook,'export default function(pi){pi.on("session_shutdown",()=>new Promise(()=>{}));}');
+  const emptyLoaded=page.waitForResponse(r=>r.request().method()==="GET"&&/\/api\/sessions\/[^/?]+$/.test(r.url())&&r.status()===200);
+  await page.getByRole("button",{name:"新建任务",exact:true}).click();await emptyLoaded;await page.getByRole("button",{name:"更多操作：新会话",exact:true}).focus();await page.keyboard.press("Enter");await page.getByRole("menuitem",{name:"删除会话",exact:true}).click();
+  const deletion=page.getByRole("dialog",{name:"删除会话",exact:true});await deletion.getByRole("button",{name:"确认删除",exact:true}).click();await deletion.waitFor({state:"detached",timeout:8000});assert.equal((await request("/state")).sessions.length,0);await unlink(shutdownHook);
+  // A draft can configure SDK-supported reasoning without creating an empty session.
+  const openThinking=async()=>{await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^推理等级/}).click();};
+  const chooseModel=async(name:string)=>{await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^模型(?!设置)/}).click();await page.getByRole("menuitemradio",{name:new RegExp(`^${name}`)}).click();};
+  await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"Minimal",exact:true}).getAttribute("aria-checked"),"true");
+  await page.getByRole("menuitemradio",{name:"High",exact:true}).click();
+  await chooseModel("plain");await openThinking();assert.equal(await page.getByRole("menuitemradio").count(),1);assert.equal(await page.getByRole("menuitemradio",{name:"Off",exact:true}).getAttribute("aria-checked"),"true");await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  await chooseModel("limited");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).count(),0);await page.getByRole("menuitemradio",{name:"XHigh",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  await chooseModel("mock");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).getAttribute("aria-checked"),"true");await page.screenshot({path:join(temp,"new-session-reasoning.png")});await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  assert.equal((await request("/state")).sessions.length,0);
+  const invalid=await fetch(url+"/api/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaceId:workspace.id,mode:"minimal",model:"mock/plain",thinking:"high"})});assert.equal(invalid.status,400);assert.equal((await request("/state")).sessions.length,0);
+  await editor.fill("new-session-fixture");const created=page.waitForResponse(response=>response.url().endsWith("/api/sessions")&&response.request().method()==="POST");await page.getByRole("button",{name:"发送任务",exact:true}).click();const session=await(await created).json();
+  await page.getByRole("button",{name:"停止运行及所有子任务",exact:true}).waitFor({state:"detached"});await page.getByText("回答已收到",{exact:true}).waitFor();
+  assert.equal(session.thinking,"high");assert.equal((await request(`/sessions/${session.id}`)).thinking,"high");assert.equal(requests[0].reasoning_effort,"high");
+  await page.reload();await editor.waitFor();await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("High"));
   // Configuration changes must reach the composer without sending a message.
   await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^推理等级/}).click();
-  await page.getByRole("menuitemradio",{name:"High",exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("High"));
-  assert.equal((await request(`/sessions/${session.id}`)).thinking,"high");
+  await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));
+  assert.equal((await request(`/sessions/${session.id}`)).thinking,"low");
   // Windows native file drops retain their absolute paths; blob-only pastes get a real cached path.
   const nativePath=join(project,"docs","设计 (草稿) [v1].md").replaceAll("\\","/");
   await page.route("**/api/files/*/attach",async route=>{if(route.request().postDataJSON().clipboard)await route.fulfill({json:{paths:[nativePath]}});else await route.continue();});
@@ -92,13 +123,26 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await request(`/sessions/${interactive.id}`,{title:"Question fixture"},"PATCH");await page.reload();
   const loaded=page.waitForResponse(response=>response.url().endsWith(`/sessions/${interactive.id}/composer`));await page.getByRole("region",{name:"工作区会话"}).getByRole("button",{name:/^Question fixture/}).click();await loaded;
   const card=page.getByRole("form",{name:"助手提问"}),answer=page.getByRole("textbox",{name:"提问回答"});
+  const toolRows=page.getByRole("tabpanel",{name:"对话",exact:true}).locator("details").filter({has:page.locator(":scope > summary > code",{hasText:"request_user_input"})});
   for(const scenario of ["choice","text","cancel","stop","delegate"]){
     await editor.fill(`question-${scenario}`);await page.getByRole("button",{name:"发送任务",exact:true}).click();await card.waitFor();
     if(scenario==="choice"){
       await page.screenshot({path:join(temp,"question-desktop.png")});await page.setViewportSize({width:375,height:812});
       const bounds=await card.boundingBox();assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=375,"question card fits narrow screens");
       await page.screenshot({path:join(temp,"question-mobile.png")});await page.setViewportSize({width:1280,height:900});
-      await page.reload();await card.waitFor();await card.getByRole("button",{name:"最小修改",exact:true}).click();
+      await page.reload();await card.waitFor();await toolRows.waitFor();assert.equal(await toolRows.count(),1);
+      assert.match(await toolRows.locator("summary").innerText(),/执行中/);assert.match(await toolRows.innerText(),/调用参数/);
+      const runningRow=await toolRows.elementHandle();
+      await card.getByRole("button",{name:"最小修改",exact:true}).click();
+      await page.waitForFunction(row=>row?.querySelector("summary")?.textContent?.includes("完成"),runningRow);
+      assert.equal(await toolRows.count(),1,"completion updates the existing tool row without adding a result row");
+      assert.equal(await runningRow!.evaluate(row=>row.isConnected),true,"the running tool row stays mounted");
+      await page.getByRole("button",{name:"发送任务",exact:true}).waitFor();
+      await page.getByRole("tabpanel",{name:"对话",exact:true}).getByLabel(/展开或收起执行过程/).click();
+      await toolRows.locator("summary").click();assert.match(await toolRows.innerText(),/调用参数[\s\S]*执行结果[\s\S]*最小修改/);
+      await page.screenshot({path:join(temp,"tool-call-completed.png")});
+      await page.reload();await editor.waitFor();await page.getByRole("tabpanel",{name:"对话",exact:true}).getByLabel(/展开或收起执行过程/).click();
+      await toolRows.waitFor();assert.equal(await toolRows.count(),1);assert.match(await toolRows.locator("summary").innerText(),/完成/);
     }
     else if(scenario==="delegate")await card.getByRole("button",{name:"最小修改",exact:true}).click();
     else if(scenario==="text"){await answer.fill("使用现有组件");await answer.press("Enter");}
@@ -118,5 +162,56 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await modelDialog.getByRole("button",{name:"关闭",exact:true}).click();await page.getByRole("button",{name:"管理供应商 mock",exact:true}).click();await page.getByRole("menuitem",{name:"供应商设置",exact:true}).click();
   const providerDialog=page.getByRole("dialog",{name:"供应商设置",exact:true});await providerDialog.getByText("供应商代理",{exact:true}).click();await providerDialog.getByLabel("供应商连接方式",{exact:true}).waitFor();assert.equal(await providerDialog.getByText("清除 models.json 中的 API Key",{exact:true}).count(),0);
   await providerDialog.getByRole("button",{name:"关闭",exact:true}).click();await page.locator("summary").filter({hasText:/^代理设置$/}).click();await page.getByRole("textbox",{name:"全局代理",exact:true}).waitFor();assert.equal(await page.getByLabel("模型代理",{exact:true}).count(),0);
+  const gate=join(temp,"finish-startup"),entered=join(temp,"startup-entered");
+  await writeFile(join(project,".pi","mcp.json"),JSON.stringify({mcpServers:{"slow-fixture":{url:`http://127.0.0.1:${(model.address() as {port:number}).port}/mcp`,headers:{Authorization:"Bearer timing-fixture-secret"}}}}));
+  await writeFile(join(project,".pi","extensions","slow-start.ts"),`import {existsSync,writeFileSync} from "node:fs";
+  export default function(pi){pi.on("session_start",async()=>{
+    writeFileSync(${JSON.stringify(entered)}, "");
+    const deadline=Date.now()+60000;
+    while(!existsSync(${JSON.stringify(gate)})&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
+  });}`);
+  const coldId=randomUUID(),timestamp=new Date().toISOString(),messageId=randomUUID();
+  await writeFile(join(agent,"sessions","cold-history.jsonl"),[
+    {type:"session",version:3,id:coldId,cwd:project,timestamp},
+    {type:"message",id:messageId,parentId:null,timestamp,message:{role:"user",content:[{type:"text",text:"Saved history before startup"}],timestamp:Date.now()}},
+    ...[
+      {role:"assistant",api:"openai-completions",provider:"mock",model:"mock",stopReason:"toolUse",usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:"toolCall",id:"first",name:"bash",arguments:{command:"echo same"}},{type:"toolCall",id:"second",name:"bash",arguments:{command:"echo same"}},{type:"toolCall",id:"pending",name:"read",arguments:{path:"pending.txt"}}]},
+      {role:"toolResult",toolCallId:"second",toolName:"bash",content:[{type:"text",text:"second result"},{type:"image",mimeType:"image/png",data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS9sAAAAASUVORK5CYII="}]},
+      {role:"toolResult",toolCallId:"first",toolName:"bash",isError:true,content:[{type:"text",text:"first failed"}]},
+      {role:"toolResult",toolCallId:"orphan",toolName:"orphan_tool",content:[{type:"text",text:"standalone result"}]},
+    ].map((message,index)=>({type:"message",id:`tool-${index}`,parentId:index?`tool-${index-1}`:messageId,timestamp,message:{...message,timestamp:Date.now()+index}})),
+  ].map(entry=>JSON.stringify(entry)).join("\n")+"\n");
+  await request("/discover",{});await page.keyboard.press("Escape");
+  let snapshotReady=false;
+  const full=page.waitForResponse(r=>r.url().endsWith(`/api/sessions/${coldId}`),{timeout:20000}).then(response=>{snapshotReady=true;return response;});
+  try{
+    const started=performance.now();await page.getByRole("button",{name:/^Saved history before startup/}).click();
+    const history=page.getByRole("tabpanel",{name:"对话",exact:true}).getByText("Saved history before startup",{exact:true});
+    await history.waitFor();const elapsed=Math.round(performance.now()-started);
+    const deadline=Date.now()+8000;while(!existsSync(entered)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
+    assert.ok(existsSync(entered),snapshotReady?await (await full).text():"the real SDK did not enter the startup hook");assert.equal(snapshotReady,false,"saved history is visible before the SDK snapshot");
+    const conversation=page.getByRole("tabpanel",{name:"对话",exact:true});await conversation.getByLabel(/展开或收起执行过程/).click();
+    const bashRows=conversation.locator("details").filter({has:page.locator(":scope > summary > code",{hasText:/^bash$/})});
+    assert.equal(await bashRows.count(),2,"identical commands with distinct toolCallIds stay separate");
+    assert.match(await bashRows.nth(0).locator("summary").innerText(),/失败/);assert.match(await bashRows.nth(1).locator("summary").innerText(),/完成/);
+    for(const [i,output] of ["first failed","second result"].entries()){await bashRows.nth(i).locator("summary").click();assert.match(await bashRows.nth(i).innerText(),new RegExp(`调用参数[\\s\\S]*执行结果[\\s\\S]*${output}`));}
+    assert.equal(await bashRows.nth(1).getByRole("img",{name:"工具返回图片",exact:true}).count(),1);
+    await conversation.getByText("orphan_tool",{exact:true}).click();await conversation.getByText("standalone result",{exact:false}).waitFor();
+    assert.match(await conversation.locator("summary").filter({hasText:"pending.txt"}).innerText(),/未完成/);
+    const pendingDeadline=Date.now()+7000;
+    const pluginPending=()=>timings().find(row=>row.sessionId===coldId&&row.plugin==="slow-start.ts"&&row.phase==="plugin.session_start"&&row.event==="pending");
+    while(!pluginPending()&&Date.now()<pendingDeadline)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.ok(pluginPending()?.elapsedMs>=4900,"a blocked plugin is named before the request ends");
+    console.log(`Cold history visible in ${elapsed} ms with SDK startup blocked`);
+  }finally{await writeFile(gate,"");await full.catch(()=>{});}
+  assert.equal((await full).ok(),true);
+  const mcpDeadline=Date.now()+6000;
+  const mcpDone=()=>timings().some(row=>row.sessionId===coldId&&row.server==="slow-fixture"&&row.phase==="mcp.tools/list"&&row.event==="end");
+  while(!mcpDone()&&Date.now()<mcpDeadline)await new Promise(resolve=>setTimeout(resolve,50));
+  const coldTimings=timings().filter(row=>row.sessionId===coldId&&row.event==="end");
+  assert.ok(coldTimings.some(row=>row.plugin==="slow-start.ts"&&row.elapsedMs>=4900));
+  assert.ok(coldTimings.some(row=>row.server==="slow-fixture"&&row.phase==="mcp.initialize"&&row.elapsedMs>=140));assert.ok(mcpDone());
+  for(const phase of ["request.history","request.snapshot","plugins.discover","resources.reload","history.open","history.project","response.serialize"])assert.ok(coldTimings.some(row=>row.phase===phase),phase);
+  assert.doesNotMatch(stderr,/timing-fixture-secret|Saved history before startup/);
   console.log(`Composer visual fixtures: ${temp}`);assert.deepEqual(errors,[]);
 });

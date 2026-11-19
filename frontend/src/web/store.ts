@@ -16,7 +16,7 @@ function readCodePreferences(): CodePreferences {
 interface AppState {
   code: CodePreferences; setCode: (update: Partial<CodePreferences>) => void;
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
-  snapshot?: SessionSnapshot; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
+  snapshot?: SessionSnapshot; history?: ChatMessage[]; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
   subagentId:string; subagentSnapshot?:SessionSnapshot;
   browserRequest?: { id?:string; url?:string; fresh?:boolean; version:number };
   requests: UiRequest[]; auth?: OAuthState;
@@ -36,7 +36,7 @@ let snapshotRevision=0;
 let state: AppState = ({
   code: readCodePreferences(),
   setCode: update => { const code = { ...get().code, ...update }; localStorage.setItem("pi-desk.code", JSON.stringify(code)); set({ code }); },
-  activeId: localStorage.getItem("pi-desk.active") || "", subagentId:"", workspaceId: "", page: localStorage.getItem("pi-desk.page")==="trajectory"?"trajectory":"workbench", connected: false, loading: false, error: "", traces: {}, requests: [],
+  activeId: localStorage.getItem("pi-desk.active") || "", subagentId:"", workspaceId: "", page: localStorage.getItem("pi-desk.page")==="trajectory"?"trajectory":"workbench", connected: false, loading: false, history:undefined, error: "", traces: {}, requests: [],
   fail: error => set({ error: error instanceof Error ? error.message : String(error) }),
   setPage: page => { localStorage.setItem("pi-desk.page",page);set({ page }); },
   select: async id => {
@@ -44,24 +44,29 @@ let state: AppState = ({
     let record = get().state?.sessions.find(r => r.id === id);const subagentId=record?.parentId?id:"";
     while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
     id=record?.id||id;localStorage.setItem("pi-desk.active", id);
-    set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, loading: true, error: "" });
-    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) { set({ snapshot }); void get().loadModels().catch(get().fail); } }
+    set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, history:undefined, loading: true, error: "" });
+    if (record && record.status!=="running") {
+      void api<ChatMessage[]|null>(`/sessions/${id}?history=1`).then(history=>{
+        if (Array.isArray(history) && get().activeId===id && snapshotRevision===revision && !get().snapshot) set({history});
+      }).catch(()=>{});
+    }
+    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) { set({ snapshot,history:undefined }); void get().loadModels().catch(get().fail); } }
     catch (error) { if (get().activeId === id) get().fail(error); }
     finally { if (get().activeId === id) set({ loading: false }); }
   },
-  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined }); return; } if (id) { const revision=++snapshotRevision; const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot }); } },
+  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined, history:undefined }); return; } if (id) { const revision=++snapshotRevision; const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot, history:undefined }); } },
   loadModels: async (refresh=false) => { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); },
   receive: event => {
     if (event.type === "state") {
       const state = event.data as State; const current = get();
       const activeId = state.sessions.some(r => r.id === current.activeId) ? current.activeId : current.state ? "" : state.sessions.find(r => !r.parentId && !r.archived)?.id || "";
       const record = state.sessions.find(r => r.id === activeId);
-      set({ state, activeId, workspaceId: record?.workspaceId || state.workspaces.find(w=>w.id===current.workspaceId&&!w.hidden)?.id || state.workspaces.find(w=>!w.hidden)?.id || "", snapshot: current.snapshot && record ? { ...current.snapshot, record } : undefined });
+      set({ state, activeId, workspaceId: record?.workspaceId || state.workspaces.find(w=>w.id===current.workspaceId&&!w.hidden)?.id || state.workspaces.find(w=>!w.hidden)?.id || "", snapshot: current.snapshot && record ? { ...current.snapshot, record } : undefined, history:record?current.history:undefined, loading:Boolean(record&&current.loading) });
       if (!current.snapshot && activeId && !current.loading) void get().select(activeId);
     }
     const snapshotKey=event.sessionId===get().activeId?"snapshot":event.sessionId===get().subagentId?"subagentSnapshot":undefined;
     if (snapshotKey==="snapshot" && (event.type==="snapshot" || event.type==="event" && get().snapshot)) snapshotRevision++;
-    if (event.type === "snapshot" && snapshotKey) set({ [snapshotKey]: event.data as SessionSnapshot });
+    if (event.type === "snapshot" && snapshotKey) set({ [snapshotKey]: event.data as SessionSnapshot, ...(snapshotKey==="snapshot"?{history:undefined}:{}) });
     if (event.type === "event" && snapshotKey) {
       const data = event.data as { type: string; message?: ChatMessage; steering?: string[]; followUp?: string[]; toolCallId?: string; assistantMessageEvent?: { type: string; contentIndex?: number } };
       const snapshot = get()[snapshotKey]; if (!snapshot) return;

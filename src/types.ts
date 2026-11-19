@@ -40,7 +40,7 @@ export interface SessionSnapshot {
   aggregate: Stats & { sessions: number };
   thinkingLevels: string[]; systemPrompt: string;
 }
-export interface ModelInfo { id: string; provider: string; name: string; contextWindow: number; reasoning: boolean }
+export interface ModelInfo { id: string; provider: string; name: string; contextWindow: number; reasoning: boolean; thinkingLevels: string[]; thinking: string }
 export interface ModelProbeLog { at:string; kind:"info"|"request"|"response"|"output"|"result"|"error"; data:unknown }
 export interface OAuthState { provider: string; url?: string; message?: string; userCode?: string; status: "waiting" | "complete" | "error" | "cancelled" }
 export interface UiRequest { id: string; sessionId?: string; type: string; title: string; message?: string; options?: string[]; url?: string; oauth?: { provider: string; kind: string; placeholder?: string; labels?: string[] } }

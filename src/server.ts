@@ -10,6 +10,7 @@ import { Runtime } from "./runtime.ts";
 import { api, json, workspace } from "./api.ts";
 import { inside, safeError, sessionRoot } from "./storage.ts";
 import { parseArgs } from "node:util";
+import { installSessionTiming } from "./session-timing.ts";
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
 if (values.help || values.version) {
@@ -20,6 +21,7 @@ if (values.help || values.version) {
 if (positionals.length && (positionals.length !== 1 || positionals[0] !== "web")) throw new Error("仅支持 web 命令，使用 --help 查看用法");
 let port = Number(values.port ?? (process.env.PORT || process.env.PI_DESK_PORT || 30140));
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("无效端口");
+await installSessionTiming();
 const runtime = new Runtime();
 mkdirSync(sessionRoot, { recursive: true });
 let syncTimer: ReturnType<typeof setTimeout> | undefined;

@@ -10,6 +10,7 @@ import {
   defineTool, type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { Store, agentDir, deskDir, sessionRoot, safeError, inside } from "./storage.ts";
 import type { Mode, SessionRecord, SessionSnapshot, ServerEvent, TraceEntry, RunMetrics, UiRequest, ChatMessage, PendingPrompt, DraftImage, ExecutionState, ModelProbeLog } from "./types.ts";
 import { subagentTool } from "./subagents.ts";
@@ -18,6 +19,7 @@ import { Scheduler } from "./schedules.ts";
 import { RemoteManager } from "./remote.ts";
 import { remoteTools } from "./remote-tools.ts";
 import { BrowserHost, browserTool } from "./browser.ts";
+import { measureSessionLoad, traceSessionLoad } from "./session-timing.ts";
 
 const themeTokens = JSON.parse(readFileSync(join(getPackageDir(), "dist/modes/interactive/theme/dark.json"), "utf8")).colors;
 const plainColors = Object.fromEntries(Object.keys(themeTokens).map(key => [key, ""]));
@@ -81,7 +83,7 @@ export class Runtime {
   emit(event: ServerEvent) { for (const listener of this.listeners) listener(event); }
   changed(record?: SessionRecord) { this.store.save(); this.emit({ type: "state", data: this.store.state }); if (record) this.emit({ type: "record", sessionId: record.id, data: record }); }
   modelRuntime() { return this.catalog ??= ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }); }
-  async models(id?: string, refresh=false) {
+  async models(id?: string, refresh=false, workspaceId?: string) {
     const models = id ? (await this.get(id)).session.modelRuntime : await this.modelRuntime();
     const options={allowNetwork:refresh,force:refresh,signal:refresh?AbortSignal.timeout(15000):undefined};
     let result;
@@ -90,10 +92,11 @@ export class Runtime {
       const results=await Promise.all(models.getProviders().filter(p=>models.hasConfiguredAuth(p.id)).map(p=>this.withProxy({provider:p.id,id:""},()=>models.refresh({...options,providers:[p.id]}))));
       result={aborted:options.signal!.aborted||results.some(r=>r.aborted),errors:new Map(results.flatMap(r=>[...r.errors]))};
     }else result=await this.withProxy({provider:"",id:""},()=>models.refresh(options));
-    const settings = SettingsManager.create(agentDir, agentDir).getGlobalSettings();
+    const workspace=this.store.state.workspaces.find(w=>w.id===workspaceId);
+    const settings = SettingsManager.create(workspace ? workspace.remote ? join(deskDir,"ssh-workspaces",workspace.id) : workspace.path : agentDir, agentDir).getSettings();
     if(!this.store.state.preferences.modelSelection){const selection:Record<string,string[]>={};for(const model of models.getAvailableSnapshot())(selection[model.provider]??=[]).push(model.id);this.store.state.preferences.modelSelection=selection;this.changed();}
     const selection=this.store.state.preferences.modelSelection;
-    const info=(m:ReturnType<ModelRuntime["getModels"]>[number])=>({id:m.id,provider:m.provider,name:m.name,contextWindow:m.contextWindow,maxTokens:m.maxTokens,reasoning:Boolean(m.reasoning)});
+    const info=(m:ReturnType<ModelRuntime["getModels"]>[number])=>({id:m.id,provider:m.provider,name:m.name,contextWindow:m.contextWindow,maxTokens:m.maxTokens,reasoning:Boolean(m.reasoning),thinkingLevels:getSupportedThinkingLevels(m),thinking:clampThinkingLevel(m,settings.modelThinkingLevels?.[`${m.provider}/${m.id}`]??settings.defaultThinkingLevel??"medium")});
     const available=models.getAvailableSnapshot();
     const providers=await Promise.all(models.getProviders().map(async p=>({id:p.id,name:p.name,configured:models.hasConfiguredAuth(p.id),oauth:Boolean(p.auth.oauth?.login),apiKey:Boolean(p.auth.apiKey?.login),authType:(await models.checkAuth(p.id))?.type})));
     const visibleProviders=new Set(providers.filter(p=>p.configured||selection[p.id]!==undefined).map(p=>p.id));
@@ -224,7 +227,7 @@ export class Runtime {
     this.store.state.sessions.unshift(record); this.changed(record); return record;
   }
   async get(id: string): Promise<Live> {
-    const pending = this.creating.get(id); if (pending) return pending;
+    const pending = this.creating.get(id); if (pending) return measureSessionLoad("runtime.wait-existing-load", () => pending);
     const existing = this.live.get(id);
     const record = this.store.record(id);
     if (existing && existing.session.isIdle && record.status !== "running" && !this.remote.workspaceFor(id) && record.sessionPath && existing.fileVersion !== sessionVersion(record.sessionPath)) {
@@ -236,7 +239,14 @@ export class Runtime {
     const source = record.sessionPath && existsSync(record.sessionPath) ? realpathSync(record.sessionPath) : undefined;
     const key = source && (process.platform === "win32" ? source.toLowerCase() : source);
     if (key) { const owner = this.sessionOwners.get(key); if (owner && owner !== id) throw new Error("此原生会话已在另一个入口打开，请切换使用或创建独立分支"); this.sessionOwners.set(key, id); }
-    const promise = Promise.resolve().then(async()=>{if(existing){await this.release(existing,"reload");this.live.delete(id);}return this.load(id);}); this.creating.set(id, promise);
+    const promise = Promise.resolve().then(() => traceSessionLoad(id, () => measureSessionLoad("runtime.load", async () => {
+      if (existing) {
+        await measureSessionLoad("runtime.release", () => this.release(existing, "reload"));
+        this.live.delete(id);
+      }
+      return this.load(id);
+    })));
+    this.creating.set(id, promise);
     try { const live = await promise; const file = live.session.sessionManager.getSessionFile(); if (file) this.sessionOwners.set(process.platform === "win32" ? file.toLowerCase() : file, id); return live; }
     catch (error) { if (key && this.sessionOwners.get(key) === id) this.sessionOwners.delete(key); throw error; }
     finally { this.creating.delete(id); }
@@ -252,7 +262,7 @@ export class Runtime {
     const minimal = record.mode === "minimal";
     const overrides={...this.store.state.preferences.pluginOverrides};
     if(record.worktree&&!workspace.remote)for(const [path,enabled] of Object.entries(overrides))if(!path.startsWith("builtin:")&&inside(workspace.path,path))overrides[resolve(record.cwd,relative(workspace.path,path))]=enabled;
-    const plugins=minimal?[]:await pluginCatalog(contextCwd,overrides);
+    const plugins=minimal?[]:await measureSessionLoad("plugins.discover", () => pluginCatalog(contextCwd,overrides));
     const settings = minimal ? SettingsManager.inMemory({ ...diskSettings.getSettings(), packages: [], extensions: [], skills: [] }) : diskSettings;
     if(this.store.state.preferences.maxRetries!==undefined)settings.applyOverrides({retry:{enabled:true,maxRetries:this.store.state.preferences.maxRetries}});
     let loader:DefaultResourceLoader;
@@ -267,16 +277,16 @@ export class Runtime {
     });
     const nativeSkills=loader.getSkills.bind(loader);
     loader.getSkills=()=>{const result=nativeSkills();return {...result,skills:result.skills.filter(s=>!this.store.state.preferences.disabledSkills?.includes(s.name)&&existsSync(s.filePath))};};
-    await loader.reload({ resolveProjectTrust: async () => true });
+    await measureSessionLoad("resources.reload", () => loader.reload({ resolveProjectTrust: async () => true }));
     const manager = record.sessionPath && existsSync(record.sessionPath)
-      ? SessionManager.open(record.sessionPath, undefined, contextCwd)
+      ? measureSessionLoad("history.open", () => SessionManager.open(record.sessionPath!, undefined, contextCwd))
       : SessionManager.create(contextCwd, workspace.remote?join(sessionRoot,"--ssh-"+workspace.id+"--"):join(sessionRoot, `--${record.cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`));
     if (record.sessionPath && !workspace.remote) {
       const context = manager.buildSessionContext();
       record.model = context.model ? `${context.model.provider}/${context.model.modelId}` : undefined;
       record.thinking = context.thinkingLevel;
     }
-    const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+    const modelRuntime = await measureSessionLoad("models.load", () => ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }));
     record.modelRequests = 0; record.modelRequestsEstimated = false;
     let requested = false;
     for (const entry of manager.getEntries()) {
@@ -307,10 +317,10 @@ export class Runtime {
       return {content:[{type:"text" as const,text:answer===undefined?"The user cancelled this question.":String(answer)}],details:{answer,cancelled:answer===undefined}};
     }});
     const customTools = [...(remote?.tools||[]),...(minimal?[]:[...(subagents?[subagentTool(this,record)]:[]),...(overrides["builtin:question"]!==false?[question]:[]),...(!record.readOnly&&overrides["builtin:browser"]!==false?[browserTool(this,record)]:[])])];
-    const result = await createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
+    const result = await measureSessionLoad("sdk.create", () => createAgentSession({ cwd: contextCwd, agentDir, sessionManager: manager, settingsManager: settings, resourceLoader: loader, modelRuntime, model,
       tools: record.readOnly ? (minimal ? ["read"] : ["read", "grep", "find", "ls", ...(subagents ? ["subagent"] : []),...(overrides["builtin:question"]!==false?["request_user_input"]:[])]) : minimal ? ["read", "bash", "edit", "write"] : undefined,
       customTools, excludeTools: workspace.remote?["powershell"]:undefined,
-    });
+    }));
     if (result.extensionsResult.errors.length) { result.session.dispose(); throw new Error("扩展加载失败：" + result.extensionsResult.errors.map(e => safeError(e.error)).join("；")); }
     const selected = record.model && modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model);
     if (selected && selected !== result.session.model) await result.session.setModel(selected);
@@ -318,7 +328,7 @@ export class Runtime {
     this.live.set(id, live);
     live.metrics = (this.traces(id).filter(e => e.type === "settled").at(-1)?.data as RunMetrics) || {};
     result.session.subscribe(event => this.onEvent(record, live, event));
-    try { await result.session.bindExtensions({ mode: "rpc", uiContext: this.ui(id), onError: error => { record.error = safeError(error); this.emit({ type: "notice", sessionId: id, data: { type: "error", message: record.error } }); this.changed(record); } }); }
+    try { await measureSessionLoad("plugins.bind", () => result.session.bindExtensions({ mode: "rpc", uiContext: this.ui(id), onError: error => { record.error = safeError(error); this.emit({ type: "notice", sessionId: id, data: { type: "error", message: record.error } }); this.changed(record); } })); }
     catch (error) { await this.release(live, "quit").catch(() => {}); this.live.delete(id); throw error; }
     if (record.thinking) result.session.setThinkingLevel(record.thinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
     if (!record.sessionPath && record.title !== "新会话") result.session.setSessionName(record.title);
@@ -425,11 +435,37 @@ export class Runtime {
     }, 100);
     live.progressTimer.unref();
   }
+  history(id: string): ChatMessage[] | null {
+    const record = this.store.record(id);
+    const live = this.live.get(id);
+    if (live && !this.creating.has(id) && !live.resourcesStale && live.fileVersion === sessionVersion(record.sessionPath)) return null;
+    if (!record.sessionPath) return [];
+    if (!existsSync(record.sessionPath)) throw new Error("Pi 会话文件已删除，请刷新会话列表");
+    const manager = measureSessionLoad("history.open", () => SessionManager.open(record.sessionPath!, undefined, record.cwd));
+    const {persisted,hidden}=this.historyMessages(manager);
+    return persisted.filter(message=>!hidden.has(message.entryId!));
+  }
+  private historyMessages(manager: SessionManager) {
+    return measureSessionLoad("history.project", () => {
+      // Display the full branch, including compacted/excluded history; the SDK controls model context.
+      const branch = manager.getBranch();
+      const excluded = new Set<string>(); const hidden = new Set<string>(); const replacements = new Map<string,ChatMessage["content"]>();
+      for(const entry of branch) {
+        if(entry.type === "context_edit") { if(entry.replacement === null) excluded.add(entry.targetId); else { excluded.delete(entry.targetId); replacements.set(entry.targetId,entry.replacement.content as ChatMessage["content"]); } }
+        if(entry.type === "custom" && entry.customType === "pi-desk-message-delete") { const target=(entry.data as {entryId?:string}|undefined)?.entryId; if(target)hidden.add(target); }
+      }
+      const persisted = branch.flatMap(sourceEntry => {
+        const estimatedTokensAfter=sourceEntry.type==="compaction"?buildSessionProjection(branch,sourceEntry.id).messages.reduce((sum,m)=>sum+estimateTokens(m),0):undefined;
+        return sessionEntryToContextMessages(sourceEntry).map(message=>({...message, ...(message.role==="compactionSummary"?{estimatedTokensAfter}:{}), ...(replacements.has(sourceEntry.id)?{content:replacements.get(sourceEntry.id)}:{}), entryId:sourceEntry.id, completedAt:Date.parse(sourceEntry.timestamp), contextExcluded:excluded.has(sourceEntry.id)} as ChatMessage));
+    });
+    return {persisted,hidden};
+    });
+  }
   async snapshot(id: string): Promise<SessionSnapshot> {
     const record = this.store.record(id);
     const { session, loader, metrics, streaming, tools } = await this.get(id);
-    const stats = session.getSessionStats();
-    const traces = this.traces(id);
+    const stats = measureSessionLoad("snapshot.stats", () => session.getSessionStats());
+    const traces = measureSessionLoad("snapshot.traces", () => this.traces(id));
     const retry=traces.findLast(trace=>["auto_retry_start","auto_retry_end","settled","run_start"].includes(trace.type));
     const timing = new Map(traces.filter(t=>t.type === "assistant").map(t=>[(t.data as {messageTimestamp?:number}|undefined)?.messageTimestamp,t]));
     const toolTiming = new Map(traces.filter(t=>t.type === "tool_end" || t.type === "tool_error").map(t=>[(t.data as {toolCallId?:string}|undefined)?.toolCallId,t.durationMs]));
@@ -471,17 +507,7 @@ export class Runtime {
       aggregate.modelRequestsEstimated ||= child.modelRequestsEstimated;
       for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) aggregate.tokens[key] += totals.tokens[key];
     }
-    // Display the full branch, including compacted/excluded history; the SDK controls model context.
-    const branch = session.sessionManager.getBranch();
-    const excluded = new Set<string>(); const hidden = new Set<string>(); const replacements = new Map<string,ChatMessage["content"]>();
-    for(const entry of branch) {
-      if(entry.type === "context_edit") { if(entry.replacement === null) excluded.add(entry.targetId); else { excluded.delete(entry.targetId); replacements.set(entry.targetId,entry.replacement.content as ChatMessage["content"]); } }
-      if(entry.type === "custom" && entry.customType === "pi-desk-message-delete") { const target=(entry.data as {entryId?:string}|undefined)?.entryId; if(target)hidden.add(target); }
-    }
-    const persisted = branch.flatMap(sourceEntry => {
-      const estimatedTokensAfter=sourceEntry.type==="compaction"?buildSessionProjection(branch,sourceEntry.id).messages.reduce((sum,m)=>sum+estimateTokens(m),0):undefined;
-      return sessionEntryToContextMessages(sourceEntry).map(message=>({...message, ...(message.role==="compactionSummary"?{estimatedTokensAfter}:{}), ...(replacements.has(sourceEntry.id)?{content:replacements.get(sourceEntry.id)}:{}), entryId:sourceEntry.id, completedAt:Date.parse(sourceEntry.timestamp), contextExcluded:excluded.has(sourceEntry.id)} as ChatMessage));
-    });
+    const {persisted,hidden} = this.historyMessages(session.sessionManager);
     const key = (m:ChatMessage) => `${m.role}/${m.timestamp}/${m.toolCallId||""}`;
     const known = new Set(persisted.map(key));
     const messages = persisted.filter(m=>!hidden.has(m.entryId!));
@@ -728,7 +754,10 @@ export class Runtime {
   private async release(live: Live, reason: "quit" | "reload") {
     clearTimeout(live.progressTimer);
     await live.session.abort();
-    try { await live.session.extensionRunner.emit({ type: "session_shutdown", reason }); } finally { live.session.dispose(); }
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    // ponytail: give extension cleanup 5 seconds; SDK disposal must still finish if a hook never returns.
+    try { await Promise.race([live.session.extensionRunner.emit({ type: "session_shutdown", reason }),new Promise<void>(resolve=>{timer=setTimeout(resolve,5000);})]); }
+    finally { clearTimeout(timer);live.session.dispose(); }
   }
   async shutdown() { this.closing = true; this.scheduler.close(); await this.remote.close(); await this.browser.close(); for (const controller of this.authControllers.values()) controller.abort(); for (const pending of this.requests.values()) pending.resolve(undefined); await Promise.allSettled([...this.live.values()].map(l => this.release(l, "quit"))); for (const record of this.store.state.sessions) if (record.status === "running") record.status = "paused"; await this.scheduler.drain(); await Promise.allSettled([...this.proxyAgents.values()].map(agent=>agent.destroy())); this.store.save(); }
 }

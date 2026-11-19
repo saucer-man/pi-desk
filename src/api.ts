@@ -16,8 +16,9 @@ import { git, agentDefinitions, delegate } from "./subagents.ts";
 import { skillCatalog, pluginCatalog, readPlugin, resources, readResource, mutateResource, modelConfig, mutateModelConfig, mcpCatalog, mcpDefinition, mutateMcp, debugMcp } from "./resources.ts";
 import { sshIdentity } from "./remote.ts";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { measureSessionLoad, traceSessionLoad } from "./session-timing.ts";
 
-export function json(res: ServerResponse, data: unknown, status = 200) { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); res.end(JSON.stringify(data, (key, value) => key === "cost" ? undefined : value)); }
+export function json(res: ServerResponse, data: unknown, status = 200) { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }); res.end(measureSessionLoad("response.serialize", () => JSON.stringify(data, (key, value) => key === "cost" ? undefined : value))); }
 async function body(req: IncomingMessage): Promise<Record<string, any>> {
   if (!req.headers["content-type"]?.startsWith("application/json")) throw new Error("请求必须使用 application/json");
   const chunks: Buffer[] = []; let size = 0;
@@ -155,7 +156,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     if(data.operation==="delete_provider"&&providerProxies){delete providerProxies[data.provider];runtime.changed();}
     const catalog = await runtime.models(); runtime.emit({ type: "models", data: catalog }); json(res, { ...modelConfig(), catalog }); return;
   }
-  if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined, url.searchParams.get("refresh")==="1")); return; }
+  if (path === "/api/models" && method === "GET") { json(res, await runtime.models(url.searchParams.get("sessionId") || undefined, url.searchParams.get("refresh")==="1", url.searchParams.get("workspaceId") || undefined)); return; }
   if (path === "/api/models/selection" && method === "POST") {const data=await body(req);json(res,await runtime.selectModels(text(data.provider,256),data.models));return;}
   if (path === "/api/models/discover" && method === "POST") {const data=await body(req),controller=new AbortController(),cancel=()=>controller.abort();res.on("close",cancel);try{json(res,await runtime.discoverModels(data,controller.signal));}finally{res.off("close",cancel);}return;}
   if (path === "/api/models/test" && method === "POST") {
@@ -235,12 +236,21 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   }
   if (resource === "sessions") {
     if (!id && method === "GET") { json(res, runtime.searchSessions(text(url.searchParams.get("search") ?? "", 1000))); return; }
-    if (!id && method === "POST") { const data = await body(req);if (!["standard", "minimal"].includes(data.mode)) throw new Error("无效模式"); json(res, runtime.create(text(data.workspaceId), data.mode, typeof data.model === "string" && data.model ? { model: data.model } : {})); return; }
+    if (!id && method === "POST") {
+      const data = await body(req);if (!["standard", "minimal"].includes(data.mode)) throw new Error("无效模式");
+      if(data.thinking!==undefined && !(await runtime.models(undefined,false,data.workspaceId)).models.find(m=>`${m.provider}/${m.id}`===data.model)?.thinkingLevels.includes(data.thinking))throw new Error("当前模型不支持此思考强度");
+      json(res, runtime.create(text(data.workspaceId), data.mode, {...(typeof data.model === "string" && data.model ? { model: data.model } : {}),...(data.thinking!==undefined?{thinking:data.thinking}:{})})); return;
+    }
     if (!id) throw new Error("缺少会话 id"); const record = runtime.store.record(id);
     if (!action && method === "DELETE") { json(res, await runtime.remove(id, url.searchParams.get("children") === "1")); return; }
     if (action === "read" && method === "POST") { record.unread=false;runtime.changed(record);json(res,{ok:true});return; }
     if (action === "composer" && method === "GET") { json(res, { text: record.draft, images: runtime.store.images(record.draftImages), pending: (record.pending || []).map(p => ({ ...p, images: runtime.store.images(p.images) })) }); return; }
-    if (!action && method === "GET") { json(res, await runtime.snapshot(id)); return; }
+    if (!action && method === "GET") {
+      const history = url.searchParams.get("history") === "1";
+      return traceSessionLoad(id, () => measureSessionLoad(history ? "request.history" : "request.snapshot", async () => {
+        json(res, history ? runtime.history(id) : await runtime.snapshot(id));
+      }));
+    }
     if (!action && method === "PATCH") {
       const data = await body(req);
       if (data.pinned !== undefined && typeof data.pinned !== "boolean") throw new Error("置顶状态必须是布尔值");
