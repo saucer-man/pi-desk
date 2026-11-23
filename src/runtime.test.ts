@@ -14,8 +14,15 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const cwd = join(temp, "project"); await mkdir(join(cwd, ".pi", "extensions"), { recursive: true }); await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   let active = 0, peak = 0; const seenTools: string[][] = []; const seenUsers: string[] = []; const seenContexts:string[]=[];
   const retryRequests=new Map<string,number>();
+  const quotaMessage="已达到 5 小时的使用上限。您的限额将在 2026-11-23 17:02:32 重置。[2026112315111678c70492d3d54238]";
+  let quotaRequests=0;
   const model = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    if(req.url==="/v1/responses") {
+      quotaRequests++;
+      res.writeHead(200,{"Content-Type":"text/event-stream"});
+      res.end(`event: response.failed\ndata: ${JSON.stringify({type:"response.failed",response:{status:"failed",error:{code:"rate_limit_exceeded",message:quotaMessage}}})}\n\n`);return;
+    }
     const request = JSON.parse(Buffer.concat(chunks).toString());
     seenTools.push((request.tools || []).map((tool: any) => tool.function.name));
     const last = request.messages.at(-1); const content = [...request.messages].reverse().find((m: any) => m.role === "user")?.content; const user = Array.isArray(content) ? content.map((p: any) => p.text || "").join("") : String(content || "");
@@ -451,6 +458,15 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
     assert.equal((await runtime.snapshot(failedGoal.id)).messages.at(-1)?.errorMessage,errorMessage);
   } finally { releaseFailure();failingStream.mock.restore();failedSession.setAutoRetryEnabled(false); }
   await runtime.prompt(failedGoal.id,"manual recovery after OAuth error");assert.equal(failedGoal.status,"idle");assert.equal(failedGoal.error,undefined);assert.ok(failedGoal.pending?.every(p=>p.paused));
+  const modelPath=join(process.env.PI_CODING_AGENT_DIR!,"models.json"),modelConfig=JSON.parse(await readFile(modelPath,"utf8"));
+  modelConfig.providers["智谱官方"]={...modelConfig.providers.mock,api:"openai-responses",models:[{...modelConfig.providers.mock.models[0],id:"glm-5.3"}]};
+  await writeFile(modelPath,JSON.stringify(modelConfig));
+  runtime.store.state.preferences.maxRetries=3;
+  const quota=runtime.create("project","minimal");quota.model="智谱官方/glm-5.3";
+  (await runtime.get(quota.id)).session.settingsManager.applyOverrides({retry:{baseDelayMs:1,maxAgentDelayMs:1}});
+  await runtime.prompt(quota.id,"fixed-window quota fixture");
+  assert.equal(quotaRequests,1);assert.equal(quota.status,"error");assert.equal(quota.error,`rate_limit_exceeded: ${quotaMessage}`);
+  assert.equal(runtime.traces(quota.id).filter(e=>e.type==="auto_retry_start").length,0);
   for(const [prompt,limit,requests,status] of [["retry-http-success",3,3,"idle"],["retry-http-exhausted",1,2,"error"],["retry-invalid-auth",3,1,"error"],["retry-http-disabled",0,1,"error"]] as const){
     runtime.store.state.preferences.maxRetries=limit;
     const r=runtime.create("project","minimal"),live=await runtime.get(r.id);

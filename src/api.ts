@@ -10,7 +10,7 @@ import { delimiter, isAbsolute, dirname } from "node:path";
 import { statSync } from "node:fs";
 import { Runtime } from "./runtime.ts";
 import { openExternal } from "./browser.ts";
-import { versions, latestRelease, diagnostics } from "./maintenance.ts";
+import { versions, sdkVersion, latestRelease, diagnostics } from "./maintenance.ts";
 import { agentDir, deskDir, directory, inside, safeError } from "./storage.ts";
 import { git, agentDefinitions, delegate } from "./subagents.ts";
 import { skillCatalog, pluginCatalog, readPlugin, resources, readResource, mutateResource, modelConfig, mutateModelConfig, mcpCatalog, mcpDefinition, mutateMcp, debugMcp } from "./resources.ts";
@@ -70,7 +70,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   if(path==="/api/open-url"&&method==="POST"){const data=await body(req);await openExternal(text(data.url,10000));json(res,{opened:true});return;}
   if(path==="/api/version"&&method==="GET"){json(res,{...versions(),...(url.searchParams.get("check")==="1"?{latest:await latestRelease()}:{})});return;}
   if(path==="/api/diagnostics"&&method==="GET"){res.setHeader("Content-Disposition","attachment; filename=pi-desk-diagnostics.json");json(res,await diagnostics(runtime));return;}
-  if (path === "/api/health") { json(res, { name: "Pi Desk", runtime: "Node.js", sdk: "1.4.0", agentDir, deskDir }); return; }
+  if (path === "/api/health") { json(res, { name: "Pi Desk", runtime: "Node.js", sdk: sdkVersion, agentDir, deskDir }); return; }
   if (path === "/api/events" && method === "GET") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     let closed=false;
@@ -178,7 +178,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
       const controller = new AbortController(); runtime.authControllers.set(provider,controller);
       let auth:import("./types.ts").OAuthState={provider,status:"waiting"};
       const update=(data:Partial<typeof auth>)=>{auth={...auth,...data};if(runtime.authControllers.get(provider)===controller)runtime.emit({type:"auth",data:auth});};
-      void runtime.withProxy({provider,id:""},()=>models.login(provider, "oauth", {
+      void runtime.withProxy(provider,()=>models.login(provider, "oauth", {
         signal: controller.signal,
         prompt: async prompt => { const result = await runtime.ask({ type: prompt.type === "select" ? "select" : prompt.type === "secret" ? "secret" : "input", title: prompt.message, url:auth.url, options: prompt.type === "select" ? prompt.options.map(o => o.id) : undefined, oauth:{provider,kind:prompt.type,placeholder:"placeholder" in prompt?prompt.placeholder:undefined,labels:prompt.type==="select"?prompt.options.map(o=>o.label):undefined} }, AbortSignal.any([controller.signal,...(prompt.signal?[prompt.signal]:[])])); if (result === undefined) throw new Error("登录已取消"); return String(result); },
         notify: event => { if (event.type === "auth_url") update({url:event.url,message:event.instructions}); else if (event.type === "device_code") update({url:event.verificationUri,userCode:event.userCode}); else update({message:event.message}); },

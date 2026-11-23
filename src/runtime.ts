@@ -10,6 +10,7 @@ import {
   defineTool, type AgentSession, type AgentSessionEvent, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { Store, agentDir, deskDir, sessionRoot, safeError, inside } from "./storage.ts";
 import type { Mode, SessionRecord, SessionSnapshot, ServerEvent, TraceEntry, RunMetrics, UiRequest, ChatMessage, PendingPrompt, DraftImage, ExecutionState, ModelProbeLog } from "./types.ts";
@@ -27,7 +28,7 @@ const webTheme = new Theme(plainColors as ConstructorParameters<typeof Theme>[0]
 const sessionKey = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
 function sessionVersion(path?: string) { const stat = path && statSync(path, { throwIfNoEntry: false }); return stat ? `${stat.mtimeMs}:${stat.size}` : undefined; }
 
-// Google adapters use global fetch; async context keeps concurrent model routes isolated.
+// Provider adapters and OAuth can use global fetch. Keep their routes isolated per request.
 const proxyContext = new AsyncLocalStorage<Agent | ProxyAgent>();
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (input, init) => {
@@ -65,20 +66,19 @@ export class Runtime {
   private discovering?: Promise<void>;
   private discoverAgain = false;
   private proxyAgents = new Map<string, Agent | ProxyAgent>();
-  private proxyRoute(model: {provider:string;id:string}) {
+  private proxyRoute(provider: string) {
     const config=this.store.state.preferences.proxy;
-    if(config?.providers&&Object.hasOwn(config.providers,model.provider))return {source:"provider",proxy:config.providers[model.provider]};
-    return {source:config?.global?"global":"process",proxy:config?.global};
+    if(config?.providers&&Object.hasOwn(config.providers,provider))return {source:"provider",proxy:config.providers[provider]};
+    return {source:"global",proxy:config?.global||null};
   }
-  withProxy<T>(model: {provider:string;id:string}, request:(env?:Record<string,string>)=>T): T {
-    const {proxy}=this.proxyRoute(model);
-    if(proxy===undefined || proxy==="")return proxyContext.exit(()=>request());
+  withProxy<T>(provider: string, request:(env:Record<string,string>,proxied:boolean)=>T): T {
+    const {proxy}=this.proxyRoute(provider);
     const route=proxy??"";
     let agent=this.proxyAgents.get(route);
     if(!agent){agent=proxy===null?new Agent():new ProxyAgent({uri:proxy,proxyTunnel:true});this.proxyAgents.set(route,agent);}
     // Bedrock uses Node HTTP agents instead of fetch. Override both env casings and NO_PROXY.
     const env={http_proxy:route,https_proxy:route,all_proxy:route,HTTP_PROXY:route,HTTPS_PROXY:route,ALL_PROXY:route,no_proxy:proxy===null?"*":" ",NO_PROXY:proxy===null?"*":" "};
-    return proxyContext.run(agent,()=>request(env));
+    return proxyContext.run(agent,()=>request(env,proxy!==null));
   }
   emit(event: ServerEvent) { for (const listener of this.listeners) listener(event); }
   changed(record?: SessionRecord) { this.store.save(); this.emit({ type: "state", data: this.store.state }); if (record) this.emit({ type: "record", sessionId: record.id, data: record }); }
@@ -90,16 +90,16 @@ export class Runtime {
     let result;
     if(refresh&&Object.keys(this.store.state.preferences.proxy?.providers||{}).length){
       await models.refresh({allowNetwork:false});
-      const results=await Promise.all(models.getProviders().filter(p=>models.hasConfiguredAuth(p.id)).map(p=>this.withProxy({provider:p.id,id:""},()=>models.refresh({...options,providers:[p.id]}))));
+      const results=await Promise.all(models.getProviders().filter(p=>models.hasConfiguredAuth(p.id)).map(p=>this.withProxy(p.id,()=>models.refresh({...options,providers:[p.id]}))));
       result={aborted:options.signal!.aborted||results.some(r=>r.aborted),errors:new Map(results.flatMap(r=>[...r.errors]))};
-    }else result=await this.withProxy({provider:"",id:""},()=>models.refresh(options));
+    }else result=await this.withProxy("",()=>models.refresh(options));
     const workspace=this.store.state.workspaces.find(w=>w.id===(record?.workspaceId||workspaceId));
     const settings = SettingsManager.create(workspace?.remote ? join(deskDir,"ssh-workspaces",workspace.id) : record?.cwd||workspace?.path||agentDir, agentDir).getSettings();
     if(!this.store.state.preferences.modelSelection){const selection:Record<string,string[]>={};for(const model of models.getAvailableSnapshot())(selection[model.provider]??=[]).push(model.id);this.store.state.preferences.modelSelection=selection;this.changed();}
     const selection=this.store.state.preferences.modelSelection;
     const info=(m:ReturnType<ModelRuntime["getModels"]>[number])=>({id:m.id,provider:m.provider,name:m.name,contextWindow:m.contextWindow,maxTokens:m.maxTokens,reasoning:Boolean(m.reasoning),thinkingLevels:getSupportedThinkingLevels(m),thinking:clampThinkingLevel(m,settings.modelThinkingLevels?.[`${m.provider}/${m.id}`]??settings.defaultThinkingLevel??"medium")});
     const available=models.getAvailableSnapshot();
-    const providers=await Promise.all(models.getProviders().map(async p=>({id:p.id,name:p.name,configured:models.hasConfiguredAuth(p.id),oauth:Boolean(p.auth.oauth?.login),apiKey:Boolean(p.auth.apiKey?.login),authType:(await models.checkAuth(p.id))?.type})));
+    const providers=await Promise.all(models.getProviders().map(async p=>({id:p.id,name:p.name,configured:models.hasConfiguredAuth(p.id),oauth:Boolean(p.auth.oauth?.login),apiKey:Boolean(p.auth.apiKey?.login),authType:(await this.withProxy(p.id,()=>models.checkAuth(p.id)))?.type})));
     const visibleProviders=new Set(providers.filter(p=>p.configured||selection[p.id]!==undefined).map(p=>p.id));
     return { defaultProvider:settings.defaultProvider,defaultModel:settings.defaultModel,models:available.filter(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)).map(info),allModels:models.getModels().filter(m=>visibleProviders.has(m.provider)).map(info),selection,providers,warning:[models.getError(),...Array.from(result.errors,([provider,error])=>`${provider}: ${safeError(error)}`),result.aborted?"模型刷新超时，请重试":undefined].filter(Boolean).join("；")||undefined,agentDir };
   }
@@ -123,14 +123,15 @@ export class Runtime {
   }
   async discoverModels(draft:Record<string,any>,signal?:AbortSignal) {
     const prepared=modelDraft(draft),models=await this.probeRuntime(draft),model=models.getModel(prepared.id,prepared.model.id)!;
-    const auth=await this.withProxy(model,()=>models.getAuth(model,{signal})),base=prepared.provider.baseUrl||auth?.auth.baseUrl||model.baseUrl;
-    if(!base)throw new Error("请填写 API 地址");
-    const protocol=prepared.provider.api||model.api,root=base.replace(/\/+$/,"");
-    const path=protocol==="anthropic-messages"&&!root.endsWith("/v1")?"/v1/models":"/models";
-    const headers:Record<string,string>={Accept:"application/json",...prepared.provider.headers,...auth?.auth.headers};
-    if(auth?.auth.apiKey){if(protocol==="anthropic-messages")headers["x-api-key"]=auth.auth.apiKey;else if(protocol==="google-generative-ai")headers["x-goog-api-key"]=auth.auth.apiKey;else headers.Authorization=`Bearer ${auth.auth.apiKey}`;}
-    if(protocol==="anthropic-messages")headers["anthropic-version"]="2023-06-01";
-    return this.withProxy(model,async()=>{
+    const provider=draft.originalProvider?.trim()||model.provider;
+    return this.withProxy(provider,async env=>{
+      const auth=await models.getAuth(model,{signal,env}),base=prepared.provider.baseUrl||auth?.auth.baseUrl||model.baseUrl;
+      if(!base)throw new Error("请填写 API 地址");
+      const protocol=prepared.provider.api||model.api,root=base.replace(/\/+$/,"");
+      const path=protocol==="anthropic-messages"&&!root.endsWith("/v1")?"/v1/models":"/models";
+      const headers:Record<string,string>={Accept:"application/json",...prepared.provider.headers,...auth?.auth.headers};
+      if(auth?.auth.apiKey){if(protocol==="anthropic-messages")headers["x-api-key"]=auth.auth.apiKey;else if(protocol==="google-generative-ai")headers["x-goog-api-key"]=auth.auth.apiKey;else headers.Authorization=`Bearer ${auth.auth.apiKey}`;}
+      if(protocol==="anthropic-messages")headers["anthropic-version"]="2023-06-01";
       const response=await fetch(root+path,{headers,signal:AbortSignal.any([AbortSignal.timeout(15000),...(signal?[signal]:[])])});
       if(!response.ok)throw new Error(`拉取模型失败（HTTP ${response.status}）`);
       const value=await response.json() as any,items=Array.isArray(value)?value:value.data||value.models;
@@ -142,34 +143,33 @@ export class Runtime {
     const models=await this.probeRuntime(options.draft,sessionId);await models.refresh({allowNetwork:false});
     const model=models.getModel(provider,id);if(!model)throw new Error("模型不存在，请刷新后重试");
     const started=performance.now(),signal=AbortSignal.any([AbortSignal.timeout(15000),...(options.signal?[options.signal]:[])]);
-    const connection=()=>{const {source,proxy}=this.proxyRoute(model);return {source,mode:proxy===null?"direct":proxy?"proxy":"process",url:proxy||undefined,...(proxy===undefined||proxy===""?{environment:Object.fromEntries(["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy","NODE_USE_ENV_PROXY","NODE_OPTIONS"].map(key=>[key,process.env[key]])),execArgv:process.execArgv}:{})};};
+    const route=options.draft?.originalProvider?.trim()||model.provider;
+    const {source,proxy}=this.proxyRoute(route),connection={source,mode:proxy===null?"direct":"proxy",url:proxy||undefined};
     const log=(kind:ModelProbeLog["kind"],data:unknown)=>{
       const seen=new WeakSet<object>();
       options.log?.({at:new Date().toISOString(),kind,data:JSON.parse(JSON.stringify(data,(_key,value)=>{
         if(value&&typeof value==="object"){if(seen.has(value))return "[Circular]";seen.add(value);if(value instanceof Error)return {name:value.name,...Object.fromEntries(Object.getOwnPropertyNames(value).map(key=>[key,(value as any)[key]]))};}return typeof value==="bigint"?String(value):value;
       }))});
     };
-    log("info",{provider,model:id,prompt:options.prompt||"Reply with OK.",proxy:connection(),timeoutMs:15000,node:process.version,platform:process.platform,arch:process.arch});
+    log("info",{provider,model:id,prompt:options.prompt||"Reply with OK.",proxy:connection,timeoutMs:15000,node:process.version,platform:process.platform,arch:process.arch});
     let transportError:unknown,status:number|undefined;
-    try {
-      const auth=await this.withProxy(model,()=>models.getAuth(model,{signal}));
+    try { return await this.withProxy(route,async env=>{
+      const auth=await models.getAuth(model,{signal,env});
       let sawHTTP=false;
       const loggedFetch:typeof fetch=async(input,init)=>{
         const request=input instanceof Request?input:undefined,url=String(request?.url||input),headers=new Headers(init?.headers||request?.headers);
         const body=typeof init?.body==="string"?init.body:request?await request.clone().text():undefined;
-        log("request",{method:init?.method||request?.method||"POST",url,headers:Object.fromEntries(headers),body,proxy:connection()});
+        log("request",{method:init?.method||request?.method||"POST",url,headers:Object.fromEntries(headers),body,proxy:connection});
         try{const response=await fetch(input,init);sawHTTP=true;status=response.status;log("response",{url:response.url,status,headers:Object.fromEntries(response.headers)});return response;}
         catch(error){transportError=error;throw error;}
       };
-      const result=await this.withProxy(model,async env=>{
-        const usesFetch=/^(openai|anthropic|google)/.test(model.api);
-        const stream=models.streamSimple(model,{messages:[{role:"user",content:[{type:"text",text:options.prompt||"Reply with OK."}],timestamp:Date.now()}]},{maxTokens:256,maxRetries:0,reasoning:"minimal",signal,transport:"sse",...(env?{env}:{}),...(usesFetch?{fetch:loggedFetch}:{}),onPayload:payload=>{if(!usesFetch)log("request",{api:model.api,baseUrl:auth?.auth.baseUrl||model.baseUrl,payload});},onResponse:response=>{status=response.status;if(!sawHTTP)log("response",response);},onProviderStreamEvent:event=>{log("response",{event});}});
-        for await(const event of stream)if(event.type==="text_delta")log("output",event.delta);
-        return stream.result();
-      });
+      const usesFetch=/^(openai|azure-openai|anthropic|google|mistral)/.test(model.api);
+      const stream=models.streamSimple(model,{messages:[{role:"user",content:[{type:"text",text:options.prompt||"Reply with OK."}],timestamp:Date.now()}]},{maxTokens:256,maxRetries:0,reasoning:"minimal",signal,transport:"sse",env,...(usesFetch?{fetch:loggedFetch}:{}),onPayload:payload=>{if(!usesFetch)log("request",{api:model.api,baseUrl:auth?.auth.baseUrl||model.baseUrl,payload,proxy:connection});},onResponse:response=>{status=response.status;if(!sawHTTP)log("response",response);},onProviderStreamEvent:event=>{log("response",{event});}});
+      for await(const event of stream)if(event.type==="text_delta")log("output",event.delta);
+      const result=await stream.result();
       if(result.stopReason==="error"||result.stopReason==="aborted")throw new Error(result.errorMessage||"模型连接测试已取消或超时",{cause:transportError});
       const value={durationMs:Math.round(performance.now()-started),status,text:result.content.filter(p=>p.type==="text").map(p=>p.text).join("")};log("result",value);return value;
-    } catch(error){const message=error instanceof Error?error.message:String(error);log("error",{message,error,status,proxy:connection(),aborted:signal.aborted,abortReason:signal.reason,durationMs:Math.round(performance.now()-started)});throw error;}
+    }); } catch(error){const message=error instanceof Error?error.message:String(error);log("error",{message,error,status,proxy:connection,aborted:signal.aborted,abortReason:signal.reason,durationMs:Math.round(performance.now()-started)});throw error;}
   }
   discover(): Promise<void> {
     this.discoverAgain = true;
@@ -308,8 +308,8 @@ export class Runtime {
       this.progress(id);
     };
     const stream = modelRuntime.stream.bind(modelRuntime); const streamSimple = modelRuntime.streamSimple.bind(modelRuntime);
-    modelRuntime.stream = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>stream(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"} as typeof options:options)); };
-    modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return this.withProxy(model,env=>streamSimple(model, context, env?{...options,env:{...options?.env,...env},transport:"sse"}:options)); };
+    modelRuntime.stream = (model, context, options) => { countRequest(model); return this.withProxy(model.provider,(env,proxied)=>stream(model, context, {...options,env:{...options?.env,...env},...(proxied?{transport:"sse"}:{})} as typeof options)); };
+    modelRuntime.streamSimple = (model, context, options) => { countRequest(model); return this.withProxy(model.provider,(env,proxied)=>streamSimple(model, context, {...options,env:{...options?.env,...env},...(proxied?{transport:"sse"}:{})})); };
     const selection=this.store.state.preferences.modelSelection;
     const model = record.model ? modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model) : !record.sessionPath&&selection ? modelRuntime.getAvailableSnapshot().find(m=>selection[m.provider]===undefined||selection[m.provider].includes(m.id)) : undefined;
     const subagents=record.depth<2&&overrides["builtin:subagent"]!==false;
@@ -323,6 +323,9 @@ export class Runtime {
       customTools, excludeTools: workspace.remote?["powershell"]:undefined,
     }));
     if (result.extensionsResult.errors.length) { result.session.dispose(); throw new Error("扩展加载失败：" + result.extensionsResult.errors.map(e => safeError(e.error)).join("；")); }
+    // Pi 1.6 recognizes Z.ai HTTP code 1308, but treats its Responses stream equivalent as throttling.
+    const isRetryable=result.session["_isRetryableError"].bind(result.session);
+    result.session["_isRetryableError"]=(message:AssistantMessage)=>isRetryable(message)&&!/\brate_limit_exceeded\b.*(?:已达到\s*\d+\s*小时的使用上限|usage limit.{0,120}reset)/is.test(message.errorMessage||"");
     const selected = record.model && modelRuntime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === record.model);
     if (selected && selected !== result.session.model) await result.session.setModel(selected);
     const live: Live = { session: result.session, loader, metrics: {}, runId: "", started: 0, turnStarted: 0, generationMs: 0, output: 0, tools: new Map(), widgets: {}, modelNeedsSelection: Boolean(record.model && !selected || result.modelFallbackMessage || !record.model&&!record.sessionPath&&selection&&!model) };

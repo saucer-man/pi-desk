@@ -5,6 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { Compile } from "typebox/compile";
 import { DefaultPackageManager, SettingsManager, getPackageDir, loadSkills, createCodemodeExtension, createToolSearchExtension, createMcpExtension, type InlineExtension } from "@earendil-works/pi-coding-agent";
+import { mcpNamespace } from "@earendil-works/pi-mcp";
 import { agentDir, inside, safeError } from "./storage.ts";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import type { McpCatalog, McpDefinition, McpDebugResult, PluginSummary } from "./types.ts";
@@ -143,7 +144,7 @@ export async function mcpDefinition(cwd:string,scope:unknown,name:string):Promis
 async function prepareMcp(cwd:string,data:Record<string,any>){
   const path=await mcpPath(cwd,data.scope),{doc,revision}=await mcpDocument(path);if(data.revision&&data.revision!==revision)throw new Error("配置文件已被修改，请重新打开详情后再保存或调试");
   const name=mcpName(data.name),original=data.original===undefined?undefined:mcpName(data.original);if(original&&!Object.hasOwn(doc.mcpServers||{},original))throw new Error("MCP 已不存在，请刷新列表");
-  const definition=protect(configObject(data.definition,"MCP 配置"),original?doc.mcpServers[original]:undefined,false,false);const {validateMcpServerConfig,mcpNamespace}=await mcpCore;let effective=definition;
+  const definition=protect(configObject(data.definition,"MCP 配置"),original?doc.mcpServers[original]:undefined,false,false);const {validateMcpServerConfig}=await mcpCore;let effective=definition;
   if(data.scope==="project"&&definition.command===undefined&&definition.url===undefined&&definition.type===undefined){const base=(await mcpConfig).loadMcpConfig({agentDir,cwd,projectTrusted:false}).servers.find(s=>s.name===name);if(!base)throw new Error("项目覆盖需要同名用户 MCP");if(Object.keys(definition).some(k=>!["enabled","exposure","toolExposure"].includes(k)))throw new Error("项目覆盖只允许 enabled、exposure、toolExposure");effective={...base.config,...definition};}
   if(data.scope==="project"&&definition.auth!==undefined)throw new Error("auth 只能保存在用户级 mcp.json");const config=validateMcpServerConfig(name,effective);if(typeof config==="string")throw new Error(config);
   const others=(await mcpCatalog(cwd)).servers;if(others.some(s=>s.name!==name&&s.name!==original&&mcpNamespace(s.name)===mcpNamespace(name)))throw new Error("MCP 名称命名空间冲突");
