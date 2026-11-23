@@ -73,17 +73,21 @@ const Markdown=memo(function Markdown({text,base}:{text:string;base?:string}) {
 });
 
 function classes(value: string) { return value.split(/\s+/).map(name=>css[name] || name).join(" "); }
-type DisplayMessage=ChatMessage&{errorCount?:number};
-function mergeRepeatedErrors(messages:ChatMessage[]):DisplayMessage[] {
-  const merged:DisplayMessage[]=[];let previousError:string|undefined;
-  for(const message of messages){
+type DisplayMessage=ChatMessage&{errorCount?:number;stopReason?:string};
+function mergeRepeatedErrors(messages:DisplayMessage[]):DisplayMessage[] {
+  const merged:DisplayMessage[]=[];let previousError:string|undefined,recovered=false;
+  for(let i=messages.length-1;i>=0;i--){
+    const message=messages[i];
     const empty=typeof message.content==="string"?!message.content.trim():(message.content||[]).every(part=>part.type==="text"&&!part.text?.trim());
     const error=message.role==="assistant"&&empty?message.errorMessage:undefined,previous=merged.at(-1);
-    if(error&&error===previousError&&message.model===previous?.model&&message.provider===previous?.provider)merged[merged.length-1]={...message,errorCount:(previous?.errorCount||1)+1};
+    if(message.role==="user")recovered=false;
+    if(message.role==="assistant"&&message.entryId&&!message.errorMessage&&message.stopReason!=="error"&&message.stopReason!=="aborted")recovered=true;
+    if(recovered&&error==="Connection error."){previousError=undefined;continue;}
+    if(error&&error===previousError&&message.model===previous?.model&&message.provider===previous?.provider)merged[merged.length-1]={...previous!,errorCount:(previous?.errorCount||1)+1};
     else merged.push(message);
     previousError=error;
   }
-  return merged;
+  return merged.reverse();
 }
 const relativeTime=(value:string)=>{const minutes=Math.max(0,Math.floor((Date.now()-Date.parse(value))/60000));return minutes<1?"刚刚":minutes<60?`${minutes}分钟`:minutes<1440?`${Math.floor(minutes/60)}小时`:new Date(value).toLocaleDateString("zh-CN",{month:"numeric",day:"numeric"});};
 function AgentModeMenu({mode,onChange,disabled=false,label="Agent 模式"}:{mode:Mode;onChange:(value:Mode)=>void;disabled?:boolean;label?:string}) {
