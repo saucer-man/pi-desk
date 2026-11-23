@@ -40,6 +40,7 @@ export interface SessionSnapshot {
   aggregate: Stats & { sessions: number };
   thinkingLevels: string[]; systemPrompt: string;
 }
+export type SessionConfiguration = Pick<SessionSnapshot, "model" | "thinking" | "thinkingLevels">;
 export interface ModelInfo { id: string; provider: string; name: string; contextWindow: number; reasoning: boolean; thinkingLevels: string[]; thinking: string }
 export interface ModelProbeLog { at:string; kind:"info"|"request"|"response"|"output"|"result"|"error"; data:unknown }
 export interface OAuthState { provider: string; url?: string; message?: string; userCode?: string; status: "waiting" | "complete" | "error" | "cancelled" }

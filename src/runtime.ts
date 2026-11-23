@@ -84,7 +84,8 @@ export class Runtime {
   changed(record?: SessionRecord) { this.store.save(); this.emit({ type: "state", data: this.store.state }); if (record) this.emit({ type: "record", sessionId: record.id, data: record }); }
   modelRuntime() { return this.catalog ??= ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false }); }
   async models(id?: string, refresh=false, workspaceId?: string) {
-    const models = id ? (await this.get(id)).session.modelRuntime : await this.modelRuntime();
+    const record=id?this.store.record(id):undefined;
+    const models = await this.modelRuntime();
     const options={allowNetwork:refresh,force:refresh,signal:refresh?AbortSignal.timeout(15000):undefined};
     let result;
     if(refresh&&Object.keys(this.store.state.preferences.proxy?.providers||{}).length){
@@ -92,8 +93,8 @@ export class Runtime {
       const results=await Promise.all(models.getProviders().filter(p=>models.hasConfiguredAuth(p.id)).map(p=>this.withProxy({provider:p.id,id:""},()=>models.refresh({...options,providers:[p.id]}))));
       result={aborted:options.signal!.aborted||results.some(r=>r.aborted),errors:new Map(results.flatMap(r=>[...r.errors]))};
     }else result=await this.withProxy({provider:"",id:""},()=>models.refresh(options));
-    const workspace=this.store.state.workspaces.find(w=>w.id===workspaceId);
-    const settings = SettingsManager.create(workspace ? workspace.remote ? join(deskDir,"ssh-workspaces",workspace.id) : workspace.path : agentDir, agentDir).getSettings();
+    const workspace=this.store.state.workspaces.find(w=>w.id===(record?.workspaceId||workspaceId));
+    const settings = SettingsManager.create(workspace?.remote ? join(deskDir,"ssh-workspaces",workspace.id) : record?.cwd||workspace?.path||agentDir, agentDir).getSettings();
     if(!this.store.state.preferences.modelSelection){const selection:Record<string,string[]>={};for(const model of models.getAvailableSnapshot())(selection[model.provider]??=[]).push(model.id);this.store.state.preferences.modelSelection=selection;this.changed();}
     const selection=this.store.state.preferences.modelSelection;
     const info=(m:ReturnType<ModelRuntime["getModels"]>[number])=>({id:m.id,provider:m.provider,name:m.name,contextWindow:m.contextWindow,maxTokens:m.maxTokens,reasoning:Boolean(m.reasoning),thinkingLevels:getSupportedThinkingLevels(m),thinking:clampThinkingLevel(m,settings.modelThinkingLevels?.[`${m.provider}/${m.id}`]??settings.defaultThinkingLevel??"medium")});
@@ -579,7 +580,12 @@ export class Runtime {
     if (options.model) { const runtime = live.session.modelRuntime; await runtime.refresh({ allowNetwork: false }); const model = runtime.getAvailableSnapshot().find(m => `${m.provider}/${m.id}` === options.model); if (!model) throw new Error("模型不可用"); await live.session.setModel(model); record.model = options.model; record.thinking = live.session.thinkingLevel; live.modelNeedsSelection = false; }
     if (options.thinking) { if (!live.session.getAvailableThinkingLevels().includes(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0])) throw new Error("当前模型不支持此思考强度"); live.session.setThinkingLevel(options.thinking as Parameters<AgentSession["setThinkingLevel"]>[0]); record.thinking = live.session.thinkingLevel; }
     if (options.mode && options.mode !== record.mode) { try { await this.release(live, "reload"); } finally { this.live.delete(id); } record.mode = options.mode; await this.get(id); }
-    this.changed(record); const snapshot=await this.snapshot(id);this.emit({type:"snapshot",sessionId:id,data:snapshot});return snapshot;
+    if(options.mode)this.changed(record);else this.store.save();
+    const session=this.live.get(id)!.session;
+    const configuration={model:session.model&&`${session.model.provider}/${session.model.id}`,thinking:session.thinkingLevel,thinkingLevels:session.getAvailableThinkingLevels()};
+    this.emit({type:"configuration",sessionId:id,data:configuration});
+    if(options.mode){const snapshot=await this.snapshot(id);this.emit({type:"snapshot",sessionId:id,data:snapshot});return snapshot;}
+    return configuration;
   }
   async mutateMessage(id:string, entryId:string, operation:"edit"|"resend"|"delete"|"exclude", text?:string) {
     const record=this.store.record(id); const {session}=await this.get(id);

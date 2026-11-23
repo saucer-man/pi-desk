@@ -1,7 +1,7 @@
 {
   "name": "@pi-desk/frontend",
   "private": true,
-  "version": "2.0.0-dev.10",
+  "version": "2.0.0-dev.11",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -141,6 +141,12 @@ test("real Pi SDK: mode isolation, native persistence, parallel/nested subagents
   const snapshotSaves=t.mock.method(runtime.store,"save");
   try{for(let i=0;i<20;i++)await runtime.snapshot(minimal.id);assert.equal(snapshotSaves.mock.callCount(),0,"reading warmed-up snapshots never saves metadata");}
   finally{snapshotSaves.mock.restore();}
+  const sdkUnavailable=t.mock.method(runtime,"get",async()=>{throw Error("session startup must not block the catalog");});
+  try{assert.ok((await runtime.models(minimal.id)).models.some(m=>m.id==="mock"));}
+  finally{sdkUnavailable.mock.restore();}
+  const expensiveSnapshot=t.mock.method(runtime,"snapshot",async()=>{throw Error("configuration saves must not build history snapshots");});
+  try{const config=await runtime.change(minimal.id,{thinking:"off"});assert.deepEqual(Object.keys(config).sort(),["model","thinking","thinkingLevels"]);assert.equal(config.model,"mock/mock");assert.equal(config.thinking,"off");}
+  finally{expensiveSnapshot.mock.restore();}
   assert.equal(snapshot.resources.skills.length, 0);
   assert.equal(snapshot.execution?.streaming, undefined); assert.deepEqual(snapshot.execution?.runningTools, []);
   assert.equal(snapshot.messages.at(-1)?.role, "assistant"); assert.equal(snapshot.stats.tokens.output, 2); assert.equal(snapshot.stats.userMessages, 1); assert.equal(snapshot.stats.assistantMessages, 1);

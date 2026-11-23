@@ -64,13 +64,17 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await page.keyboard.press("Escape");releaseCatalog();await page.unroute("**/api/models{,?*}");
   const editor=page.getByRole("textbox",{name:"任务输入",exact:true}),options=page.getByRole("option"),picker=page.getByRole("listbox",{name:"项目文件搜索结果"});
   await editor.waitFor();
+  let failCatalog=true;await page.route("**/api/models{,?*}",async route=>{if(failCatalog)await route.fulfill({status:503,json:{error:"catalog unavailable fixture"}});else await route.continue();});
+  await page.reload();await page.getByRole("button",{name:"选择模型",exact:true}).click();const failedThinking=page.getByRole("menuitem",{name:"推理等级",exact:true});await page.waitForFunction(()=>document.querySelector('[aria-label="推理等级"]')?.textContent?.includes("加载失败"));assert.equal(await failedThinking.isDisabled(),false);await failedThinking.click();
+  failCatalog=false;await page.getByRole("menuitem",{name:"重新加载模型",exact:true}).click();await page.unroute("**/api/models{,?*}");
   await mkdir(join(project,".pi","extensions"));const shutdownHook=join(project,".pi","extensions","shutdown.ts");await writeFile(shutdownHook,'export default function(pi){pi.on("session_shutdown",()=>new Promise(()=>{}));}');
   const emptyLoaded=page.waitForResponse(r=>r.request().method()==="GET"&&/\/api\/sessions\/[^/?]+$/.test(r.url())&&r.status()===200);
   await page.getByRole("button",{name:"新建任务",exact:true}).click();await emptyLoaded;await page.getByRole("button",{name:"更多操作：新会话",exact:true}).focus();await page.keyboard.press("Enter");await page.getByRole("menuitem",{name:"删除会话",exact:true}).click();
   const deletion=page.getByRole("dialog",{name:"删除会话",exact:true});await deletion.getByRole("button",{name:"确认删除",exact:true}).click();await deletion.waitFor({state:"detached",timeout:8000});assert.equal((await request("/state")).sessions.length,0);await unlink(shutdownHook);
   // A draft can configure SDK-supported reasoning without creating an empty session.
-  const openThinking=async()=>{await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^推理等级/}).click();};
-  const chooseModel=async(name:string)=>{await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^模型(?!设置)/}).click();await page.getByRole("menuitemradio",{name:new RegExp(`^${name}`)}).click();};
+  const waitSaved=()=>page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.getAttribute("aria-busy")==="false");
+  const openThinking=async()=>{await waitSaved();await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^推理等级/}).click();};
+  const chooseModel=async(name:string)=>{await waitSaved();await page.getByRole("button",{name:"选择模型",exact:true}).click();await page.getByRole("menuitem",{name:/^模型(?!设置)/}).click();await page.getByRole("menuitemradio",{name:new RegExp(`^${name}`)}).click();};
   await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"Minimal",exact:true}).getAttribute("aria-checked"),"true");
   await page.getByRole("menuitemradio",{name:"High",exact:true}).click();
   await chooseModel("plain");await openThinking();assert.equal(await page.getByRole("menuitemradio").count(),1);assert.equal(await page.getByRole("menuitemradio",{name:"Off",exact:true}).getAttribute("aria-checked"),"true");await page.keyboard.press("Escape");await page.keyboard.press("Escape");
@@ -89,18 +93,21 @@ test("composer: project file search, references, file paste, reasoning sync and 
   assert.equal((await request(`/sessions/${session.id}`)).thinking,"low");
   // Switching updates capabilities without any prompt; the previous snapshot must not supply the old list.
   const countBefore=requests.length;let releaseModel!:()=>void;const modelGate=new Promise<void>(resolve=>releaseModel=resolve);t.after(()=>releaseModel());
-  await page.route(`**/api/sessions/${session.id}`,async route=>{if(route.request().method()==="PATCH"&&route.request().postDataJSON().model)await modelGate;await route.continue();});
+  await page.route(`**/api/sessions/${session.id}{,?*}`,async route=>{if(route.request().method()==="PATCH"&&route.request().postDataJSON().model)await modelGate;await route.continue();});
   await chooseModel("plain");await page.getByRole("button",{name:"选择模型",exact:true}).click();
-  assert.match(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/加载中/);await page.keyboard.press("Escape");releaseModel();
+  assert.match(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/Off/);assert.match(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/保存中/);
+  await page.getByRole("menuitem",{name:"推理等级",exact:true}).click();assert.equal(await page.getByRole("menuitemradio").count(),1);assert.equal(await page.getByRole("menuitemradio",{name:"Off",exact:true}).isDisabled(),true);await page.keyboard.press("Escape");await page.keyboard.press("Escape");releaseModel();await waitSaved();
   await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("plain"));
   await openThinking();assert.equal(await page.getByRole("menuitemradio").count(),1);await page.getByRole("menuitemradio",{name:"Off",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
-  await page.unroute(`**/api/sessions/${session.id}`);await chooseModel("limited");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).count(),0);await page.getByRole("menuitemradio",{name:"XHigh",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+  await page.unroute(`**/api/sessions/${session.id}{,?*}`);await chooseModel("limited");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).count(),0);await page.getByRole("menuitemradio",{name:"XHigh",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
   await chooseModel("mock");await openThinking();await page.getByRole("menuitemradio",{name:"High",exact:true}).click();assert.equal(requests.length,countBefore,"capability changes never require a prompt");
+  await waitSaved();await page.route(`**/api/sessions/${session.id}?configuration=1`,route=>route.fulfill({status:400,json:{error:"save rejected fixture"}}));
+  await openThinking();await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();await waitSaved();await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).getAttribute("aria-checked"),"true");await page.keyboard.press("Escape");await page.keyboard.press("Escape");await page.unroute(`**/api/sessions/${session.id}?configuration=1`);
   // A temporarily incomplete snapshot falls back to the SDK model catalog.
-  await page.route(`**/api/sessions/${session.id}`,async route=>{if(route.request().method()!=="GET"){await route.continue();return;}const response=await route.fetch();await route.fulfill({response,json:{...await response.json(),thinkingLevels:[]}});});
+  await page.route(`**/api/sessions/${session.id}{,?*}`,async route=>{if(route.request().method()!=="GET"){await route.continue();return;}const response=await route.fetch();await route.fulfill({response,json:{...await response.json(),thinkingLevels:[]}});});
   const capabilities=page.waitForResponse(r=>r.url().includes("/api/models")&&r.status()===200);await page.reload();await capabilities;
   await openThinking();await page.getByRole("menuitemradio",{name:"High",exact:true}).waitFor();await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));await page.unroute(`**/api/sessions/${session.id}`);
+  await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));await page.unroute(`**/api/sessions/${session.id}{,?*}`);
   // Hold an actual provider request while selecting settings for its automatic tool continuation.
   await request(`/sessions/${session.id}`,{thinking:"high"},"PATCH");const beforeSwitch=requests.length;
   await request(`/sessions/${session.id}/prompt`,{text:"live-switch"});await switchStarted;
@@ -292,7 +299,8 @@ test("composer: project file search, references, file paste, reasoning sync and 
     await history.waitFor();const elapsed=Math.round(performance.now()-started);
     const deadline=Date.now()+8000;while(!existsSync(entered)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
     assert.ok(existsSync(entered),snapshotReady?await (await full).text():"the real SDK did not enter the startup hook");assert.equal(snapshotReady,false,"saved history is visible before the SDK snapshot");
-    await page.getByRole("button",{name:"选择模型",exact:true}).click();assert.doesNotMatch(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/不可用/);await page.keyboard.press("Escape");
+    const fastCatalog=await request(`/models?sessionId=${coldId}`);assert.ok(fastCatalog.models.some((m:any)=>m.id==="mock"&&m.thinkingLevels.includes("high")));assert.equal(snapshotReady,false,"catalog never waits for session startup");
+    await page.getByRole("button",{name:"选择模型",exact:true}).click();assert.doesNotMatch(await page.getByRole("menuitem",{name:"推理等级",exact:true}).innerText(),/不可用|加载中/);await page.getByRole("menuitem",{name:"推理等级",exact:true}).click();await page.getByRole("menuitemradio",{name:"High",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
     const conversation=page.getByRole("tabpanel",{name:"对话",exact:true});await conversation.getByLabel(/展开或收起执行过程/).click();
     const bashRows=conversation.locator("details").filter({has:page.locator(":scope > summary > code",{hasText:/^bash$/})});
     assert.equal(await bashRows.count(),2,"identical commands with distinct toolCallIds stay separate");

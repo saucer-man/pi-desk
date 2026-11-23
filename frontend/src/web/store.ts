@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from "react";
-import type { State, SessionSnapshot, ServerEvent, ChatMessage, TraceEntry, UiRequest, ModelInfo, ExecutionState, OAuthState } from "../../../src/types";
+import type { State, SessionSnapshot, SessionConfiguration, ServerEvent, ChatMessage, TraceEntry, UiRequest, ModelInfo, ExecutionState, OAuthState } from "../../../src/types";
 
 export async function api<T = unknown>(path: string, data?: unknown, method = data === undefined ? "GET" : "POST", signal?:AbortSignal): Promise<T> {
   const res = await fetch("/api" + path, { method, signal, headers: data === undefined ? undefined : { "Content-Type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data) });
@@ -17,6 +17,7 @@ interface AppState {
   code: CodePreferences; setCode: (update: Partial<CodePreferences>) => void;
   state?: State; activeId: string; workspaceId: string; page: "workbench" | "trajectory"; connected: boolean;
   snapshot?: SessionSnapshot; history?: ChatMessage[]; loading: boolean; error: string; catalog?: Catalog; traces: Record<string, TraceEntry[]>;
+  modelsLoading:boolean; modelsError:string; configuration?:SessionConfiguration & {sessionId:string};
   subagentId:string; subagentSnapshot?:SessionSnapshot;
   browserRequest?: { id?:string; url?:string; fresh?:boolean; version:number };
   requests: UiRequest[]; auth?: OAuthState;
@@ -33,8 +34,10 @@ const subscribe = (listener: () => void) => { listeners.add(listener); return ()
 const get = () => state;
 const notified=new Set<string>();
 let snapshotRevision=0;
+let modelsRevision=0;
 let state: AppState = ({
   code: readCodePreferences(),
+  modelsLoading:true,modelsError:"",
   setCode: update => { const code = { ...get().code, ...update }; localStorage.setItem("pi-desk.code", JSON.stringify(code)); set({ code }); },
   activeId: localStorage.getItem("pi-desk.active") || "", subagentId:"", workspaceId: "", page: localStorage.getItem("pi-desk.page")==="trajectory"?"trajectory":"workbench", connected: false, loading: false, history:undefined, error: "", traces: {}, requests: [],
   fail: error => set({ error: error instanceof Error ? error.message : String(error) }),
@@ -44,18 +47,25 @@ let state: AppState = ({
     let record = get().state?.sessions.find(r => r.id === id);const subagentId=record?.parentId?id:"";
     while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
     id=record?.id||id;localStorage.setItem("pi-desk.active", id);
-    set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, history:undefined, loading: true, error: "" });
+    set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, configuration:undefined, history:undefined, loading: true, error: "" });
+    void get().loadModels().catch(get().fail);
     if (record && record.status!=="running") {
       void api<ChatMessage[]|null>(`/sessions/${id}?history=1`).then(history=>{
         if (Array.isArray(history) && get().activeId===id && snapshotRevision===revision && !get().snapshot) set({history});
       }).catch(()=>{});
     }
-    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) { set({ snapshot,history:undefined }); void get().loadModels().catch(get().fail); } }
+    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot,history:undefined }); }
     catch (error) { if (get().activeId === id) get().fail(error); }
     finally { if (get().activeId === id) set({ loading: false }); }
   },
   refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined, history:undefined }); return; } if (id) { const revision=++snapshotRevision; const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot, history:undefined }); } },
-  loadModels: async (refresh=false) => { const id = get().state?.sessions.some(r=>r.id===get().activeId) ? get().activeId : ""; const workspaceId=get().workspaceId; const context=id||workspaceId; const catalog = await api<Catalog>("/models" + (context ? `?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}` : "") + (refresh ? (context ? "&" : "?") + "refresh=1" : "")); if (id === get().activeId && workspaceId===get().workspaceId) set({ catalog }); },
+  loadModels: async (refresh=false) => {
+    const revision=++modelsRevision,id=get().state?.sessions.some(r=>r.id===get().activeId)?get().activeId:"",workspaceId=get().workspaceId,context=id||workspaceId;
+    set({modelsLoading:true,modelsError:""});
+    try{const catalog=await api<Catalog>("/models"+(context?`?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}`:"")+(refresh?(context?"&":"?")+"refresh=1":""),undefined,"GET",AbortSignal.timeout(15000));if(revision===modelsRevision&&workspaceId===get().workspaceId)set({catalog});}
+    catch(error){if(revision===modelsRevision)set({modelsError:error instanceof Error?error.message:String(error)});throw error;}
+    finally{if(revision===modelsRevision)set({modelsLoading:false});}
+  },
   receive: event => {
     if (event.type === "state") {
       const state = event.data as State; const current = get();
@@ -65,8 +75,13 @@ let state: AppState = ({
       if (!current.snapshot && activeId && !current.loading) void get().select(activeId);
     }
     const snapshotKey=event.sessionId===get().activeId?"snapshot":event.sessionId===get().subagentId?"subagentSnapshot":undefined;
+    if(event.type==="configuration"){
+      const configuration=event.data as SessionConfiguration;
+      if(snapshotKey==="snapshot"&&get().snapshot)snapshotRevision++;
+      set(s=>({...(s.state?{state:{...s.state,sessions:s.state.sessions.map(r=>r.id===event.sessionId?{...r,model:configuration.model,thinking:configuration.thinking}:r)}}:{}),...(snapshotKey?{[snapshotKey]:s[snapshotKey]?{...s[snapshotKey],...configuration,record:{...s[snapshotKey]!.record,model:configuration.model,thinking:configuration.thinking}}:undefined}:{}),...(snapshotKey==="snapshot"?{configuration:{...configuration,sessionId:event.sessionId!}}:{})}));
+    }
     if (snapshotKey==="snapshot" && (event.type==="snapshot" || event.type==="event" && get().snapshot)) snapshotRevision++;
-    if (event.type === "snapshot" && snapshotKey) set({ [snapshotKey]: event.data as SessionSnapshot, ...(snapshotKey==="snapshot"?{history:undefined}:{}) });
+    if (event.type === "snapshot" && snapshotKey) {const snapshot=event.data as SessionSnapshot,configuration=get().configuration;set({ [snapshotKey]: snapshot, ...(snapshotKey==="snapshot"?{history:undefined,...(configuration&&configuration.sessionId===event.sessionId&&configuration.model===snapshot.model&&configuration.thinking===snapshot.thinking?{configuration:undefined}:{})}:{}) });}
     if (event.type === "event" && snapshotKey) {
       const data = event.data as { type: string; message?: ChatMessage; steering?: string[]; followUp?: string[]; toolCallId?: string; assistantMessageEvent?: { type: string; contentIndex?: number } };
       const snapshot = get()[snapshotKey]; if (!snapshot) return;

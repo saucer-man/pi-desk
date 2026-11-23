@@ -253,8 +253,12 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
     }
     if (!action && method === "PATCH") {
       const data = await body(req);
+      const configurationOnly=url.searchParams.get("configuration")==="1";
+      if(configurationOnly&&(!data.model&&!data.thinking||Object.keys(data).some(key=>key!=="model"&&key!=="thinking")))throw new Error("此请求仅支持模型和思考强度");
+      let configuration;
       if (data.pinned !== undefined && typeof data.pinned !== "boolean") throw new Error("置顶状态必须是布尔值");
-      if (data.mode || data.model || data.thinking) { if (data.mode && !["standard", "minimal"].includes(data.mode)) throw new Error("无效模式"); if (data.thinking && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(data.thinking)) throw new Error("无效思考强度"); await runtime.change(id, data); }
+      if (data.mode || data.model || data.thinking) { if (data.mode && !["standard", "minimal"].includes(data.mode)) throw new Error("无效模式"); if (data.thinking && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(data.thinking)) throw new Error("无效思考强度"); configuration=await runtime.change(id, data); }
+      if(configurationOnly){json(res,configuration);return;}
       if (data.title !== undefined) {
         const title = text(data.title, 200), live = runtime.live.get(id);
         if (live) live.session.setSessionName(title);

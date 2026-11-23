@@ -143,6 +143,26 @@ test("web native synchronization: late HTTP snapshots cannot replace newer pushe
   }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
 });
 
+test("web configuration: parallel catalog, cached capabilities and stale HTTP responses",async t=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState();
+  const record={id:"cold",workspaceId:"project",model:"mock/old",thinking:"off"},state={sessions:[record],workspaces:[{id:"project"}]},old={record,model:"mock/old",thinking:"off",thinkingLevels:["off"],messages:[{role:"user",content:"keep this history"}]};
+  let finish!:(response:Response)=>void;let failCatalog=false,catalogCalls=0;
+  const catalog={models:[{id:"new",provider:"mock",thinkingLevels:["off","high"]}]};
+  t.mock.method(globalThis,"fetch",async(url:unknown)=>{const path=String(url);if(path.startsWith("/api/models")){catalogCalls++;return new Response(JSON.stringify(failCatalog?{error:"catalog fixture failed"}:catalog),{status:failCatalog?503:200});}if(path==="/api/sessions/cold")return new Promise<Response>(resolve=>finish=resolve);return new Response(JSON.stringify(path==="/api/state"?state:null));});
+  try{
+    useApp.setState({state:state as any,activeId:"cold",workspaceId:"project",snapshot:undefined,configuration:undefined,loading:false});
+    const selection=useApp.getState().select("cold");while(!finish||useApp.getState().modelsLoading)await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(catalogCalls,1);assert.deepEqual(useApp.getState().catalog,catalog,"capabilities load while the SDK snapshot is blocked");assert.equal(useApp.getState().snapshot,undefined);
+    const config={model:"mock/new",thinking:"high",thinkingLevels:["off","high"]};useApp.getState().receive({type:"configuration",sessionId:"cold",data:config});finish(new Response(JSON.stringify(old)));await selection;
+    assert.equal(useApp.getState().configuration?.thinking,"high","cold configuration survives an older first snapshot");assert.deepEqual(useApp.getState().snapshot?.messages,old.messages);
+    finish=undefined!;const refresh=useApp.getState().refresh();while(!finish)await new Promise(resolve=>setImmediate(resolve));useApp.getState().receive({type:"configuration",sessionId:"cold",data:config});finish(new Response(JSON.stringify(old)));await refresh;
+    assert.equal(useApp.getState().snapshot?.model,"mock/new");assert.equal(useApp.getState().snapshot?.thinking,"high");assert.deepEqual(useApp.getState().snapshot?.messages,old.messages);
+    failCatalog=true;await assert.rejects(useApp.getState().loadModels(),/catalog fixture failed/);assert.equal(useApp.getState().modelsLoading,false);assert.match(useApp.getState().modelsError,/catalog fixture failed/);assert.deepEqual(useApp.getState().catalog,catalog,"refresh failures retain cached capabilities");
+    failCatalog=false;await useApp.getState().loadModels();assert.equal(useApp.getState().modelsError,"");
+  }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
 test("web retries: traces update parent and child status independently and clear on recovery or stop",async()=>{
   const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");
   Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
