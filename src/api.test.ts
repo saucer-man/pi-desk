@@ -138,8 +138,40 @@ test("web native synchronization: late HTTP snapshots cannot replace newer pushe
     useApp.getState().receive({type:"snapshot",sessionId:"native",data:latest});finish(new Response(JSON.stringify(old)));await pending;
     assert.deepEqual(useApp.getState().snapshot,latest,`${action} must retain the newer native continuation`);
   }
-    const pending=useApp.getState().select("native");useApp.getState().receive({type:"event",sessionId:"native",data:{type:"session_info_changed",name:"native"}});finish(new Response(JSON.stringify(old)));await pending;
+    finish=undefined!;const pending=useApp.getState().select("native");useApp.getState().receive({type:"event",sessionId:"native",data:{type:"session_info_changed",name:"native"}});while(!finish)await new Promise(resolve=>setImmediate(resolve));finish(new Response(JSON.stringify(old)));await pending;
     assert.deepEqual(useApp.getState().snapshot,old,"setup events before the first snapshot must not cancel initial loading");
+  }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
+});
+
+test("rapid web session switches cancel stale loads and isolate the current timeout",{timeout:5000},async t=>{
+  const saved=Object.getOwnPropertyDescriptor(globalThis,"localStorage");Object.defineProperty(globalThis,"localStorage",{configurable:true,value:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const {useApp}=await import("../frontend/src/web/store.ts"),original=useApp.getState();
+  const a={id:"rapid-a",workspaceId:"project"},b={id:"rapid-b",workspaceId:"project"};
+  const history=[{role:"user",content:"saved history"}],state={sessions:[a,b],workspaces:[{id:"project"}]};
+  const requests:{path:string;signal:AbortSignal;resolve:(value:Response)=>void;reject:(reason:Error)=>void}[]=[];
+  const response=(value:unknown)=>new Response(JSON.stringify(value));
+  const timeout=()=>new DOMException("signal timed out","TimeoutError");
+  t.mock.method(globalThis,"fetch",async(url:unknown,options:RequestInit)=>{
+    const path=String(url);
+    if(path.endsWith("?history=1"))return response(history);
+    return new Promise<Response>((resolve,reject)=>requests.push({path,signal:options.signal!,resolve,reject}));
+  });
+  const waitForRequests=async(count:number)=>{while(requests.length<count)await new Promise(resolve=>setImmediate(resolve));};
+  try{
+    useApp.setState({state:state as any,activeId:a.id,workspaceId:"project",loading:false});
+    const first=useApp.getState().select(a.id);await waitForRequests(2);
+    const skipped=useApp.getState().select(b.id),current=useApp.getState().select(a.id);
+    assert.ok(requests.every(request=>request.signal.aborted),"superseded snapshot and catalog are cancelled");
+    requests[0].reject(timeout());requests[1].reject(timeout());await Promise.all([first,skipped]);
+    assert.equal(useApp.getState().loading,true,"the first A must not clear loading for the second A");
+    assert.deepEqual(useApp.getState().history,history);assert.equal(useApp.getState().error,"");
+    await waitForRequests(4);assert.equal(requests.some(request=>request.path.includes(b.id)),false);
+    requests[2].resolve(response({models:[]}));requests[3].reject(timeout());await current;
+    assert.equal(useApp.getState().loading,false);assert.match(useApp.getState().error,/会话加载超时/);assert.deepEqual(useApp.getState().history,history);
+    useApp.getState().receive({type:"state",data:state});assert.equal(useApp.getState().loading,false,"state broadcasts must not restart a failed selection");
+    const retry=useApp.getState().select(a.id);await waitForRequests(6);
+    requests[4].resolve(response({models:[]}));requests[5].resolve(response({record:a,messages:history}));await retry;
+    assert.equal(useApp.getState().error,"");assert.equal(useApp.getState().loading,false);assert.deepEqual(useApp.getState().snapshot?.messages,history);
   }finally{useApp.setState(original);if(saved)Object.defineProperty(globalThis,"localStorage",saved);else Reflect.deleteProperty(globalThis,"localStorage");}
 });
 

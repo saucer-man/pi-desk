@@ -28,13 +28,19 @@ interface AppState {
 type Update = Partial<AppState> | ((state: AppState) => Partial<AppState>);
 const listeners = new Set<() => void>();
 let pending: ReturnType<typeof setTimeout> | undefined;
+let selection: { id: string; controller: AbortController } | undefined;
+let modelsController: AbortController | undefined;
 const notify = () => { clearTimeout(pending); pending = undefined; for (const listener of listeners) listener(); };
-const set = (update: Update, streaming=false) => { state = { ...state, ...(typeof update === "function" ? update(state) : update) }; if(streaming)pending??=setTimeout(notify,32);else notify(); };
+const set = (update: Update, streaming=false) => {
+  state = { ...state, ...(typeof update === "function" ? update(state) : update) };
+  if(selection&&selection.id!==state.activeId){selection.controller.abort();selection=undefined;}
+  if(streaming)pending??=setTimeout(notify,32);else notify();
+};
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); };
 const get = () => state;
 const notified=new Set<string>();
 let snapshotRevision=0;
-let modelsRevision=0;
+const loadError=(error:unknown,timeoutMessage:string)=>error instanceof DOMException&&error.name==="TimeoutError"?new Error(timeoutMessage):error;
 let state: AppState = ({
   code: readCodePreferences(),
   modelsLoading:true,modelsError:"",
@@ -47,24 +53,51 @@ let state: AppState = ({
     let record = get().state?.sessions.find(r => r.id === id);const subagentId=record?.parentId?id:"";
     while(record?.parentId){const parent=get().state?.sessions.find(r=>r.id===record!.parentId);if(!parent)break;record=parent;}
     id=record?.id||id;localStorage.setItem("pi-desk.active", id);
+    selection?.controller.abort();modelsController?.abort();
+    const current={id,controller:new AbortController()};selection=current;
+    const signal=AbortSignal.any([current.controller.signal,AbortSignal.timeout(15000)]);
     set({ activeId: id, subagentId, subagentSnapshot:undefined, workspaceId: record?.workspaceId || get().workspaceId, snapshot: undefined, configuration:undefined, history:undefined, loading: true, error: "" });
-    void get().loadModels().catch(get().fail);
     if (record && record.status!=="running") {
-      void api<ChatMessage[]|null>(`/sessions/${id}?history=1`).then(history=>{
-        if (Array.isArray(history) && get().activeId===id && snapshotRevision===revision && !get().snapshot) set({history});
+      void api<ChatMessage[]|null>(`/sessions/${id}?history=1`,undefined,"GET",signal).then(history=>{
+        if (Array.isArray(history) && !signal.aborted && get().activeId===id && snapshotRevision===revision && !get().snapshot) set({history});
       }).catch(()=>{});
     }
-    try { const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot,history:undefined }); }
-    catch (error) { if (get().activeId === id) get().fail(error); }
-    finally { if (get().activeId === id) set({ loading: false }); }
+    try {
+      // Show saved history immediately, and let quick switches skip unused SDK loads.
+      await new Promise(resolve=>setTimeout(resolve,80));
+      if(selection!==current)return;
+      signal.throwIfAborted();
+      void get().loadModels().catch(()=>{});
+      const snapshot=await api<SessionSnapshot>(`/sessions/${id}`,undefined,"GET",signal);
+      if(selection===current&&!signal.aborted&&snapshotRevision===revision)set({snapshot,history:undefined});
+    } catch(error) {
+      if(selection===current&&snapshotRevision===revision)get().fail(loadError(error,"会话加载超时，请重新打开会话。"));
+    } finally {
+      if(selection===current){
+        if(get().snapshot){current.controller.abort();selection=undefined;}
+        set({loading:false});
+      }
+    }
   },
-  refresh: async () => { set({ state: await api<State>("/state") }); const id = get().activeId; if (id && !get().state?.sessions.some(r => r.id === id)) { localStorage.removeItem("pi-desk.active"); set({ activeId: "", snapshot: undefined, history:undefined }); return; } if (id) { const revision=++snapshotRevision; const snapshot = await api<SessionSnapshot>(`/sessions/${id}`); if (get().activeId === id && snapshotRevision===revision) set({ snapshot, history:undefined }); } },
+  refresh: async () => {
+    const id=get().activeId;
+    const signal=AbortSignal.timeout(15000);
+    const state=await api<State>("/state",undefined,"GET",signal).catch(error=>{throw loadError(error,"会话列表刷新超时，请重试。");});
+    set({state});
+    if(!id||get().activeId!==id)return;
+    if(!state.sessions.some(r=>r.id===id)){localStorage.removeItem("pi-desk.active");set({activeId:"",snapshot:undefined,history:undefined,loading:false});return;}
+    if(get().loading)return;
+    const revision=++snapshotRevision;
+    try{const snapshot=await api<SessionSnapshot>(`/sessions/${id}`,undefined,"GET",signal);if(get().activeId===id&&snapshotRevision===revision)set({snapshot,history:undefined});}
+    catch(error){if(get().activeId===id&&snapshotRevision===revision)throw loadError(error,"会话刷新超时，请重试。");}
+  },
   loadModels: async (refresh=false) => {
-    const revision=++modelsRevision,id=get().state?.sessions.some(r=>r.id===get().activeId)?get().activeId:"",workspaceId=get().workspaceId,context=id||workspaceId;
+    modelsController?.abort();const controller=modelsController=new AbortController();
+    const id=get().state?.sessions.some(r=>r.id===get().activeId)?get().activeId:"",workspaceId=get().workspaceId,context=id||workspaceId;
     set({modelsLoading:true,modelsError:""});
-    try{const catalog=await api<Catalog>("/models"+(context?`?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}`:"")+(refresh?(context?"&":"?")+"refresh=1":""),undefined,"GET",AbortSignal.timeout(15000));if(revision===modelsRevision&&workspaceId===get().workspaceId)set({catalog});}
-    catch(error){if(revision===modelsRevision)set({modelsError:error instanceof Error?error.message:String(error)});throw error;}
-    finally{if(revision===modelsRevision)set({modelsLoading:false});}
+    try{const catalog=await api<Catalog>("/models"+(context?`?${id?"sessionId":"workspaceId"}=${encodeURIComponent(context)}`:"")+(refresh?(context?"&":"?")+"refresh=1":""),undefined,"GET",AbortSignal.any([controller.signal,AbortSignal.timeout(15000)]));if(!controller.signal.aborted&&workspaceId===get().workspaceId)set({catalog});}
+    catch(error){if(controller.signal.aborted)return;const failure=loadError(error,"模型列表加载超时，请重试。");set({modelsError:failure instanceof Error?failure.message:String(failure)});throw failure;}
+    finally{if(modelsController===controller){modelsController=undefined;set({modelsLoading:false});}}
   },
   receive: event => {
     if (event.type === "state") {
@@ -72,7 +105,7 @@ let state: AppState = ({
       const activeId = state.sessions.some(r => r.id === current.activeId) ? current.activeId : current.state ? "" : state.sessions.find(r => !r.parentId && !r.archived)?.id || "";
       const record = state.sessions.find(r => r.id === activeId);
       set({ state, activeId, workspaceId: record?.workspaceId || state.workspaces.find(w=>w.id===current.workspaceId&&!w.hidden)?.id || state.workspaces.find(w=>!w.hidden)?.id || "", snapshot: current.snapshot && record ? { ...current.snapshot, record } : undefined, history:record?current.history:undefined, loading:Boolean(record&&current.loading) });
-      if (!current.snapshot && activeId && !current.loading) void get().select(activeId);
+      if (!current.snapshot && activeId && !current.loading && (!current.state||!current.error)) void get().select(activeId);
     }
     const snapshotKey=event.sessionId===get().activeId?"snapshot":event.sessionId===get().subagentId?"subagentSnapshot":undefined;
     if(event.type==="configuration"){
@@ -144,10 +177,11 @@ export function connect() {
     if (events && subscription === query) return;
     subscription = query; events?.close();
     const source = events = new EventSource("/api/events?" + query);
-    source.onopen = () => { if (events !== source) return; set({ connected: true }); const { state, activeId, loading } = get(); if (state?.sessions.some(r => r.id === activeId) && !loading) void get().refresh().catch(get().fail); };
+    let reconnecting=false;
+    source.onopen = () => { if (events !== source) return; set({ connected: true }); const { state, activeId, loading } = get(); if (reconnecting&&state?.sessions.some(r => r.id === activeId)&&!loading) void get().refresh().catch(get().fail);reconnecting=false; };
     source.onmessage = message => { if (events !== source) return; try { get().receive(JSON.parse(message.data)); } catch (error) { get().fail(error); } };
-    source.onerror = () => { if (events === source) set({ connected: false }); };
+    source.onerror = () => { if (events === source) {reconnecting=true;set({ connected: false });} };
   };
   listeners.add(open); open();
-  void get().loadModels().catch(get().fail); return () => { listeners.delete(open); events?.close(); events = undefined; };
+  void get().loadModels().catch(()=>{}); return () => { listeners.delete(open); events?.close(); events = undefined; };
 }
