@@ -72,7 +72,7 @@ export async function api(runtime: Runtime, req: IncomingMessage, res: ServerRes
   if(path==="/api/diagnostics"&&method==="GET"){res.setHeader("Content-Disposition","attachment; filename=pi-desk-diagnostics.json");json(res,await diagnostics(runtime));return;}
   if (path === "/api/health") { json(res, { name: "Pi Desk", runtime: "Node.js", sdk: sdkVersion, agentDir, deskDir }); return; }
   if (path === "/api/events" && method === "GET") {
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     let closed=false;
     const cleanup=()=>{closed=true;clearInterval(heartbeat);runtime.listeners.delete(send);};
     const write=(data:string)=>{

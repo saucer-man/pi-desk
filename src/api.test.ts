@@ -17,13 +17,26 @@ async function stopChild(child:ReturnType<typeof spawn>){
   child.kill();try{await exited;}finally{clearTimeout(timer);}
 }
 
+const launchUrlPattern = /http:\/\/127\.0\.0\.1:\d+\/\?secret=[\w-]{43}(?=\r?\n)/;
+async function signIn(launchUrl: string) {
+  const response = await fetch(launchUrl, { redirect: "manual" });
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/");
+  const cookie = response.headers.get("set-cookie")!.split(";")[0];
+  return { origin: new URL(launchUrl).origin, cookie, fetch: (target: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    headers.set("Cookie", cookie);
+    return fetch(target, { ...init, headers });
+  } };
+}
+
 test("CLI: help, version and invalid commands do not create user state",async()=>{
   const temp=await realpath(await mkdtemp(join(tmpdir(),"pi-desk-cli-"))),desk=join(temp,"desk"),run=promisify(execFile);
   const options={env:{...process.env,PI_DESK_DIR:desk,PI_CODING_AGENT_DIR:join(temp,"agent")},timeout:30000,windowsHide:true};
   const pkg=JSON.parse(await readFile("package.json","utf8"));
   assert.equal((await run(process.execPath,[resolve("dist/server.js"),"--version"],options)).stdout.trim(),pkg.version);
   assert.match((await run(process.execPath,[resolve("dist/server.js"),"web","--help"],options)).stdout,/Usage: pi-desk \[web\]/);
-  for(const args of [["unknown"],["web","--unknown"],["web","--port"],["web","--port=bad"],["web","--port=65536"]])await assert.rejects(run(process.execPath,[resolve("dist/server.js"),...args],options));
+  for(const args of [["unknown"],["web","--unknown"],["web","--port"],["web","--port=bad"],["web","--port=65536"],["--public-url=http://desk.fixture.test"],["--public-url=https://desk.fixture.test/path"],["--dev","--public-url=https://desk.fixture.test"]])await assert.rejects(run(process.execPath,[resolve("dist/server.js"),...args],options));
   await assert.rejects(access(desk));
 });
 
@@ -249,10 +262,11 @@ test("OpenAI OAuth: production login persists and reuses the installation UUID",
   for(let attempt=0;attempt<2;attempt++){
     child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_DESK_DIR:join(temp,"desk"),PI_OAUTH_CALLBACK_HOST:"127.0.0.1"},stdio:["ignore","pipe","pipe"]});
     const server=child;let output="",errors="";server.stderr!.on("data",chunk=>errors+=chunk);
-    const origin=await new Promise<string>((ok,fail)=>{const timer=setTimeout(()=>fail(Error(errors||"OAuth fixture startup timed out")),15000);server.stdout!.on("data",chunk=>{output+=chunk;const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});server.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
-    streamAbort=new AbortController();const response=await fetch(origin+"/api/events",{signal:AbortSignal.any([streamAbort.signal,AbortSignal.timeout(15000)])}),reader=response.body!.getReader(),decoder=new TextDecoder();let buffer="";
+    const launchUrl=await new Promise<string>((ok,fail)=>{const timer=setTimeout(()=>fail(Error(errors||"OAuth fixture startup timed out")),15000);server.stdout!.on("data",chunk=>{output+=chunk;const match=launchUrlPattern.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});server.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
+    const {origin, fetch: authenticatedFetch}=await signIn(launchUrl);
+    streamAbort=new AbortController();const response=await authenticatedFetch(origin+"/api/events",{signal:AbortSignal.any([streamAbort.signal,AbortSignal.timeout(15000)])}),reader=response.body!.getReader(),decoder=new TextDecoder();let buffer="";
     const next=async(type:string):Promise<any>=>{for(;;){const end=buffer.indexOf("\n\n");if(end>=0){const block=buffer.slice(0,end);buffer=buffer.slice(end+2);if(!block.startsWith("data: "))continue;const event=JSON.parse(block.slice(6));if(event.type===type)return event.data;if(event.type==="notice"&&event.data.type==="error")throw Error(event.data.message);continue;}const chunk=await reader.read();assert.equal(chunk.done,false,"OAuth event stream ended early");buffer+=decoder.decode(chunk.value,{stream:true});}};
-    const post=async(path:string,data:unknown)=>{const response=await fetch(origin+"/api"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});assert.equal(response.status,200);return response.json();};
+    const post=async(path:string,data:unknown)=>{const response=await authenticatedFetch(origin+"/api"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});assert.equal(response.status,200);return response.json();};
     assert.equal((await post("/models",{provider:"openai",operation:"oauth"})).started,true);
     const auth=await next("auth"),url=new URL(auth.url),settings=JSON.parse(await readFile(join(agent,"settings.json"),"utf8"));
     assert.match(settings.deviceId,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -278,14 +292,15 @@ test("production persistence: acknowledged data survives SIGKILL and an interrup
   await writeFile(join(agent,"settings.json"),JSON.stringify({defaultProvider:"mock",defaultModel:"mock",retry:{enabled:false},compaction:{enabled:false}}));
   const {pathToFileURL}=await import("node:url"),crashPreload=join(temp,"crash-write.mjs");
   await writeFile(crashPreload,`import fs from 'node:fs';import {resolve} from 'node:path';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeFileSync;fs.writeFileSync=function(path,contents,options){if(String(path)===resolve(process.env.PI_DESK_DIR,'state.json.tmp')&&String(contents).includes('interrupted draft fixture')){write(path,String(contents).slice(0,20),options);process.kill(process.pid,'SIGKILL');}return write(path,contents,options);};syncBuiltinESMExports();`);
-  let child:ReturnType<typeof spawn>|undefined,origin="";
+  let child:ReturnType<typeof spawn>|undefined,origin="",authenticatedFetch:typeof fetch;
   t.after(async()=>{if(child)await stopChild(child);model.close();model.closeAllConnections();});
   const start=async(crash=false)=>{
     child=spawn(process.execPath,[...(crash?["--import",pathToFileURL(crashPreload).href]:[]),resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_DESK_DIR:desk,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions")},stdio:["ignore","pipe","pipe"]});
-    origin=await new Promise<string>((ok,fail)=>{let output="",errors="";const timer=setTimeout(()=>fail(Error(errors||"startup timeout")),20000);child!.stderr!.on("data",chunk=>errors+=chunk);child!.stdout!.on("data",chunk=>{output+=chunk;const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});child!.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
+    const launchUrl=await new Promise<string>((ok,fail)=>{let output="",errors="";const timer=setTimeout(()=>fail(Error(errors||"startup timeout")),20000);child!.stderr!.on("data",chunk=>errors+=chunk);child!.stdout!.on("data",chunk=>{output+=chunk;const match=launchUrlPattern.exec(output);if(match){clearTimeout(timer);ok(match[0]);}});child!.once("exit",code=>{clearTimeout(timer);fail(Error(`server exit ${code}: ${errors}`));});});
+    ({origin,fetch:authenticatedFetch}=await signIn(launchUrl));
   };
   const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{
-    const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});
+    const response=await authenticatedFetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});
     const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;
   };
   await start();assert.equal((await request("/state")).preferences.maxRetries??3,3);await request("/preferences",{maxRetries:2});
@@ -344,14 +359,33 @@ test("production HTTP: local origin boundary, default-enabled workspace, SSE rec
   await mkdir(join(temp,"desk"));await writeFile(join(temp,"desk","state.json"),JSON.stringify({version:1,preferences:{theme:"light"},sessions:[startupSession("older-history","older","2021-01-01T00:00:00.000Z"),startupSession("newest-history","ssh-menu","2022-01-01T00:00:00.000Z"),startupSession("old-remote-history","ssh-menu","2020-01-01T00:00:00.000Z")],workspaces:[{id:"empty",name:"Empty fixture",path:join(temp,"empty"),trusted:true},{id:"older",name:"Older fixture",path:join(temp,"older"),trusted:true},{id:"ssh-menu",name:"SSH menu fixture",path:"/srv/fixture",trusted:false,remote:{target:"fixture@127.0.0.1",port:2222,historyImported:true}}]}));
   let child:ReturnType<typeof spawn>;
   const start=(extraEnv:NodeJS.ProcessEnv={})=>{
-    child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,...(process.platform==="linux"?{PATH:openerBin+":"+process.env.PATH,PI_DESK_OPEN_TEST_ARGS:openerArgs,PI_DESK_OPEN_TEST_CWD:openerCwd}:{}),PI_CODING_AGENT_DIR:agent,PI_DESK_DIR:join(temp,"desk"),...extraEnv},stdio:["ignore","pipe","pipe"]});
+    child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open","--public-url","https://desk.fixture.test"],{windowsHide:true,env:{...process.env,...(process.platform==="linux"?{PATH:openerBin+":"+process.env.PATH,PI_DESK_OPEN_TEST_ARGS:openerArgs,PI_DESK_OPEN_TEST_CWD:openerCwd}:{}),PI_CODING_AGENT_DIR:agent,PI_DESK_DIR:join(temp,"desk"),...extraEnv},stdio:["ignore","pipe","pipe"]});
     let output="",errors="";child.stderr!.on("data",chunk=>{errors+=chunk.toString();});
-    return new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("service did not start: "+errors)),30000);child.stdout!.on("data",chunk=>{output+=chunk.toString();const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(new Error(`service exited ${code}: ${errors}`));});});
+    return new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("service did not start: "+errors)),30000);child.stdout!.on("data",chunk=>{output+=chunk.toString();const match=launchUrlPattern.exec(output);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(new Error(`service exited ${code}: ${errors}`));});});
   };
   t.after(async()=>{mock.close();mock.closeAllConnections();await stopChild(child);});
-  let origin=await start();
-  const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await fetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
-  assert.equal((await fetch(origin)).status, 200);
+  let launchUrl=await start();
+  let {origin, cookie, fetch: authenticatedFetch}=await signIn(launchUrl);
+  const request = async (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => { const res = await authenticatedFetch(origin + "/api" + path, { method, body: data === undefined ? undefined : JSON.stringify(data), headers: data === undefined ? undefined : { "Content-Type": "application/json" } }); return { status: res.status, data: await res.json() }; };
+  for (const path of ["/", "/assets/app.js", "/api/state", "/api/events", "/?secret=wrong", "/api/state" + new URL(launchUrl).search]) {
+    const response = await fetch(origin + path, { redirect: "manual" });
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("set-cookie"), null);
+  }
+  const publicHost = "desk.fixture.test";
+  const proxyRequest = (path: string, headers: Record<string, string> = {}) => new Promise<IncomingMessage>((resolve, reject) => {
+    httpRequest(origin + path, { headers: { Host: publicHost, ...headers } }, response => { response.resume(); resolve(response); }).on("error", reject).end();
+  });
+  assert.equal((await proxyRequest("/", { Host: "unconfigured.fixture.test", "X-Forwarded-Host": publicHost })).statusCode, 403);
+  assert.equal((await proxyRequest("/api/state", { Cookie: cookie })).statusCode, 401);
+  const publicLogin = await proxyRequest("/" + new URL(launchUrl).search);
+  assert.equal(publicLogin.statusCode, 303);
+  assert.equal(publicLogin.headers.location, "/");
+  assert.match(publicLogin.headers["set-cookie"]![0], /^__Host-pi-desk-.*; Path=\/; HttpOnly; SameSite=Lax; Secure$/);
+  const publicCookie = publicLogin.headers["set-cookie"]![0].split(";")[0];
+  assert.equal((await proxyRequest("/api/state", { Cookie: publicCookie, Origin: `https://${publicHost}` })).statusCode, 200);
+  assert.equal((await proxyRequest("/api/state", { Cookie: publicCookie, Origin: `http://${publicHost}` })).statusCode, 403);
+  assert.equal((await authenticatedFetch(origin)).status, 200);
   assert.equal((await request("/health")).data.sdk,(await request("/version")).data.sdkVersion);
   assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","older","empty"],"startup orders workspaces by their newest session and keeps empty workspaces last");
   assert.equal((await request("/workspaces/empty",{pinned:true},"PATCH")).data.pinned,true);
@@ -366,9 +400,9 @@ test("production HTTP: local origin boundary, default-enabled workspace, SSE rec
   assert.deepEqual((await request("/state")).data.workspaces.map((item:any)=>item.id),["ssh-menu","older","empty"],"unpinning restores activity ordering");
   const sshInfo=await request("/workspaces/ssh-menu/ssh-info");assert.equal(sshInfo.status,200);assert.equal(sshInfo.data.hostname,"127.0.0.1");assert.equal(sshInfo.data.user,"fixture");assert.equal(sshInfo.data.port,2222);assert.ok(!("identityfile" in sshInfo.data));assert.equal((await request("/state")).data.workspaces[0].remote.connected,false);
 assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
-  assert.equal((await fetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);
-  assert.equal((await fetch(origin + "/api/state", { headers: { "Sec-Fetch-Site": "cross-site" } })).status, 403);
-  const navigation = await new Promise<number>(resolve => { httpRequest(origin, { headers: { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" } }, response => { response.resume(); resolve(response.statusCode!); }).end(); }); assert.equal(navigation, 200);
+  assert.equal((await authenticatedFetch(origin + "/api/state", { headers: { Origin: "https://untrusted.example" } })).status, 403);
+  assert.equal((await authenticatedFetch(origin + "/api/state", { headers: { "Sec-Fetch-Site": "cross-site" } })).status, 403);
+  const navigation = await new Promise<number>(resolve => { httpRequest(origin, { headers: { Cookie: cookie, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" } }, response => { response.resume(); resolve(response.statusCode!); }).end(); }); assert.equal(navigation, 200);
   const oldPreferences=(await request("/state")).data.preferences;
   assert.equal((await request("/preferences",{maxRetries:5})).data.maxRetries,5);
   for(const maxRetries of [-1,1.5,101,"3",null])assert.equal((await request("/preferences",{maxRetries,theme:"dark"})).status,400);
@@ -424,8 +458,8 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   await writeFile(join(cwd,"large.txt"),Buffer.alloc(2*1024*1024+1,97));assert.match((await request(`/files/${w.id}?path=large.txt`)).data.unsupported,/2 MiB/);
   await mkdir(join(cwd,"html"));await writeFile(join(cwd,"html","index.html"),'<link rel="stylesheet" href="style.css"><h1 id="result">Loading</h1><script type="module" src="main.js"></script>');await writeFile(join(cwd,"html","style.css"),'h1 { color: rgb(12, 34, 56); }');await writeFile(join(cwd,"html","main.js"),'document.querySelector("h1").textContent="HTML fixture ready";');
   const htmlPreview=(await request(`/files/${w.id}/preview`,{path:"html/index.html"})).data;assert.match(htmlPreview.html,/^\/preview\//);const htmlRoot=htmlPreview.html.slice(0,htmlPreview.html.lastIndexOf("/")+1);
-  const htmlResponse=await fetch(origin+htmlPreview.html,{headers:{Origin:"null","Sec-Fetch-Site":"cross-site"}});assert.equal(htmlResponse.status,200);assert.match(htmlResponse.headers.get("content-security-policy")!,/sandbox allow-scripts/);assert.equal(htmlResponse.headers.get("x-frame-options"),null);assert.equal((await fetch(origin+htmlRoot+"main.js",{headers:{Origin:"null"}})).headers.get("access-control-allow-origin"),"null");
-  assert.equal((await fetch(origin+htmlRoot+"..%2fhello.txt")).status,403);assert.equal((await fetch(origin+htmlRoot+"../index.html")).status,404);assert.equal((await fetch(origin+htmlPreview.html,{method:"POST"})).status,404);assert.equal((await fetch(origin+"/api/state",{headers:{Origin:"null"}})).status,403);
+  const htmlResponse=await authenticatedFetch(origin+htmlPreview.html,{headers:{Origin:"null","Sec-Fetch-Site":"cross-site"}});assert.equal(htmlResponse.status,200);assert.match(htmlResponse.headers.get("content-security-policy")!,/sandbox allow-scripts/);assert.equal(htmlResponse.headers.get("x-frame-options"),null);assert.equal((await authenticatedFetch(origin+htmlRoot+"main.js",{headers:{Origin:"null"}})).headers.get("access-control-allow-origin"),"null");
+  assert.equal((await authenticatedFetch(origin+htmlRoot+"..%2fhello.txt")).status,403);assert.equal((await authenticatedFetch(origin+htmlRoot+"../index.html")).status,404);assert.equal((await authenticatedFetch(origin+htmlPreview.html,{method:"POST"})).status,404);assert.equal((await authenticatedFetch(origin+"/api/state",{headers:{Origin:"null"}})).status,403);
   for(const url of ["file:///tmp/secret","javascript:alert(1)","https://user:secret@example.com/"])assert.equal((await request("/open-url",{url})).status,400);
   assert.ok((await request(`/files/${w.id}?search=hltxt`)).data.matches.includes("hello.txt"));
   await t.test("sidebar shows name matches before body matches and remembers workspace expansion",{skip:process.platform!=="win32"},async()=>{
@@ -436,7 +470,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
       const sidebar=page.getByRole("region",{name:"工作区会话"});
       const workspace=(expanded:boolean)=>sidebar.getByRole("button",{name:`${expanded?"折叠":"展开"}工作区 Older fixture`,exact:true});
       const older=sidebar.getByTitle("older-history",{exact:true}),body=sidebar.getByTitle("newest-history",{exact:true});
-      await page.goto(origin);await workspace(false).waitFor();assert.equal(await older.count(),0);
+      await page.goto(launchUrl);await workspace(false).waitFor();assert.equal(await older.count(),0);
       await workspace(false).click();await older.waitFor();
       await page.reload();await workspace(true).waitFor();await older.waitFor();
       await workspace(true).click();await page.reload();await workspace(false).waitFor();assert.equal(await older.count(),0);
@@ -460,7 +494,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
       for(let i=0;i<60&&(await request(`/sessions/${linked.id}`)).data.record.status==="running";i++)await new Promise(resolve=>setTimeout(resolve,50));
       await page.addInitScript(id=>{if(window!==window.top)return;localStorage.setItem("pi-desk.active",id);localStorage.setItem("pi-desk.inspector","false");},linked.id);
       await page.route("**/api/open-url",async route=>{external++;await route.fulfill({status:200,contentType:"application/json",body:'{"opened":true}'});});
-      await page.goto(origin);await page.getByRole("button",{name:"文件",exact:true}).click();
+      await page.goto(launchUrl);await page.getByRole("button",{name:"文件",exact:true}).click();
       const pane=page.getByRole("complementary",{name:"右侧文件与浏览器面板"});await pane.getByRole("tabpanel",{name:"hello.txt",exact:true}).getByText("workspace preview",{exact:true}).waitFor({timeout:10000});
       assert.deepEqual(await pane.getByRole("tab").allTextContents(),["hello.txt"]);await page.getByRole("button",{name:"hello.txt",exact:true}).click();assert.equal(await pane.getByRole("tab",{name:"hello.txt",exact:true}).getAttribute("aria-selected"),"true");
       await pane.getByRole("button",{name:"收起右侧面板",exact:true}).click();await page.getByRole("link",{name:"网页",exact:true}).click();await pane.getByRole("tab",{name:"Sidebar fixture",exact:true}).waitFor({timeout:10000});assert.equal(external,0,"web links use the embedded browser");
@@ -507,12 +541,12 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.deepEqual((await request("/state")).data,stateBeforeProbe,"model connection probes do not create or alter conversations");
   const beforeDraftConfig=await readFile(join(agent,"models.json"),"utf8"),draftProvider={id:"draft-fixture",api:"openai-completions",baseUrl:`http://127.0.0.1:${modelPort}/v1`,apiKey:"draft-secret-key",headers:{"X-Private":"draft-header-secret"}};
   const discovered=await request("/models/discover",{provider:draftProvider});assert.equal(discovered.status,200,JSON.stringify(discovered.data));assert.deepEqual(discovered.data.map((m:any)=>m.id),["discovered-one","discovered-two"]);
-  const streamed=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",prompt:"editable probe prompt",draft:{provider:draftProvider,model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
+  const streamed=await authenticatedFetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",prompt:"editable probe prompt",draft:{provider:draftProvider,model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
   assert.equal(streamed.status,200);const probeLogs=await streamed.text(),events=probeLogs.trim().split("\n").map(line=>JSON.parse(line));
   assert.ok(events.some(e=>e.kind==="request"&&JSON.stringify(e.data).includes("editable probe prompt")),probeLogs);assert.ok(events.some(e=>e.kind==="response"&&e.data.status===200));assert.ok(events.some(e=>e.kind==="output"));assert.ok(events.some(e=>e.kind==="result"));assert.ok(probeLogs.includes("draft-secret-key")&&probeLogs.includes("draft-header-secret"),"connection diagnostics preserve raw credentials");
   assert.deepEqual(events.find(e=>e.kind==="info").data.proxy,{source:"global",mode:"direct"});
   const closed=createServer();closed.listen(0,"127.0.0.1");await once(closed,"listening");const closedPort=(closed.address() as {port:number}).port;await new Promise<void>(resolve=>closed.close(()=>resolve()));
-  const failedProbe=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",draft:{provider:{...draftProvider,baseUrl:`http://127.0.0.1:${closedPort}/v1`},model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
+  const failedProbe=await authenticatedFetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:draftProvider.id,model:"draft-model",draft:{provider:{...draftProvider,baseUrl:`http://127.0.0.1:${closedPort}/v1`},model:{id:"draft-model",contextWindow:64000,maxTokens:1000}}})});
   const failureEvents=(await failedProbe.text()).trim().split("\n").map(line=>JSON.parse(line)),failure=failureEvents.find(e=>e.kind==="error").data;
   assert.equal(failureEvents.filter(e=>e.kind==="error").length,1);assert.equal(failure.error.cause.cause.code,"ECONNREFUSED");assert.equal(failure.error.cause.cause.address,"127.0.0.1");assert.equal(failure.error.cause.cause.port,closedPort);assert.ok(failure.error.cause.stack);assert.equal(failure.proxy.mode,"direct");assert.equal(failure.aborted,false);
   assert.equal(await readFile(join(agent,"models.json"),"utf8"),beforeDraftConfig,"discovering and probing drafts do not save configuration");
@@ -675,7 +709,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const failed=await request(mcpUrl,{operation:"debug",scope:"global",name:"manager",original:"manager",definition:{...definition.definition,args:[mcpScript,"fail"]}});assert.ok(failed.data.error);assert.ok(!JSON.stringify(failed.data).includes("mcp-manager-secret-value"));
   const mcpHttp=createServer(async(req,res)=>{if(req.method!=="POST"){res.writeHead(405).end();return;}if(req.headers.authorization!=="Bearer mcp-http-secret"){res.writeHead(401).end();return;}const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));const message=JSON.parse(Buffer.concat(chunks).toString());if(message.id===undefined){res.writeHead(202).end();return;}const result=message.method==="initialize"?{protocolVersion:message.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:"HTTP fixture",version:"1"},instructions:"Streamable HTTP fixture instructions"}:{tools:[{name:"http_echo",description:"HTTP echo",inputSchema:{type:"object",properties:{}}}]};res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({jsonrpc:"2.0",id:message.id,result}));});mcpHttp.listen(0,"127.0.0.1");await once(mcpHttp,"listening");t.after(()=>{mcpHttp.close();mcpHttp.closeAllConnections();});
   await request(mcpUrl,{operation:"save",scope:"global",name:"http-manager",definition:{url:`http://127.0.0.1:${(mcpHttp.address() as {port:number}).port}/mcp`,headers:{Authorization:"Bearer mcp-http-secret"},enabled:false}});const httpDefinition=(await request(mcpUrl+"?scope=global&name=http-manager")).data;assert.equal(httpDefinition.definition.headers.Authorization,"[已保存]");const httpDebug=await request(mcpUrl,{operation:"debug",scope:"global",name:"http-manager",original:"http-manager",definition:httpDefinition.definition});assert.equal(httpDebug.data.state,"connected");assert.equal(httpDebug.data.tools[0].name,"http_echo");assert.match(httpDebug.data.instructions,/HTTP fixture/);assert.ok(!JSON.stringify(httpDebug).includes("mcp-http-secret"));
-  probePid=Number(await readFile(mcpProcess,"utf8"));const cancelDebug=new AbortController();const cancelled=fetch(origin+"/api"+mcpUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation:"debug",scope:"global",name:"manager",original:"manager",definition:{...definition.definition,args:[mcpScript,"hang"]}}),signal:cancelDebug.signal});await waitFor(async()=>Number(await readFile(mcpProcess,"utf8"))!==probePid);const hangingPid=Number(await readFile(mcpProcess,"utf8"));cancelDebug.abort();await assert.rejects(cancelled);await waitFor(async()=>gone(hangingPid));
+  probePid=Number(await readFile(mcpProcess,"utf8"));const cancelDebug=new AbortController();const cancelled=authenticatedFetch(origin+"/api"+mcpUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation:"debug",scope:"global",name:"manager",original:"manager",definition:{...definition.definition,args:[mcpScript,"hang"]}}),signal:cancelDebug.signal});await waitFor(async()=>Number(await readFile(mcpProcess,"utf8"))!==probePid);const hangingPid=Number(await readFile(mcpProcess,"utf8"));cancelDebug.abort();await assert.rejects(cancelled);await waitFor(async()=>gone(hangingPid));
   const beforeInvalid=await readFile(mcpFile,"utf8");assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"broken",definition:{command:123}})).status,400);assert.equal(await readFile(mcpFile,"utf8"),beforeInvalid);assert.equal((await request(mcpUrl,{operation:"save",scope:"global",name:"sse",definition:{type:"sse",url:"http://127.0.0.1/mcp"}})).status,400);
   assert.equal((await request(mcpUrl,{operation:"save",scope:"project",name:"override",definition:{enabled:false}})).status,400);
   assert.equal((await request(mcpUrl,{operation:"save",scope:"project",name:"auth",definition:{url:"http://127.0.0.1/mcp",auth:{provider:"mock"}}})).status,400);
@@ -693,7 +727,7 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await request(resourceUrl)).data.packages.length,1);
   assert.equal((await request(resourceUrl,{operation:"package_remove",source:localPackage})).status,200); await access(localPackage);
   assert.equal((await request(resourceUrl,{operation:"delete",path:"prompts/review.md"})).status,200);
-  const abort = new AbortController(); const stream = await fetch(origin + "/api/events", { signal: abort.signal }); const reader = stream.body!.getReader(); assert.match(new TextDecoder().decode((await reader.read()).value), /"type":"state"/);
+  const abort = new AbortController(); const stream = await authenticatedFetch(origin + "/api/events", { signal: abort.signal }); const reader = stream.body!.getReader(); assert.match(new TextDecoder().decode((await reader.read()).value), /"type":"state"/);
   assert.equal((await request(`/sessions/${session.id}/prompt`, { text: "background test" })).status, 202); abort.abort();
   let snapshot;
   for (let i = 0; i < 60; i++) { snapshot = (await request(`/sessions/${session.id}`)).data; if (snapshot.record.status === "idle" && snapshot.stats.assistantMessages > 0) break; await new Promise(resolve => setTimeout(resolve, 100)); }
@@ -733,8 +767,10 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   const forkSnapshot = (await request(`/sessions/${fork.id}`)).data;
   assert.equal((await request(`/sessions/${fork.id}`, undefined, "DELETE")).status, 200);
   await assert.rejects(access(forkSnapshot.record.sessionPath)); await access(snapshot.record.sessionPath);
-  const reopened = await fetch(origin + "/api/events", { signal: AbortSignal.timeout(2000) }); const replay = reopened.body!.getReader(); assert.match(new TextDecoder().decode((await replay.read()).value), /background test/); await replay.cancel();
-  const ws = new WebSocket(origin.replace("http", "ws") + `/api/terminal/${w.id}`, { origin }); await once(ws, "open");
+  const reopened = await authenticatedFetch(origin + "/api/events", { signal: AbortSignal.timeout(2000) }); const replay = reopened.body!.getReader(); assert.match(new TextDecoder().decode((await replay.read()).value), /background test/); await replay.cancel();
+  const terminalUrl = origin.replace("http", "ws") + `/api/terminal/${w.id}`;
+  await assert.rejects(once(new WebSocket(terminalUrl + new URL(launchUrl).search, { origin }), "open"));
+  const ws = new WebSocket(terminalUrl, { origin, headers: { Cookie: cookie } }); await once(ws, "open");
   const terminalOutput = await new Promise<string>((resolve, reject) => { let value = ""; const timer = setTimeout(() => reject(new Error("PTY timed out: " + value)), 10000); ws.on("message", chunk => { const data = JSON.parse(String(chunk)); if (data.type === "error") { clearTimeout(timer); reject(new Error(data.message)); } if (data.type === "data") { value += data.data; if (value.includes("PI_DESK_PTY_OK")) { clearTimeout(timer); resolve(value); } } }); ws.send(JSON.stringify({ type: "resize", cols: 100, rows: 25 })); ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "Write-Output ('PI_DESK_' + 'PTY_OK')\r" : "printf 'PI_DESK_%s\\n' 'PTY_OK'\r" })); });
   assert.match(terminalOutput, /PI_DESK_PTY_OK/); ws.send(JSON.stringify({ type: "close" })); ws.close();
   // Real CONNECT tunnels: global fallback, provider overrides, direct mode and Google global fetch.
@@ -790,13 +826,19 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
     [[{provider:"mock",proxy:null}],{source:"provider",mode:"direct"}],
   ] as const){
     for(const setting of settings)assert.equal((await request("/proxy",setting)).status,200);
-    const response=await fetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:"mock",model:"mock"})});
+    const response=await authenticatedFetch(origin+"/api/models/test?stream=1",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:"mock",model:"mock"})});
     const logs=(await response.text()).trim().split("\n").map(line=>JSON.parse(line));assert.ok(logs.some(e=>e.kind==="result"),JSON.stringify(logs));assert.deepEqual(logs.find(e=>e.kind==="info").data.proxy,expected);assert.deepEqual(logs.find(e=>e.kind==="request").data.proxy,expected);
   }
   assert.equal((await request("/proxy",{provider:"mock",proxy:modelProxy})).status,200);
   assert.equal((await request("/proxy",{proxy:""})).status,200);
   const beforeRestart=proxyHits.map(hits=>hits.length);
-  await stopChild(child!);origin=await start({NODE_USE_ENV_PROXY:"1",HTTP_PROXY:globalProxy,HTTPS_PROXY:globalProxy,NO_PROXY:"",http_proxy:globalProxy,https_proxy:globalProxy,no_proxy:""});
+  const previousLaunch = launchUrl, previousCookie = cookie;
+  await stopChild(child!);launchUrl=await start({NODE_USE_ENV_PROXY:"1",HTTP_PROXY:globalProxy,HTTPS_PROXY:globalProxy,NO_PROXY:"",http_proxy:globalProxy,https_proxy:globalProxy,no_proxy:""});
+  ({origin, cookie, fetch: authenticatedFetch}=await signIn(launchUrl));
+  assert.ok(new URL(previousLaunch).search !== new URL(launchUrl).search);
+  assert.equal((await fetch(origin+new URL(previousLaunch).search)).status,401);
+  const expiredCookie = cookie.slice(0, cookie.indexOf("=")) + previousCookie.slice(previousCookie.indexOf("="));
+  assert.equal((await fetch(origin+"/api/state",{headers:{Cookie:expiredCookie}})).status,401);
   assert.equal((await request("/state")).data.preferences.proxy.providers.mock,modelProxy);
   await Promise.all([runProxy(session.id),runProxy(google.id)]);
   assert.deepEqual(proxyHits.map(hits=>hits.length),[beforeRestart[0],beforeRestart[1]+1],"saved provider route survives restart and a blank global proxy bypasses the process proxy");
@@ -826,16 +868,17 @@ test("development HTTP: native Vite config, transformed React entry and isolated
   const child=spawn(process.execPath,[resolve("src/server.ts"),"--dev","--port","0","--no-open"],{cwd:process.cwd(),windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:join(temp,"sessions"),PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
   t.after(()=>stopChild(child));
   let output="",errors="";child.stderr.on("data",chunk=>{errors+=String(chunk);});
-  const origin=await new Promise<string>((resolve,reject)=>{
+  const launchUrl=await new Promise<string>((resolve,reject)=>{
     const timer=setTimeout(()=>reject(Error("development service did not start: "+errors)),30000);
-    child.stdout.on("data",chunk=>{output+=String(chunk);const match=/http:\/\/127\.0\.0\.1:\d+/.exec(output);if(match){clearTimeout(timer);resolve(match[0]);}});
+    child.stdout.on("data",chunk=>{output+=String(chunk);const match=launchUrlPattern.exec(output);if(match){clearTimeout(timer);resolve(match[0]);}});
     child.once("error",error=>{clearTimeout(timer);reject(error);});child.once("exit",code=>{clearTimeout(timer);reject(Error(`development service exited ${code}: ${errors}`));});
   });
-  const page=await fetch(origin);assert.equal(page.status,200);assert.match(await page.text(),/@vite\/client/);
-  const entry=await fetch(origin+"/src/web/main.tsx");assert.equal(entry.status,200);assert.match(await entry.text(),/createRoot/);
-  const health=await(await fetch(origin+"/api/health")).json();assert.equal(health.runtime,"Node.js");assert.equal(health.agentDir,agent);
-  const state=await(await fetch(origin+"/api/state")).json();assert.deepEqual(state.sessions,[]);assert.deepEqual(state.workspaces,[]);
-  assert.equal((await fetch(origin+"/api/state",{headers:{Origin:"https://untrusted.example"}})).status,403);
+  const {origin, fetch: authenticatedFetch}=await signIn(launchUrl);
+  const page=await authenticatedFetch(origin);assert.equal(page.status,200);assert.match(await page.text(),/@vite\/client/);
+  const entry=await authenticatedFetch(origin+"/src/web/main.tsx");assert.equal(entry.status,200);assert.match(await entry.text(),/createRoot/);
+  const health=await(await authenticatedFetch(origin+"/api/health")).json();assert.equal(health.runtime,"Node.js");assert.equal(health.agentDir,agent);
+  const state=await(await authenticatedFetch(origin+"/api/state")).json();assert.deepEqual(state.sessions,[]);assert.deepEqual(state.workspaces,[]);
+  assert.equal((await authenticatedFetch(origin+"/api/state",{headers:{Origin:"https://untrusted.example"}})).status,403);
 });
 
 test("Windows open-with: installed apps, visible launch, PowerShell cwd and startup errors", {skip:process.platform!=="win32"}, async()=>{
@@ -914,8 +957,9 @@ test("native sessions: startup discovery, watched changes, shared names and dele
   await write(firstPath,first);await write(flatPath,flat);await write(join(root,"--ssh-fixture--","ignored.jsonl"),native("SSH private cache"));
   const child=spawn(process.execPath,[resolve("dist/server.js"),"--port","0","--no-open"],{windowsHide:true,env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_CODING_AGENT_SESSION_DIR:root,PI_DESK_DIR:join(temp,"desk")},stdio:["ignore","pipe","pipe"]});
   const controller=new AbortController();let reading=Promise.resolve();t.after(async()=>{controller.abort();await reading;await stopChild(child);});let errors="",output="";child.stderr.on("data",chunk=>errors+=chunk);
-  const origin=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(errors||"sync server did not start")),20000);child.stdout.on("data",chunk=>{output+=chunk;const url=/http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0];if(url){clearTimeout(timer);resolve(url);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`sync server exited ${code}: ${errors}`));});});
-  const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{const response=await fetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.equal(response.ok,true,JSON.stringify(body));return body;};
+  const launchUrl=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(errors||"sync server did not start")),20000);child.stdout.on("data",chunk=>{output+=chunk;const url=launchUrlPattern.exec(output)?.[0];if(url){clearTimeout(timer);resolve(url);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`sync server exited ${code}: ${errors}`));});});
+  const {origin, fetch: authenticatedFetch}=await signIn(launchUrl);
+  const request=async(path:string,data?:unknown,method=data===undefined?"GET":"POST")=>{const response=await authenticatedFetch(origin+"/api"+path,{method,headers:data===undefined?undefined:{"Content-Type":"application/json"},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.equal(response.ok,true,JSON.stringify(body));return body;};
   const initial=await request("/state");assert.equal(initial.sessions.length,2);assert.ok(initial.sessions.some((r:any)=>r.id===first[0].id));
   const search=(value:string)=>request(`/sessions?search=${encodeURIComponent(value)}`);
   assert.deepEqual(await search("NATIVE STARTUP"),[first[0].id]);
@@ -927,7 +971,7 @@ test("native sessions: startup discovery, watched changes, shared names and dele
   await request(`/sessions/${first[0].id}`,{mode:"minimal"},"PATCH");
   const empty=await request("/sessions",{workspaceId:initial.workspaces[0].id,mode:"minimal"});await request(`/sessions/${empty.id}`);await request("/discover",{});
   assert.ok((await request("/state")).sessions.some((r:any)=>r.id===empty.id),"opening an empty draft must not make synchronization delete it");
-  const response=await fetch(origin+`/api/events?sessionId=${first[0].id}`,{signal:controller.signal});
+  const response=await authenticatedFetch(origin+`/api/events?sessionId=${first[0].id}`,{signal:controller.signal});
   const events:any[]=[];const reader=response.body!.getReader();let buffer="";
   reading=(async()=>{try{while(true){const {done,value}=await reader.read();if(done)break;buffer+=new TextDecoder().decode(value);let end:number;while((end=buffer.indexOf("\n\n"))>=0){const part=buffer.slice(0,end);buffer=buffer.slice(end+2);if(part.startsWith("data: "))events.push(JSON.parse(part.slice(6)));}}}catch(error){if(!controller.signal.aborted)throw error;}})();
   const wait=async(predicate:()=>boolean)=>{const end=Date.now()+10000;while(!predicate()){assert.ok(Date.now()<end,"watched native change did not reach SSE: "+errors);await new Promise(resolve=>setTimeout(resolve,50));}};
@@ -939,7 +983,7 @@ test("native sessions: startup discovery, watched changes, shared names and dele
   assert.deepEqual(await search("external continuation"),[first[0].id],"search sees external edits to an open conversation");
   await Promise.all([request("/discover",{}),request("/discover",{})]);assert.equal((await request("/state")).sessions.filter((r:any)=>r.sessionPath===firstPath).length,1);
   await unlink(firstPath);await wait(()=>events.some(e=>e.type==="state"&&!e.data.sessions.some((r:any)=>r.id===first[0].id)));
-  assert.equal((await fetch(origin+`/api/sessions/${first[0].id}`)).status,400);await assert.rejects(access(firstPath));
+  assert.equal((await authenticatedFetch(origin+`/api/sessions/${first[0].id}`)).status,400);await assert.rejects(access(firstPath));
   await request(`/sessions/${added[0].id}`,undefined,"DELETE");await assert.rejects(access(addedPath));await request("/discover",{});assert.ok(!(await request("/state")).sessions.some((r:any)=>r.id===added[0].id));
 });
 

@@ -51,14 +51,23 @@ test("composer: project file search, references, file paste, reasoning sync and 
   let stderr="";child.stderr.setEncoding("utf8").on("data",chunk=>stderr+=chunk);
   const timings=()=>stderr.split(/\r?\n/).filter(line=>line.startsWith("[session-timing] ")&&line.endsWith("}")).map(line=>JSON.parse(line.slice(17)));
   t.after(async()=>{if(child.exitCode===null){const exited=once(child,"exit");child.kill();await exited;}});
-  const url=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("production server startup timeout")),15000);child.once("error",reject);child.stdout.on("data",chunk=>{const match=String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`production server exited: ${code}`));});});
-  const request=async(path:string,data?:unknown,method=data?"POST":"GET")=>{const response=await fetch(url+"/api"+path,{method,headers:data?{"Content-Type":"application/json"}:undefined,body:data?JSON.stringify(data):undefined});const body=await response.json();assert.ok(response.ok,JSON.stringify(body));return body;};
+  let stdout="";
+  const launchUrl=await new Promise<string>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("production server startup timeout")),15000);child.once("error",reject);child.stdout.on("data",chunk=>{stdout+=String(chunk);const match=/http:\/\/127\.0\.0\.1:\d+\/\?secret=[\w-]{43}(?=\r?\n)/.exec(stdout);if(match){clearTimeout(timer);resolve(match[0]);}});child.once("exit",code=>{clearTimeout(timer);reject(Error(`production server exited: ${code}`));});});
+  const url=new URL(launchUrl).origin;
+  const login=await fetch(launchUrl,{redirect:"manual"});
+  assert.equal(login.status,303);
+  const cookie=login.headers.get("set-cookie")!.split(";")[0];
+  const authenticatedFetch=(target:string,init:RequestInit)=>{
+    const headers=new Headers(init.headers);headers.set("Cookie",cookie);
+    return fetch(target,{...init,headers});
+  };
+  const request=async(path:string,data?:unknown,method=data?"POST":"GET")=>{const response=await authenticatedFetch(url+"/api"+path,{method,headers:data?{"Content-Type":"application/json"}:undefined,body:data?JSON.stringify(data):undefined});const body=await response.json();assert.ok(response.ok,JSON.stringify(body));return body;};
   const workspace=await request("/workspaces",{path:project});
   const browser=await chromium.launch({executablePath,headless:true});t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors:string[]=[];page.setDefaultTimeout(8000);page.on("pageerror",error=>errors.push(error.message));
   let releaseCatalog!:()=>void;const catalogGate=new Promise<void>(resolve=>releaseCatalog=resolve);t.after(()=>releaseCatalog());
   await page.route("**/api/models{,?*}",async route=>{await catalogGate;await route.continue().catch(()=>{});});
-  await page.goto(url);
+  await page.goto(launchUrl);
   await page.getByRole("button",{name:"选择模型",exact:true}).click();
   const loadingThinking=page.getByRole("menuitem",{name:"推理等级",exact:true});await loadingThinking.waitFor();assert.match(await loadingThinking.innerText(),/加载中/);assert.equal(await loadingThinking.isDisabled(),true);assert.equal(await loadingThinking.getAttribute("aria-busy"),"true");
   await page.keyboard.press("Escape");releaseCatalog();await page.unroute("**/api/models{,?*}");
@@ -81,7 +90,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await chooseModel("limited");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).count(),0);await page.getByRole("menuitemradio",{name:"XHigh",exact:true}).waitFor();await page.keyboard.press("Escape");await page.keyboard.press("Escape");
   await chooseModel("mock");await openThinking();assert.equal(await page.getByRole("menuitemradio",{name:"High",exact:true}).getAttribute("aria-checked"),"true");await page.screenshot({path:join(temp,"new-session-reasoning.png")});await page.keyboard.press("Escape");await page.keyboard.press("Escape");
   assert.equal((await request("/state")).sessions.length,0);
-  const invalid=await fetch(url+"/api/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaceId:workspace.id,mode:"minimal",model:"mock/plain",thinking:"high"})});assert.equal(invalid.status,400);assert.equal((await request("/state")).sessions.length,0);
+  const invalid=await authenticatedFetch(url+"/api/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaceId:workspace.id,mode:"minimal",model:"mock/plain",thinking:"high"})});assert.equal(invalid.status,400);assert.equal((await request("/state")).sessions.length,0);
   await editor.fill("new-session-fixture");const created=page.waitForResponse(response=>response.url().endsWith("/api/sessions")&&response.request().method()==="POST");await page.getByRole("button",{name:"发送任务",exact:true}).click();const session=await(await created).json();
   await page.getByRole("button",{name:"停止运行及所有子任务",exact:true}).waitFor({state:"detached"});await page.getByText("回答已收到",{exact:true}).waitFor();
   assert.equal(session.thinking,"high");assert.equal((await request(`/sessions/${session.id}`)).thinking,"high");assert.equal(requests[0].reasoning_effort,"high");
@@ -115,7 +124,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await openThinking();await page.getByRole("menuitemradio",{name:"Low",exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[aria-label="选择模型"]')?.textContent?.includes("Low"));
   assert.equal((await request(`/sessions/${session.id}`)).record.status,"running");assert.equal(requests[beforeSwitch].model,"mock");assert.equal(requests[beforeSwitch].reasoning_effort,"high");
-  const modeChange=await fetch(url+`/api/sessions/${session.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:session.mode==="standard"?"minimal":"standard"})});assert.equal(modeChange.status,400);
+  const modeChange=await authenticatedFetch(url+`/api/sessions/${session.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:session.mode==="standard"?"minimal":"standard"})});assert.equal(modeChange.status,400);
   releaseSwitch();await page.getByRole("button",{name:"停止运行及所有子任务",exact:true}).waitFor({state:"detached"});
   assert.equal(requests[beforeSwitch+1].model,"limited");assert.equal(requests[beforeSwitch+1].reasoning_effort,"low");assert.equal(requests[beforeSwitch].reasoning_effort,"high");
   await request(`/sessions/${session.id}`,{model:"mock/mock",thinking:"low"},"PATCH");
@@ -125,7 +134,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   const streamingReply=page.locator("article").filter({hasText:"fork-streaming-fixture"});await streamingReply.waitFor();
   assert.equal(await streamingReply.getByRole("toolbar").count(),0,"unfinished replies have no fork action");
   assert.equal((await request(`/sessions/${session.id}`)).messages.at(-1).entryId,undefined);
-  const invalidFork=await fetch(url+`/api/sessions/${session.id}/fork`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:"unsaved-entry"})});assert.equal(invalidFork.status,400);
+  const invalidFork=await authenticatedFetch(url+`/api/sessions/${session.id}/fork`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:"unsaved-entry"})});assert.equal(invalidFork.status,400);
   const source=await readFile(parent.record.sessionPath,"utf8"),branchIds:string[]=[];
   for(const [label,entry] of [["回复操作",reply],["用户消息操作",user]] as const){
     const toolbar=page.getByRole("toolbar",{name:label,exact:true}).first();
@@ -138,7 +147,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
     assert.equal((await request(`/sessions/${session.id}`)).record.status,"running");assert.equal(await readFile(parent.record.sessionPath,"utf8"),source,"fork never rewrites the live parent");
     await page.getByTitle(parent.record.title,{exact:true}).click();await streamingReply.waitFor();
   }
-  for(const operation of ["edit","delete","exclude"]){const response=await fetch(url+`/api/sessions/${session.id}/message`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:reply.entryId,operation,text:"blocked while running"})});assert.equal(response.status,400);}
+  for(const operation of ["edit","delete","exclude"]){const response=await authenticatedFetch(url+`/api/sessions/${session.id}/message`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryId:reply.entryId,operation,text:"blocked while running"})});assert.equal(response.status,400);}
   await page.getByRole("button",{name:`更多操作：${parent.record.title}`,exact:true}).focus();await page.keyboard.press("Enter");
   assert.equal(await page.getByRole("menuitem",{name:"分叉会话",exact:true}).isEnabled(),true);
   const latestFork=page.waitForResponse(r=>r.url().endsWith(`/sessions/${session.id}/fork`)&&r.request().method()==="POST");await page.getByRole("menuitem",{name:"分叉会话",exact:true}).click();const latestResponse=await latestFork;assert.equal(latestResponse.status(),200);const latestBranch=await latestResponse.json();branchIds.push(latestBranch.id);
@@ -274,7 +283,7 @@ test("composer: project file search, references, file paste, reasoning sync and 
   const recoveredMessages=retrySnapshot.messages.slice(retrySnapshot.messages.findIndex((m:any)=>m.entryId===recoveredUser)+1,retrySnapshot.messages.findIndex((m:any)=>m.entryId===failedAgainUser)),recoveredErrors=recoveredMessages.filter((m:any)=>m.errorMessage);assert.equal(recoveredErrors.length,3);
   await page.getByRole("tab",{name:"轨迹",exact:true}).click();for(const error of recoveredErrors)await page.locator(`[data-trace-id^="message-${error.entryId}-"]`).waitFor();await page.getByRole("tab",{name:"对话",exact:true}).click();
   await page.screenshot({path:join(temp,"merged-retry-errors.png")});
-  for(const name of ["../escape.txt","a:stream",".."]){const response=await fetch(url+`/api/files/${workspace.id}/attach`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({files:[{name,data:"aGk="}]})});assert.equal(response.status,400);}
+  for(const name of ["../escape.txt","a:stream",".."]){const response=await authenticatedFetch(url+`/api/files/${workspace.id}/attach`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({files:[{name,data:"aGk="}]})});assert.equal(response.status,400);}
   await page.getByRole("button",{name:"设置",exact:true}).click();await page.getByRole("navigation",{name:"设置",exact:true}).getByRole("button",{name:"模型管理",exact:true}).click();
   await page.getByRole("button",{name:"编辑 mock/mock",exact:true}).click();const modelDialog=page.getByRole("dialog",{name:"编辑模型",exact:true});
   await modelDialog.getByRole("textbox",{name:"模型 ID",exact:true}).waitFor();assert.equal(await modelDialog.getByLabel("模型显示名称",{exact:true}).count(),0);assert.equal(await page.getByText("清除 models.json 中的 API Key",{exact:true}).count(),0);

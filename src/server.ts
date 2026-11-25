@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { mkdirSync, watch } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -7,20 +8,26 @@ import { resolve, extname, sep, dirname } from "node:path";
 import { openExternal } from "./browser.ts";
 import {attachTerminals} from "./terminals.ts";
 import { Runtime } from "./runtime.ts";
-import { api, json, workspace } from "./api.ts";
+import { api, json } from "./api.ts";
 import { inside, safeError, sessionRoot } from "./storage.ts";
 import { parseArgs } from "node:util";
 import { installSessionTiming } from "./session-timing.ts";
 
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { port: { type: "string" }, "public-url": { type: "string" }, "no-open": { type: "boolean" }, dev: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } } });
 if (values.help || values.version) {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  console.log(values.version ? pkg.version : `Pi Desk\n\nUsage: pi-desk [web] [options]\n\n  --port <number>  Port (default: 30140)\n  --no-open        Do not open a browser\n  -h, --help       Show help\n  -v, --version    Show version`);
+  console.log(values.version ? pkg.version : `Pi Desk\n\nUsage: pi-desk [web] [options]\n\n  --port <number>     Port (default: 30140)\n  --public-url <url>  HTTPS origin of the reverse proxy (production only)\n  --no-open           Do not open a browser\n  -h, --help          Show help\n  -v, --version       Show version`);
   process.exit(0);
 }
 if (positionals.length && (positionals.length !== 1 || positionals[0] !== "web")) throw new Error("仅支持 web 命令，使用 --help 查看用法");
 let port = Number(values.port ?? (process.env.PORT || process.env.PI_DESK_PORT || 30140));
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("无效端口");
+const publicUrl = values["public-url"] === undefined ? undefined : new URL(values["public-url"]);
+if (publicUrl && (publicUrl.protocol !== "https:" || publicUrl.href !== publicUrl.origin + "/" || values.dev)) {
+  throw new Error("--public-url 仅支持生产服务的 HTTPS 源地址，例如 https://desk.example.com");
+}
+const launchSecret = randomBytes(32).toString("base64url");
+const sessionKey = randomBytes(32);
 await installSessionTiming();
 const runtime = new Runtime();
 mkdirSync(sessionRoot, { recursive: true });
@@ -35,17 +42,54 @@ const root = resolve(fileURLToPath(new URL("../frontend/dist/", import.meta.url)
 const dev = values.dev;
 const vite = dev ? await (await import("vite")).createServer({ configLoader: "native", configFile: fileURLToPath(new URL("../frontend/vite.config.ts", import.meta.url)), server: { middlewareMode: true } }) : undefined;
 const mime: Record<string,string> = { ".html": "text/html; charset=utf-8", ".htm":"text/html; charset=utf-8", ".js": "text/javascript", ".mjs":"text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".woff":"font/woff", ".ttf":"font/ttf", ".png": "image/png", ".ico": "image/x-icon", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".gif":"image/gif", ".webp":"image/webp", ".json":"application/json", ".wasm":"application/wasm" };
-const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
-function allowed(req: import("node:http").IncomingMessage) {
-  const navigation = req.method === "GET" && req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && !req.url?.startsWith("/api/");
-  return Boolean(req.headers.host && origins().has("http://" + req.headers.host) && (!req.headers.origin || origins().has(req.headers.origin)) && (req.headers["sec-fetch-site"] !== "cross-site" || navigation));
+function requestOrigin(req: IncomingMessage) {
+  const host = req.headers.host;
+  if (publicUrl && host === publicUrl.host) return publicUrl.origin;
+  const authorityPort = port === 80 ? "" : `:${port}`;
+  if (host === `127.0.0.1${authorityPort}` || host === `localhost${authorityPort}`) return `http://${host}`;
+}
+function trusted(req: IncomingMessage, origin: string, navigation = false) {
+  return (!req.headers.origin || req.headers.origin === origin) && (req.headers["sec-fetch-site"] !== "cross-site" || navigation);
+}
+function matches(value: string | null | undefined, expected: string) {
+  if (!value || value.length !== expected.length) return false;
+  const bytes = Buffer.from(value);
+  return bytes.length === expected.length && timingSafeEqual(bytes, Buffer.from(expected));
+}
+function cookieName(origin: string) {
+  return `${origin.startsWith("https:") ? "__Host-" : ""}pi-desk-${port}`;
+}
+function sessionCookie(origin: string) {
+  return createHmac("sha256", sessionKey).update(origin).digest("base64url");
+}
+function authenticated(req: IncomingMessage, origin: string) {
+  const prefix = `${cookieName(origin)}=`;
+  const cookie = req.headers.cookie?.split(";").map(value => value.trim()).find(value => value.startsWith(prefix));
+  return matches(cookie?.slice(prefix.length), sessionCookie(origin));
 }
 const server = createServer(async (req, res) => {
-  res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("Referrer-Policy", "no-referrer"); res.setHeader("X-Frame-Options", "DENY");
-  const previewRequest=req.url?.startsWith("/preview/")&&["GET","HEAD"].includes(req.method||"")&&origins().has("http://"+req.headers.host);
-  if (!allowed(req)&&!previewRequest) { json(res, { error: "只允许本机同源访问" }, 403); return; }
+  res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("Referrer-Policy", "no-referrer"); res.setHeader("X-Frame-Options", "DENY"); res.setHeader("Cache-Control", "no-store");
+  const origin = requestOrigin(req);
+  if (!origin) { json(res, { error: "访问地址未配置" }, 403); return; }
   try {
-    const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+    const url = new URL(req.url || "/", origin);
+    if (url.origin !== origin) { res.writeHead(400).end(); return; }
+    const navigation = req.method === "GET" && req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && !url.pathname.startsWith("/api/");
+    // Sandboxed previews use their own unguessable URL instead of browser cookies.
+    const previewRequest = url.pathname.startsWith("/preview/") && ["GET", "HEAD"].includes(req.method || "");
+    if (!previewRequest) {
+      if (!trusted(req, origin, navigation)) { json(res, { error: "只允许同源访问" }, 403); return; }
+      const exchange = req.method === "GET" && url.pathname === "/" && url.searchParams.has("secret");
+      if (exchange && (!req.headers["sec-fetch-dest"] || navigation) && matches(url.searchParams.get("secret"), launchSecret)) {
+        url.searchParams.delete("secret");
+        res.writeHead(303, {
+          Location: "/" + url.search,
+          "Set-Cookie": `${cookieName(origin)}=${sessionCookie(origin)}; Path=/; HttpOnly; SameSite=Lax${origin.startsWith("https:") ? "; Secure" : ""}`,
+        }).end();
+        return;
+      }
+      if (exchange || !authenticated(req, origin)) { json(res, { error: "访问口令无效或会话已失效，请打开启动时输出的完整链接" }, 401); return; }
+    }
     if(url.pathname.startsWith("/preview/")){
       const [, ,token,...parts]=url.pathname.split("/"),file=runtime.htmlPreviews.get(token);if(!file||!["GET","HEAD"].includes(req.method||"")){res.writeHead(404).end();return;}
       const folder=dirname(file),target=await realpath(resolve(folder,decodeURIComponent(parts.join("/"))));
@@ -59,14 +103,20 @@ const server = createServer(async (req, res) => {
     const path = resolve(root, "." + decodeURIComponent(url.pathname));
     if (path !== root && !path.startsWith(root + sep)) { res.writeHead(403).end(); return; }
     const target = extname(path) ? path : resolve(root, "index.html");
-    res.setHeader("Content-Security-Policy", `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}; frame-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`);
+    res.setHeader("Content-Security-Policy", `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ${origin.replace(/^http/, "ws")}; frame-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'`);
     res.setHeader("Content-Type", mime[extname(target)] || "application/octet-stream");
     res.end(await readFile(target));
   } catch (error) { if (!res.headersSent) json(res, { error: safeError(error) }, 400); else res.end(); }
 });
-const closeTerminals=attachTerminals(server,runtime,allowed);
+const closeTerminals = attachTerminals(server, runtime, req => {
+  const origin = requestOrigin(req);
+  return Boolean(origin && trusted(req, origin) && authenticated(req, origin));
+});
 server.listen(port, "127.0.0.1", () => {
-  port = (server.address() as { port: number }).port; const url = `http://127.0.0.1:${port}`; console.log(`Pi Desk ${url}`);
+  port = (server.address() as { port: number }).port;
+  const url = `http://127.0.0.1:${port}/?secret=${launchSecret}`;
+  console.log(`Pi Desk ${url}`);
+  if (publicUrl) console.log(`Pi Desk (public) ${publicUrl.origin}/?secret=${launchSecret}`);
   if (!values["no-open"]) void openExternal(url).catch(error=>console.error(safeError(error)));
 });
 server.on("error", error => { console.error(safeError(error)); process.exitCode = 1; });
