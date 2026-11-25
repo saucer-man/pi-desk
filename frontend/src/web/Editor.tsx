@@ -23,7 +23,7 @@ class FileReference extends DecoratorNode<ReactNode> {
   isInline(){return true;}
   createDOM(){const element=document.createElement("span");element.className=css.fileReference;element.contentEditable="false";return element;}
   updateDOM(){return false;}
-  decorate(editor:LexicalEditor){return <><button type="button" className={css.fileReferenceName} title={this.__path} aria-label={`预览文件：${this.__path}`} onClick={()=>window.dispatchEvent(new CustomEvent("pi-request-files",{detail:{path:this.__path}}))}><FileCode2 size={14}/><span>{this.__path.split("/").at(-1)}</span></button><button type="button" className={css.fileReferenceRemove} aria-label={`移除文件引用：${this.__path}`} disabled={!editor.isEditable()} onClick={()=>{if(editor.isEditable())editor.update(()=>{$getNodeByKey(this.getKey())?.remove();});}}><X size={12}/></button></>;}
+  decorate(editor:LexicalEditor){return <><button type="button" className={css.fileReferenceName} title={this.__path} aria-label={`预览文件：${this.__path}`} onClick={()=>window.dispatchEvent(new CustomEvent("pi-request-files",{detail:{path:this.__path}}))}><FileCode2 size={14}/><span>{this.__path}</span></button><button type="button" className={css.fileReferenceRemove} aria-label={`移除文件引用：${this.__path}`} disabled={!editor.isEditable()} onClick={()=>{if(editor.isEditable())editor.update(()=>{$getNodeByKey(this.getKey())?.remove();});}}><X size={12}/></button></>;}
 }
 
 function $draftParagraph(text:string){

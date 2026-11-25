@@ -164,7 +164,17 @@ test("composer: project file search, references, file paste, reasoning sync and 
   await editor.click();await editor.press("ControlOrMeta+a");await editor.press("Backspace");await page.unroute("**/api/files/*/attach");
   await editor.evaluate((element,path)=>{const data=new DataTransfer();data.setData("text/plain",`"${path}"`);element.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));},nativePath);
   await page.getByRole("button",{name:`预览文件：${nativePath}`,exact:true}).waitFor();
-  await new Promise(resolve=>setTimeout(resolve,750));await page.reload();await page.getByRole("button",{name:`预览文件：${nativePath}`,exact:true}).waitFor();
+  await new Promise(resolve=>setTimeout(resolve,750));await page.reload();
+  assert.equal(await editor.getByRole("button",{name:`预览文件：${nativePath}`,exact:true}).innerText(),nativePath);
+  await editor.click();await editor.press("ControlOrMeta+a");await editor.press("Backspace");
+  await page.setViewportSize({width:375,height:812});
+  const homePath="~/pentest/refer/ARTEX",longPath=`~/pentest/${"long-folder".repeat(15)}/ARTEX`;
+  await editor.evaluate((element,text)=>{const data=new DataTransfer();data.setData("text/plain",text);element.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));},`${homePath}\n${longPath}`);
+  assert.equal(await editor.getByRole("button",{name:`预览文件：${homePath}`,exact:true}).innerText(),homePath);
+  const longLabel=editor.getByRole("button",{name:`预览文件：${longPath}`,exact:true}).locator("span");
+  assert.equal(await longLabel.textContent(),longPath);
+  assert.equal(await longLabel.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);return range.getClientRects().length>1&&element.scrollWidth<=element.clientWidth;}),true,"the whole path wraps inside a narrow composer");
+  await page.setViewportSize({width:1280,height:900});
   await editor.click();await editor.press("ControlOrMeta+a");await editor.press("Backspace");
   await editor.evaluate(element=>{const data=new DataTransfer();data.setData("text/plain","/todo");element.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));});
   assert.equal((await editor.innerText()).trim(),"/todo","slash commands remain ordinary text on paste");

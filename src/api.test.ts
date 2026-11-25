@@ -428,6 +428,30 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
   assert.equal((await fetch(origin+htmlRoot+"..%2fhello.txt")).status,403);assert.equal((await fetch(origin+htmlRoot+"../index.html")).status,404);assert.equal((await fetch(origin+htmlPreview.html,{method:"POST"})).status,404);assert.equal((await fetch(origin+"/api/state",{headers:{Origin:"null"}})).status,403);
   for(const url of ["file:///tmp/secret","javascript:alert(1)","https://user:secret@example.com/"])assert.equal((await request("/open-url",{url})).status,400);
   assert.ok((await request(`/files/${w.id}?search=hltxt`)).data.matches.includes("hello.txt"));
+  await t.test("sidebar shows name matches before body matches and remembers workspace expansion",{skip:process.platform!=="win32"},async()=>{
+    const {chromium}=await import("playwright-core"),browser=await chromium.launch({channel:"msedge",headless:true});
+    const page=await browser.newPage({viewport:{width:1440,height:900}});
+    let release!:()=>void;const bodyGate=new Promise<void>(resolve=>release=resolve);
+    try{
+      const sidebar=page.getByRole("region",{name:"工作区会话"});
+      const workspace=(expanded:boolean)=>sidebar.getByRole("button",{name:`${expanded?"折叠":"展开"}工作区 Older fixture`,exact:true});
+      const older=sidebar.getByTitle("older-history",{exact:true}),body=sidebar.getByTitle("newest-history",{exact:true});
+      await page.goto(origin);await workspace(false).waitFor();assert.equal(await older.count(),0);
+      await workspace(false).click();await older.waitFor();
+      await page.reload();await workspace(true).waitFor();await older.waitFor();
+      await workspace(true).click();await page.reload();await workspace(false).waitFor();assert.equal(await older.count(),0);
+      await page.route(url=>url.pathname==="/api/sessions"&&url.searchParams.get("search")==="older fixture older-history",async route=>{
+        await bodyGate;await route.fulfill({json:["newest-history","older-history"]}).catch(()=>{});
+      });
+      await sidebar.getByRole("button",{name:"搜索会话",exact:true}).click();
+      const search=sidebar.getByRole("textbox",{name:"搜索会话",exact:true});await search.fill("Older fixture older-history");
+      await older.waitFor();assert.equal(await body.count(),0);assert.equal(await sidebar.getByText("正在搜索正文…",{exact:true}).count(),1);
+      release();await body.waitFor();assert.equal(await older.count(),1);
+      assert.deepEqual(await sidebar.locator('button[title="older-history"],button[title="newest-history"]').evaluateAll(rows=>rows.map(row=>row.getAttribute("title"))),["older-history","newest-history"]);
+      await search.fill("Empty fixture");const empty=sidebar.getByRole("button",{name:"打开工作区 Empty fixture",exact:true});await empty.waitFor();await empty.click();
+      await sidebar.getByRole("button",{name:"折叠工作区 Empty fixture",exact:true}).waitFor();await workspace(false).waitFor();
+    }finally{release();await browser.close();}
+  });
   await t.test("message links select previews when the sidebar is closed or showing Start",{skip:process.platform!=="win32"},async()=>{
     const {chromium}=await import("playwright-core"),browser=await chromium.launch({channel:"msedge",headless:true});
     const linked=(await request("/sessions",{workspaceId:w.id,mode:"minimal"})).data,page=await browser.newPage({viewport:{width:1440,height:900}});let external=0;const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));
@@ -451,10 +475,12 @@ assert.equal((await request("/workspaces/ssh-menu/disconnect",{})).status,200);
       await fileLink.click({button:"right"});const menu=page.getByRole("menu",{name:"文件或链接操作"});await menu.getByRole("menuitem",{name:"复制文本内容",exact:true}).click();assert.equal(await page.evaluate(()=>(window as any).copied),"workspace preview");
       await fileLink.click({button:"right"});await menu.getByRole("menuitem",{name:"复制完整路径",exact:true}).click();assert.equal(await page.evaluate(()=>(window as any).copied),join(cwd,"hello.txt").replaceAll("\\","/"));
       const previewRoute=`**/api/files/${w.id}/preview`;await page.route(previewRoute,async route=>{await new Promise(resolve=>setTimeout(resolve,200));await route.continue();});await fileLink.evaluate(node=>(node as HTMLElement).style.cssText="position:fixed;right:8px;bottom:8px;z-index:1000");await fileLink.click({button:"right"});await menu.getByRole("menuitem",{name:"复制文本内容",exact:true}).waitFor();await page.waitForFunction(()=>{const box=document.querySelector('[role="menu"][aria-label="文件或链接操作"]')!.getBoundingClientRect();return box.right<=innerWidth-7&&box.bottom<=innerHeight-7;});await page.keyboard.press("Tab");assert.equal(await menu.count(),0);assert.notEqual(await page.evaluate(()=>document.activeElement?.getAttribute("aria-label")),"文件或链接操作");await fileLink.evaluate(node=>(node as HTMLElement).style.cssText="");await page.unroute(previewRoute);
-      await fileLink.click({button:"right"});await menu.getByRole("menuitem",{name:"在新标签中预览",exact:true}).click();await pane.getByRole("tab",{name:"hello.txt",exact:true}).nth(1).waitFor();assert.equal(await pane.getByRole("tab",{name:"hello.txt",exact:true}).count(),2);await fileLink.click();assert.equal(await pane.getByRole("tab",{name:"hello.txt",exact:true}).count(),2,"normal file clicks reuse existing previews");
+      await pane.getByRole("tab",{name:"工作区文件",exact:true}).click();await fileLink.click({button:"right"});await menu.waitFor();
+      for(const name of ["在新标签中预览","在文件管理器中显示"])assert.equal(await menu.getByRole("menuitem",{name,exact:true}).count(),0);
+      await menu.getByRole("menuitem",{name:"在右侧预览",exact:true}).click();await pane.getByRole("tab",{name:"hello.txt",exact:true,selected:true}).waitFor();assert.equal(await pane.getByRole("tab",{name:"hello.txt",exact:true}).count(),1,"the context menu reuses the open file preview");
       const launches:any[]=[];await page.route(`**/api/workspaces/${w.id}/open`,async route=>{launches.push(route.request().postDataJSON());await route.fulfill({status:200,contentType:"application/json",body:'{"opened":true}'});});
       await fileLink.click({button:"right"});await menu.getByRole("menuitem",{name:"用应用打开",exact:true}).click();await Promise.all([page.waitForResponse(`**/api/workspaces/${w.id}/open`),page.getByRole("menu",{name:"用应用打开",exact:true}).getByRole("menuitem",{name:"文件资源管理器",exact:true}).click()]);assert.equal(launches.at(-1).path,join(cwd,"hello.txt").replaceAll("\\","/"));
-      await pane.getByRole("button",{name:"显示目录树",exact:true}).click();const tree=pane.getByRole("complementary",{name:"目录树",exact:true});await tree.getByRole("button",{name:"hello.txt",exact:true}).click({button:"right"});await Promise.all([page.waitForResponse(`**/api/workspaces/${w.id}/open`),menu.getByRole("menuitem",{name:"在文件管理器中显示",exact:true}).click()]);assert.equal(launches.at(-1).applicationId,"file-manager");await pane.getByRole("button",{name:"隐藏目录树",exact:true}).click();
+      await pane.getByRole("button",{name:"显示目录树",exact:true}).click();const tree=pane.getByRole("complementary",{name:"目录树",exact:true});await tree.getByRole("button",{name:"hello.txt",exact:true}).click({button:"right"});await menu.getByRole("menuitem",{name:"用应用打开",exact:true}).click();await Promise.all([page.waitForResponse(`**/api/workspaces/${w.id}/open`),page.getByRole("menu",{name:"用应用打开",exact:true}).getByRole("menuitem",{name:"文件资源管理器",exact:true}).click()]);assert.equal(launches.at(-1).applicationId,"file-manager");await pane.getByRole("button",{name:"隐藏目录树",exact:true}).click();
       await page.getByRole("button",{name:"二进制",exact:true}).click({button:"right"});await menu.getByText("此文件格式暂不支持预览",{exact:true}).waitFor();assert.equal(await menu.getByRole("menuitem",{name:"复制文本内容",exact:true}).count(),0);await page.keyboard.press("Escape");
       const web=page.getByRole("link",{name:"网页",exact:true}),before=(await request("/browser")).data.tabs.length;await web.click();await pane.getByRole("tab",{name:"Sidebar fixture",exact:true}).waitFor();assert.equal((await request("/browser")).data.tabs.length,before,"normal URL clicks reuse the managed browser tab");
       await web.click({button:"right"});await menu.getByRole("menuitem",{name:"复制链接",exact:true}).click();assert.equal(await page.evaluate(()=>(window as any).copied),`http://127.0.0.1:${modelPort}/sidebar`);
